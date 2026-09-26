@@ -4,10 +4,13 @@
 module instrument_board_top #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer SPI_CLK_HZ = 1_000_000,
-    parameter integer BUTTON_DEBOUNCE_US = 20_000,
+    // A stable press is accepted in 2 ms, leaving margin in the 5 ms
+    // input-to-audio budget. Release qualification prevents bounce rearming.
+    parameter integer BUTTON_DEBOUNCE_US = 2_000,
     parameter integer EC11_DEBOUNCE_US = 1000,
     parameter integer EC11_TRANSITIONS_PER_STEP = 4,
-    parameter integer EC11_DIR_INVERT = 0
+    parameter integer EC11_DIR_INVERT = 0,
+    parameter integer BUTTON_RELEASE_DEBOUNCE_US = 20_000
 ) (
     input wire clk,
     input wire rst_n,
@@ -37,12 +40,14 @@ module instrument_board_top #(
 
     wire octave_up_pulse, octave_down_pulse;
     button_debounce_onepulse #(
-        .CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US)
+        .CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US),
+        .RELEASE_DEBOUNCE_US(BUTTON_RELEASE_DEBOUNCE_US)
     ) u_octave_up (
         .clk(clk), .rst(rst), .key_n(octave_up_key_n), .press_pulse(octave_up_pulse)
     );
     button_debounce_onepulse #(
-        .CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US)
+        .CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US),
+        .RELEASE_DEBOUNCE_US(BUTTON_RELEASE_DEBOUNCE_US)
     ) u_octave_down (
         .clk(clk), .rst(rst), .key_n(octave_down_key_n), .press_pulse(octave_down_pulse)
     );
