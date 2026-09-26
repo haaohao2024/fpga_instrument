@@ -33,6 +33,20 @@ module instrument_core #(
     wire [55:0] note_code;
     wire signed [23:0] mix_sample;
     wire mix_valid;
+    wire [7:0] local_gate, local_trigger, local_vibrato;
+    wire [63:0] local_pressure;
+    wire [55:0] local_notes;
+    wire local_event_valid, local_event_ready, arb_valid, arb_ready;
+    wire event_valid, event_ready, event_overflow, event_protocol_error;
+    wire [328:0] local_event_packet, arb_packet, event_packet;
+    wire [2:0] event_queue_occupancy;
+    wire event_fault = event_overflow | event_protocol_error;
+    reg [31:0] sample_time;
+    // Timestamp metadata only. Events are NEVER gated by this audio tick.
+    always @(posedge clk) begin
+        if (rst) sample_time<=0;
+        else if (frame_pulse) sample_time<=sample_time+1'b1;
+    end
 
     local_performance_control #(
         .ADC_ZERO(ADC_ZERO), .ADC_FULL(ADC_FULL), .DEADZONE(DEADZONE),
@@ -42,8 +56,31 @@ module instrument_core #(
         .clk(clk), .rst(rst), .pressure_raw(pressure_raw), .pressure_valid(pressure_valid),
         .step_pulse(step_pulse), .step_dir(step_dir),
         .octave_up_pulse(octave_up_pulse), .octave_down_pulse(octave_down_pulse),
-        .note_gate(note_gate), .note_trigger(note_trigger),
-        .pressure_value(pressure_value), .note_code(note_code), .vibrato_depth(vibrato_depth)
+        .note_gate(local_gate), .note_trigger(local_trigger),
+        .pressure_value(local_pressure), .note_code(local_notes), .vibrato_depth(local_vibrato)
+    );
+    local_performance_event_adapter u_event_adapter (
+        .clk(clk), .rst(rst), .sample_time(sample_time),
+        .note_gate(local_gate), .note_trigger(local_trigger), .vibrato_depth(local_vibrato),
+        .pressure_value(local_pressure), .note_code(local_notes),
+        .event_valid(local_event_valid), .event_ready(local_event_ready),
+        .event_packet(local_event_packet), .overflow(event_overflow)
+    );
+    performance_event_arbiter u_event_arbiter (
+        .clk(clk), .rst(rst), .s0_valid(local_event_valid), .s0_data(local_event_packet),
+        .s0_ready(local_event_ready), .s1_valid(1'b0), .s1_data(329'd0), .s1_ready(),
+        .m_valid(arb_valid), .m_ready(arb_ready), .m_data(arb_packet)
+    );
+    performance_event_queue u_event_queue (
+        .clk(clk), .rst(rst), .s_valid(arb_valid), .s_ready(arb_ready), .s_data(arb_packet),
+        .m_valid(event_valid), .m_ready(event_ready), .m_data(event_packet),
+        .occupancy(event_queue_occupancy)
+    );
+    performance_event_to_voice8 u_event_dispatch (
+        .clk(clk), .rst(rst), .panic(event_fault),
+        .event_valid(event_valid), .event_ready(event_ready), .event_packet(event_packet),
+        .note_gate(note_gate), .note_trigger(note_trigger), .pressure_value(pressure_value),
+        .note_code(note_code), .vibrato_depth(vibrato_depth), .protocol_error(event_protocol_error)
     );
     poly_synth_mixer u_poly (
         .clk(clk), .rst(rst), .sample_tick(frame_pulse),
