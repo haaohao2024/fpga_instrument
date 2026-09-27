@@ -8,6 +8,7 @@ module shared_voice_lane #(
 ) (
     input wire clk,rst,sample_tick,
     input wire [7:0] slot_valid,slot_gate,slot_trigger,
+    input wire [7:0] slot_cancel,
     input wire [55:0] slot_notes,
     input wire [63:0] slot_pressures,
     input wire [511:0] slot_ids,
@@ -47,6 +48,9 @@ module shared_voice_lane #(
                env_remainder[0:7],env_error[0:7];
     wire owner_matches=(owner_id[sel]==snap_ids[sel*64 +:64] &&
                         owner_generation[sel]==snap_generations[sel*16 +:16]);
+    wire issue_current=slot_valid[sel] && !slot_cancel[sel] &&
+        snap_ids[sel*64 +:64]==slot_ids[sel*64 +:64] &&
+        snap_generations[sel*16 +:16]==slot_generations[sel*16 +:16];
     wire [2:0] adsr_state=owner_matches?env_state[sel]:3'd0;
     wire [16:0] adsr_level=owner_matches?env_level[sel]:17'd0;
     wire [31:0] adsr_remaining=owner_matches?env_remaining[sel]:0;
@@ -130,11 +134,14 @@ module shared_voice_lane #(
     wire signed [17:0] final_sample=round_audio(wave_pressure);
     wire final_current=(p_id[9]==slot_ids[p_slot[9]*64 +:64] &&
                         p_generation[9]==slot_generations[p_slot[9]*16 +:16] &&
-                        slot_valid[p_slot[9]]);
+                        slot_valid[p_slot[9]] && !slot_cancel[p_slot[9]]);
     genvar g;
     generate for (g=0;g<8;g=g+1) begin : levels
-        assign envelope_levels[g*17 +:17]=env_level[g];
-        assign envelope_states[g*3 +:3]=env_state[g];
+        wire feedback_current=slot_valid[g] &&
+            owner_id[g]==slot_ids[g*64 +:64] &&
+            owner_generation[g]==slot_generations[g*16 +:16];
+        assign envelope_levels[g*17 +:17]=feedback_current?env_level[g]:17'd0;
+        assign envelope_states[g*3 +:3]=feedback_current?env_state[g]:3'd0;
     end endgenerate
     integer i;
     always @(posedge clk) begin
@@ -195,6 +202,7 @@ module shared_voice_lane #(
                 p_base_step[0]<=note_step;p_base_phase[0]<=issue_phase;
                 p_restart[0]<=snap_trigger[sel] && snap_valid[sel];
                 p_gate[0]<=snap_gate[sel];p_lfo[0]<=lfo_sine;
+                if (issue_current) begin
                 owner_id[sel]<=snap_ids[sel*64 +:64];
                 owner_generation[sel]<=snap_generations[sel*16 +:16];
                 env_state[sel]<=state_next;env_level[sel]<=level_next;
@@ -207,6 +215,7 @@ module shared_voice_lane #(
                     held_pressure[sel]<=snap_pressures[sel*8 +:8];
                 end else if (state_next==0) begin
                     held_note[sel]<=0;held_pressure[sel]<=0;
+                end
                 end
             end
             if (valid_pipe[0])

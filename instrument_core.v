@@ -30,6 +30,7 @@ module instrument_core #(
 );
     wire [7:0] vibrato_depth;
     wire [31:0] slot_valid,slot_gate,slot_trigger;
+    wire [31:0] slot_cancel;
     wire [223:0] slot_notes;
     wire [255:0] slot_pressures;
     wire [2047:0] slot_ids,done_ids;
@@ -90,6 +91,7 @@ module instrument_core #(
         .sample_tick(frame_pulse),.envelope_levels(envelope_levels),
         .done_mask(done_mask),.done_ids(done_ids),
         .slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),
+        .slot_cancel(slot_cancel),
         .slot_notes(slot_notes),.slot_pressures(slot_pressures),
         .slot_ids(slot_ids),.slot_generations(slot_generations),
         .vibrato_depth(vibrato_depth),.protocol_error(event_protocol_error),
@@ -99,6 +101,7 @@ module instrument_core #(
     poly_synth_mixer32 u_poly (
         .clk(clk), .rst(rst), .sample_tick(frame_pulse),
         .slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),
+        .slot_cancel(slot_cancel),
         .slot_notes(slot_notes),.slot_pressures(slot_pressures),
         .slot_ids(slot_ids),.slot_generations(slot_generations),
         .vibrato_depth(vibrato_depth),

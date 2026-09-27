@@ -10,6 +10,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     input wire [31:0] done_mask,
     input wire [2047:0] done_ids,
     output wire [31:0] slot_valid, slot_gate, slot_trigger,
+    output wire [31:0] slot_cancel,
     output wire [223:0] slot_notes,
     output wire [255:0] slot_pressures,
     output wire [2047:0] slot_ids,
@@ -67,6 +68,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     reg [63:0] oldest_age;
     reg [5:0] reclaim_delta;
     integer i,j;
+    wire [543:0] current_levels;
     wire [ID_WIDTH-1:0] after_id=(next_id=={ID_WIDTH{1'b1}}) ?
         {{(ID_WIDTH-1){1'b0}},1'b1} : next_id+1'b1;
     assign event_ready=!rst && !busy;
@@ -91,10 +93,10 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
         if (!found_free) begin
             for (j=0;j<32;j=j+1)
                 if (valid_r[j] && !gate_r[j] &&
-                    (!found_release || envelope_levels[j*17 +:17]<lowest_level ||
-                    (envelope_levels[j*17 +:17]==lowest_level && age_r[j]<oldest_age))) begin
+                    (!found_release || current_levels[j*17 +:17]<lowest_level ||
+                    (current_levels[j*17 +:17]==lowest_level && age_r[j]<oldest_age))) begin
                     victim=j;found_release=1;
-                    lowest_level=envelope_levels[j*17 +:17];oldest_age=age_r[j];
+                    lowest_level=current_levels[j*17 +:17];oldest_age=age_r[j];
                 end
             if (!found_release) begin
                 oldest_age={64{1'b1}};
@@ -107,6 +109,16 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     end
     genvar g;
     generate for (g=0;g<32;g=g+1) begin : pack_slots
+        // A working-bank allocation may not yet be published. Its envelope
+        // starts at zero; feedback for the previous visible owner is unrelated.
+        assign current_levels[g*17 +:17]=
+            (id_r[g]==visible_id[g] &&
+             generation_r[g]==visible_generation[g]) ?
+            envelope_levels[g*17 +:17] : 17'd0;
+        // Same-edge allocation wins over old issue/writeback in the synth.
+        assign slot_cancel[g]=!rst && busy && lane==9 &&
+            (id_r[g]!=visible_id[g] ||
+             generation_r[g]!=visible_generation[g]);
         assign slot_valid[g]=visible_valid[g];
         assign slot_gate[g]=visible_gate[g];
         assign slot_trigger[g]=visible_trigger[g];

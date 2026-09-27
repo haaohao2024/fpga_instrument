@@ -3,6 +3,7 @@
 module poly_synth_mixer32 (
     input wire clk,rst,sample_tick,
     input wire [31:0] slot_valid,slot_gate,slot_trigger,
+    input wire [31:0] slot_cancel,
     input wire [223:0] slot_notes,
     input wire [255:0] slot_pressures,
     input wire [2047:0] slot_ids,
@@ -26,6 +27,7 @@ module poly_synth_mixer32 (
             .slot_valid(slot_valid[i*8 +:8]),
             .slot_gate(slot_gate[i*8 +:8]),
             .slot_trigger(slot_trigger[i*8 +:8]),
+            .slot_cancel(slot_cancel[i*8 +:8]),
             .slot_notes(slot_notes[i*56 +:56]),
             .slot_pressures(slot_pressures[i*64 +:64]),
             .slot_ids(slot_ids[i*512 +:512]),
