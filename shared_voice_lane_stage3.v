@@ -22,6 +22,11 @@ module shared_voice_lane_stage3 #(
     output reg [511:0] done_ids,
     output reg [143:0] voice_samples,
     output reg [31:0] issued_count,completed_count,
+    output wire completion_valid,completion_accept,
+    output wire [2:0] completion_slot,
+    output wire signed [17:0] completion_sample,
+    output wire [63:0] completion_id,
+    output wire [15:0] completion_generation,
     output reg deadline_error
 );
     localparam [31:0] LFO_STEP=(64'd4294967296*VIBRATO_RATE_HZ+24000)/48000;
@@ -272,6 +277,13 @@ module shared_voice_lane_stage3 #(
     wire final_current=(p_id[11]==slot_ids[p_slot[11]*64 +:64] &&
                         p_generation[11]==slot_generations[p_slot[11]*16 +:16] &&
                         slot_valid[p_slot[11]] && !slot_cancel[p_slot[11]]);
+    // Passive pre-edge view of the original writeback transaction. No new state.
+    assign completion_valid=valid_pipe[11];
+    assign completion_accept=final_current;
+    assign completion_slot=p_slot[11];
+    assign completion_sample=final_sample;
+    assign completion_id=p_id[11];
+    assign completion_generation=p_generation[11];
     genvar g;
     generate for (g=0;g<8;g=g+1) begin : levels
         wire feedback_current=slot_valid[g] &&

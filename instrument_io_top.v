@@ -58,7 +58,8 @@ module instrument_io_top #(
     // Verification-only mode: keep the frozen stage-2 hierarchy and samples.
     instrument_core #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core (
 `else
-    instrument_core_stage3 #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core (
+    instrument_core_stage4 #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core (
+        .pan_valid(1'b0),.pan_slot(5'd0),.pan_id(64'd0),.pan_generation(16'd0),.pan_value(9'd128),
         .timbre_id(3'd1), .glide_code(glide_code),
 `endif
         .clk(clk), .rst(rst), .pressure_raw(pressure_raw), .pressure_valid(pressure_valid),

@@ -16,6 +16,11 @@ module poly_synth_mixer32_stage3 (
     output wire [31:0] done_mask,
     output wire [2047:0] done_ids,
     output wire [575:0] voice_samples,
+    output wire [3:0] completion_valid,completion_accept,
+    output wire [11:0] completion_slot,
+    output wire [71:0] completion_sample,
+    output wire [255:0] completion_id,
+    output wire [63:0] completion_generation,
     output wire [3:0] lane_deadline_error
 );
     wire signed [23:0] lane_sum[0:3];
@@ -41,7 +46,12 @@ module poly_synth_mixer32_stage3 (
             .done_ids(done_ids[i*512 +:512]),
             .voice_samples(voice_samples[i*144 +:144]),
             .issued_count(),.completed_count(),
-            .deadline_error(lane_deadline_error[i])
+            .deadline_error(lane_deadline_error[i]),
+            .completion_valid(completion_valid[i]),.completion_accept(completion_accept[i]),
+            .completion_slot(completion_slot[i*3 +:3]),
+            .completion_sample(completion_sample[i*18 +:18]),
+            .completion_id(completion_id[i*64 +:64]),
+            .completion_generation(completion_generation[i*16 +:16])
         );
     end endgenerate
     reg signed [23:0] pair01,pair23;
