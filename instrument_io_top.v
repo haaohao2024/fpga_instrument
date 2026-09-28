@@ -16,6 +16,8 @@ module instrument_io_top #(
     output wire adc_din,
     input wire ec11_s1,
     input wire ec11_s2,
+    input wire glide_ec11_s1,
+    input wire glide_ec11_s2,
     input wire octave_up_pulse,
     input wire octave_down_pulse,
     output wire dac_bck,
@@ -29,6 +31,8 @@ module instrument_io_top #(
     wire pressure_valid, step_pulse, step_dir;
     wire ec11_ready, ec11_invalid;
     wire signed [31:0] ec11_position;
+    wire glide_step_pulse,glide_step_dir;
+    wire [3:0] glide_code;
     pressure_input_top #(.CLK_FREQ_HZ(CLK_FREQ_HZ), .SPI_CLK_HZ(SPI_CLK_HZ)) u_adc (
         .sys_clk(clk), .rst_n(~rst), .adc_cs_n(adc_cs_n),
         .adc_sclk(adc_sclk), .adc_din(adc_din), .adc_dout(adc_dout),
@@ -40,7 +44,23 @@ module instrument_io_top #(
         .ready(ec11_ready), .step_pulse(step_pulse), .step_dir(step_dir),
         .position(ec11_position), .invalid_pulse(ec11_invalid)
     );
+    ec11_encoder #(.CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(EC11_DEBOUNCE_US),
+        .TRANSITIONS_PER_STEP(EC11_TRANSITIONS_PER_STEP), .DIR_INVERT(EC11_DIR_INVERT)) u_glide_ec11 (
+        .sys_clk(clk),.rst_n(~rst),.s1(glide_ec11_s1),.s2(glide_ec11_s2),
+        .ready(),.step_pulse(glide_step_pulse),.step_dir(glide_step_dir),
+        .position(),.invalid_pulse()
+    );
+    glide_parameter_control u_glide_parameter (
+        .clk(clk),.rst(rst),.step_pulse(glide_step_pulse),
+        .step_dir(glide_step_dir),.glide_code(glide_code)
+    );
+`ifdef STAGE2_COMPAT
+    // Verification-only mode: keep the frozen stage-2 hierarchy and samples.
     instrument_core #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core (
+`else
+    instrument_core_stage3 #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core (
+        .timbre_id(3'd1), .glide_code(glide_code),
+`endif
         .clk(clk), .rst(rst), .pressure_raw(pressure_raw), .pressure_valid(pressure_valid),
         .step_pulse(step_pulse), .step_dir(step_dir),
         .octave_up_pulse(octave_up_pulse), .octave_down_pulse(octave_down_pulse),

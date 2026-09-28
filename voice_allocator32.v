@@ -6,6 +6,8 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     input wire event_valid,
     output wire event_ready,
     input wire [904:0] event_packet,
+    // Configuration is sampled only when a NOTE_ON actually allocates a slot.
+    input wire [2:0] timbre_id,
     input wire [543:0] envelope_levels,
     input wire [31:0] done_mask,
     input wire [2047:0] done_ids,
@@ -15,6 +17,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     output wire [255:0] slot_pressures,
     output wire [2047:0] slot_ids,
     output wire [511:0] slot_generations,
+    output wire [95:0] slot_timbres,
     output reg [7:0] vibrato_depth,
     output reg protocol_error,
     output reg [31:0] steal_count, stale_count, allocation_count,
@@ -30,6 +33,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     reg [7:0] visible_key[0:31];
     reg [ID_WIDTH-1:0] visible_id[0:31];
     reg [15:0] visible_generation[0:31];
+    reg [2:0] visible_timbre[0:31];
     reg [3:0] source_r[0:31];
     reg [7:0] key_r[0:31], pressure_r[0:31];
     reg [6:0] note_r[0:31];
@@ -39,6 +43,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     // 20-clock issue-to-writeback window before reusing any number.
     reg [5:0] wrap_holdoff;
     reg [15:0] generation_r[0:31];
+    reg [2:0] timbre_r[0:31];
     reg [63:0] age_counter;
     reg [7:0] vib_work;
     reg busy;
@@ -126,6 +131,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
         assign slot_pressures[g*8 +:8]=visible_pressure[g];
         assign slot_ids[g*64 +:64]={{(64-ID_WIDTH){1'b0}},visible_id[g]};
         assign slot_generations[g*16 +:16]=visible_generation[g];
+        assign slot_timbres[g*3 +:3]=visible_timbre[g];
     end endgenerate
     always @(posedge clk) begin
         if (rst) begin
@@ -135,6 +141,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
             id_collision_skip_count<=0;id_wrap_count<=0;
             for (i=0;i<32;i=i+1) begin
                 valid_r[i]<=0;gate_r[i]<=0;trigger_r[i]<=0;
+                timbre_r[i]<=0;visible_timbre[i]<=0;
                 note_r[i]<=0;pressure_r[i]<=0;source_r[i]<=0;key_r[i]<=0;
                 token_r[i]<=0;id_r[i]<=0;generation_r[i]<=0;age_r[i]<=0;
                 visible_valid[i]<=0;visible_gate[i]<=0;visible_trigger[i]<=0;
@@ -156,6 +163,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
                     visible_key[i]<=key_r[i];
                     visible_id[i]<=id_r[i];
                     visible_generation[i]<=generation_r[i];
+                    visible_timbre[i]<=timbre_r[i];
                 end
             end
             if (sample_tick) for (i=0;i<32;i=i+1) begin
@@ -218,6 +226,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
                     source_r[victim]<=source;key_r[victim]<=key;
                     token_r[victim]<=item_token;note_r[victim]<=note;
                     pressure_r[victim]<=value;id_r[victim]<=next_id;
+                    timbre_r[victim]<=timbre_id;
                     generation_r[victim]<=generation_r[victim]+1'b1;
                     age_r[victim]<=age_counter;age_counter<=age_counter+1'b1;
                     allocation_count<=allocation_count+1'b1;

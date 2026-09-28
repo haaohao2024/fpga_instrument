@@ -64,6 +64,7 @@ module instrument_board_top #(
         .clk(clk), .rst(rst), .adc_dout(adc_dout),
         .adc_cs_n(adc_cs_n), .adc_sclk(adc_sclk), .adc_din(adc_din),
         .ec11_s1(ec11_s1), .ec11_s2(ec11_s2),
+        .glide_ec11_s1(1'b1), .glide_ec11_s2(1'b1),
         .octave_up_pulse(octave_up_pulse), .octave_down_pulse(octave_down_pulse),
         .dac_bck(dac_bck), .dac_ws(dac_ws), .dac_din(dac_din),
         .frame_pulse(frame_pulse), .sample_overrun(sample_overrun), .underrun(underrun)
