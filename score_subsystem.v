@@ -5,7 +5,8 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
  input wire dispatch_done,input wire [55:0] local_notes,
  input wire guide_cfg_valid,guide_cfg_prefix,input wire [23:0] guide_cfg_order,input wire [13:0] guide_cfg_lead,
  output wire led_dout,output wire [7:0] score_state,score_error,
- output wire [63:0] score_time,output wire [31:0] deadline_count
+ output wire [63:0] score_time,output wire [31:0] deadline_count,
+ output wire observe_teach,observe_loop
 );
  wire cv,cr,pv,pr,pdone,pok,pc,pe,rv,rr,hv,eof;
  wire [7:0] cmd,parser_error;wire [63:0] ep,arg,active_epoch,end_time,last_time;
@@ -42,7 +43,7 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
   .state(score_state),.error_code(score_error),.music_time(score_time),.epoch(player_epoch),
   .logical_held(logical_held),.logical_notes(logical_notes),.logical_pressures(logical_pressures),.guide_held(guide_held),.guide_notes(guide_notes),.reload_request(reload_request),
   .records_consumed(records_consumed),.events_offered(events_offered),.events_accepted(events_accepted),.events_completed(events_completed),
-  .deadline_count(deadline_count),.token_exhaustions(token_exhaustions),.stops(stops),.last_group_cycles(last_group_cycles));
+  .deadline_count(deadline_count),.token_exhaustions(token_exhaustions),.stops(stops),.last_group_cycles(last_group_cycles),.observe_teach(observe_teach),.observe_loop(observe_loop));
  wire prefix,led_busy;wire [215:0] colors;wire [5:0] unmapped;wire [31:0] invalid_guide,led_frames;
  score_guide guide(
   .clk(clk),.rst(rst),.cfg_valid(guide_cfg_valid),.cfg_prefix(guide_cfg_prefix),.cfg_order(guide_cfg_order),.cfg_lead(guide_cfg_lead),

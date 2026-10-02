@@ -14,11 +14,15 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
     output reg protocol_error,
     output reg [31:0] frame_count,
     output wire [31:0] cfg_accepted,cfg_rejected,
-    output wire effective_bypass
+    output wire effective_bypass,
+    output wire [351:0] observe_config,
+    output wire [31:0] observe_version
 );
     wire [351:0] frame_config;
     wire [2:0] frame_clear,clear_pulse;
     wire [31:0] frame_version;
+    assign observe_config=frame_config;
+    assign observe_version=frame_version;
     wire [319:0] controls;
     reg busy;
     reg [7:0] cycle;

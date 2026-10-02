@@ -59,7 +59,15 @@ module instrument_core_stage7 #(
     output wire dac_din,
     output wire frame_pulse,
     output wire sample_overrun,
-    output wire underrun
+    output wire underrun,
+    output wire observe_load,
+    output wire signed [15:0] observe_l,observe_r,
+    output wire [31:0] observe_slot_valid,observe_slot_gate,
+    output wire [95:0] observe_slot_timbres,
+    output wire [351:0] observe_fx_config,
+    output wire [31:0] observe_fx_version,
+    output wire observe_fx_bypass,observe_teach,observe_loop,
+    output wire [2:0] observe_stream_state
 );
     wire [7:0] vibrato_depth;
     wire [31:0] slot_valid,slot_gate,slot_trigger;
@@ -69,6 +77,9 @@ module instrument_core_stage7 #(
     wire [2047:0] slot_ids,done_ids;
     wire [511:0] slot_generations;
     wire [95:0] slot_timbres;
+    assign observe_slot_valid=slot_valid;
+    assign observe_slot_gate=slot_gate;
+    assign observe_slot_timbres=slot_timbres;
     wire [543:0] envelope_levels;
     wire [95:0] envelope_states;
     wire [31:0] done_mask;
@@ -145,7 +156,7 @@ module instrument_core_stage7 #(
         .event_valid(score_event_valid),.event_ready(score_event_ready),.event_packet(score_event_packet),
         .dispatch_done(score_dispatch_done),.local_notes(local_notes),
         .guide_cfg_valid(guide_cfg_valid),.guide_cfg_prefix(guide_cfg_prefix),.guide_cfg_order(guide_cfg_order),.guide_cfg_lead(guide_cfg_lead),
-        .led_dout(guide_led_dout),.score_state(score_state),.score_error(score_error),.score_time(score_time),.deadline_count(score_deadline_count));
+        .led_dout(guide_led_dout),.score_state(score_state),.score_error(score_error),.score_time(score_time),.deadline_count(score_deadline_count),.observe_teach(observe_teach),.observe_loop(observe_loop));
     performance_event_arbiter #(.WIDTH(905)) u_event_arbiter (
         .clk(clk), .rst(rst), .s0_valid(buffered_local_valid), .s0_data(buffered_local_packet),
         .s0_ready(buffered_local_ready), .s1_valid(score_event_valid), .s1_data(score_event_packet), .s1_ready(score_event_ready),
@@ -206,6 +217,7 @@ module instrument_core_stage7 #(
         .last_complete_cycle(stereo_complete_cycle));
     wire signed [31:0] fx_l_q8,fx_r_q8;
     wire fx_valid,fx_bypass;
+    assign observe_fx_bypass=fx_bypass;
     wire [31:0] fx_frames,fx_cfg_accepted,fx_cfg_rejected;
     stereo_effects #(.MIX_SHIFT(MIX_SHIFT)) u_effects(
         .clk(clk),.rst(rst),.sample_tick(frame_pulse),
@@ -213,7 +225,7 @@ module instrument_core_stage7 #(
         .cfg_valid(fx_cfg_valid),.cfg_data(fx_cfg_data),
         .out_l_q8(fx_l_q8),.out_r_q8(fx_r_q8),.out_valid(fx_valid),
         .protocol_error(fx_error),.frame_count(fx_frames),
-        .cfg_accepted(fx_cfg_accepted),.cfg_rejected(fx_cfg_rejected),.effective_bypass(fx_bypass));
+        .cfg_accepted(fx_cfg_accepted),.cfg_rejected(fx_cfg_rejected),.effective_bypass(fx_bypass),.observe_config(observe_fx_config),.observe_version(observe_fx_version));
     digital_audio_output_master #(
         .CLK_FREQ_HZ(CLK_FREQ_HZ), .SAMPLE_RATE_HZ(48_000), .MIX_SHIFT(MIX_SHIFT)
     ) u_output (
@@ -225,6 +237,7 @@ module instrument_core_stage7 #(
         .stream_error(stream_error),.external_underflow_count(external_underflow_count),.deadline_error(),
         .clk(clk), .rst(rst), .mix_l_q8(fx_l_q8),.mix_r_q8(fx_r_q8), .mix_valid(fx_valid),
         .sample_tick(frame_pulse), .dac_bck(dac_bck), .dac_ws(dac_ws), .dac_din(dac_din),
-        .sample_overrun(sample_overrun), .dac_underrun(underrun)
+        .sample_overrun(sample_overrun), .dac_underrun(underrun),
+        .observe_load(observe_load),.observe_l(observe_l),.observe_r(observe_r),.observe_stream_state(observe_stream_state)
     );
 endmodule

@@ -15,11 +15,14 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  output reg [31:0] guide_held,output reg [223:0] guide_notes,
  output reg reload_request,output reg [31:0] records_consumed,events_offered,events_accepted,events_completed,
  output reg [31:0] deadline_count,token_exhaustions,stops,
- output reg [15:0] last_group_cycles
+ output reg [15:0] last_group_cycles,
+ output wire observe_teach,observe_loop
 );
  localparam [63:0] TOKEN_MAX=(TOKEN_WIDTH==64)?64'hffffffffffffffff:((64'd1<<TOKEN_WIDTH)-1);
  reg [63:0] token_counter,key_tokens[0:31];reg [31:0] sound_held;
  reg teach,loop_mode,window_open,group_active,window_used,pause_requested,resume_pending,resuming,natural_end;
+ assign observe_teach=teach;
+ assign observe_loop=loop_mode;
  reg [1:0] stop_phase;reg [5:0] cleanup_key,resume_key;
  reg [7:0] stop_destination;
  reg [863:0] build_items;reg [3:0] build_count;

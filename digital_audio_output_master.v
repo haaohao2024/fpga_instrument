@@ -22,7 +22,10 @@ module digital_audio_output_master #(
     output wire sample_overrun,dac_underrun,
     output wire stream_error,
     output wire [31:0] external_underflow_count,
-    output reg deadline_error
+    output reg deadline_error,
+    output wire observe_load,
+    output wire signed [15:0] observe_l,observe_r,
+    output wire [2:0] observe_stream_state
 );
     wire signed [15:0] pcm_l,pcm_r;
     wire pcm_valid,pcm_ready;
@@ -33,6 +36,7 @@ module digital_audio_output_master #(
     wire [31:0] external_frame,external_generation;
     wire [63:0] sample_epoch;
     wire [2:0] stream_state;
+    assign observe_stream_state=stream_state;
     wire [11:0] buffered;
     wire [32:0] rate_q32;
     wire [31:0] phase_q32,accepted_count,consumed_count,discard_count,stale_count,conceal_count,backpressure_count,rejected_control_count;
@@ -72,7 +76,7 @@ module digital_audio_output_master #(
         .clip_l_count(clip_l_count),.clip_r_count(clip_r_count));
     pt8211_audio_out #(.CLK_FREQ_HZ(CLK_FREQ_HZ),.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ)) u_pt8211(
         .sys_clk(clk),.rst_n(~rst),.sample_l(pcm_l),.sample_r(pcm_r),.sample_valid(pcm_valid),.sample_ready(pcm_ready),
-        .dac_bck(dac_bck),.dac_ws(dac_ws),.dac_din(dac_din),.frame_pulse(sample_tick),.underrun(dac_underrun));
+        .dac_bck(dac_bck),.dac_ws(dac_ws),.dac_din(dac_din),.frame_pulse(sample_tick),.underrun(dac_underrun),.observe_load(observe_load),.observe_l(observe_l),.observe_r(observe_r));
     always @(posedge clk)begin
         if(rst)begin
             frame_number<=0;active_frame<=0;age<=0;frame_active<=0;

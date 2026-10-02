@@ -15,7 +15,9 @@ module pt8211_audio_out #(
     output wire dac_ws,
     output wire dac_din,
     output reg frame_pulse, // frame launch, not transmission completion
-    output reg underrun    // one sys_clk pulse: launched a silent frame
+    output reg underrun,   // one sys_clk pulse: launched a silent frame
+    output wire observe_load,
+    output wire signed [15:0] observe_l,observe_r
 );
     reg pending_full;
     reg [15:0] pending_l, pending_r;
@@ -27,6 +29,10 @@ module pt8211_audio_out #(
     // immediately when the buffer is empty. Otherwise the oldest sample wins.
     wire [15:0] next_l = pending_full ? pending_l : (sample_valid ? sample_l : 16'd0);
     wire [15:0] next_r = pending_full ? pending_r : (sample_valid ? sample_r : 16'd0);
+    // Read-only: values sampled by serializer on THIS frame_load edge.
+    assign observe_load=frame_load;
+    assign observe_l=next_l;
+    assign observe_r=next_r;
     pt8211_serializer #(.CLK_FREQ_HZ(CLK_FREQ_HZ), .SAMPLE_RATE_HZ(SAMPLE_RATE_HZ)) u_serializer (
         .sys_clk(sys_clk), .rst_n(rst_n), .frame_l(next_l), .frame_r(next_r),
         .frame_load(frame_load), .dac_bck(dac_bck), .dac_ws(dac_ws), .dac_din(dac_din)

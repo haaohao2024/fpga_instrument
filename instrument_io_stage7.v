@@ -58,7 +58,15 @@ module instrument_io_stage7 #(
     output wire dac_din,
     output wire frame_pulse,
     output wire sample_overrun,
-    output wire underrun
+    output wire underrun,
+    output wire observe_load,
+    output wire signed [15:0] observe_l,observe_r,
+    output wire [31:0] observe_slot_valid,observe_slot_gate,
+    output wire [95:0] observe_slot_timbres,
+    output wire [351:0] observe_fx_config,
+    output wire [31:0] observe_fx_version,
+    output wire observe_fx_bypass,observe_teach,observe_loop,
+    output wire [2:0] observe_stream_state
 );
     wire [79:0] pressure_raw;
     wire pressure_valid, step_pulse, step_dir;
@@ -88,6 +96,7 @@ module instrument_io_stage7 #(
         .step_dir(glide_step_dir),.glide_code(glide_code)
     );
     instrument_core_stage7 #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core (
+        .observe_load(observe_load),.observe_l(observe_l),.observe_r(observe_r),.observe_slot_valid(observe_slot_valid),.observe_slot_gate(observe_slot_gate),.observe_slot_timbres(observe_slot_timbres),.observe_fx_config(observe_fx_config),.observe_fx_version(observe_fx_version),.observe_fx_bypass(observe_fx_bypass),.observe_teach(observe_teach),.observe_loop(observe_loop),.observe_stream_state(observe_stream_state),
         .score_spi_sck(score_spi_sck),
         .score_cs_n(score_cs_n),
         .score_sd_cs_n(score_sd_cs_n),
