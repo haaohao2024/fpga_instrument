@@ -1,6 +1,7 @@
-/* Read-only Stage7 configuration; full values from locked SDK ffconf.h. */
+/* Stage9: one filesystem task owns FatFs. Fixed short filenames, FAT32 only
+ * at the application boundary. No reentrancy claim for calls from other tasks. */
 #define FF_FS_CONTINUOUS 0
-#define FF_FS_READONLY 1
+#define FF_FS_READONLY 0
 #define FF_FS_MINIMIZE 0
 #define FF_USE_FIND 0
 #define FF_USE_MKFS 0

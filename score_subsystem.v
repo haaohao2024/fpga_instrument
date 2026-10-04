@@ -1,4 +1,4 @@
-module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=5000000)(
+module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_S11=0)(
  input wire clk,rst,sample_tick,stereo_locked,
  input wire spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,output wire spi_miso,spi_miso_oe,
  input wire local_backlog,output wire event_valid,input wire event_ready,output wire [904:0] event_packet,
@@ -6,7 +6,10 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
  input wire guide_cfg_valid,guide_cfg_prefix,input wire [23:0] guide_cfg_order,input wire [13:0] guide_cfg_lead,
  output wire led_dout,output wire [7:0] score_state,score_error,
  output wire [63:0] score_time,output wire [31:0] deadline_count,
- output wire observe_teach,observe_loop
+ output wire [255:0] observe_score_status,
+ output wire observe_teach,observe_loop,
+ input wire field_valid,field_start,input wire [1:0] field_size,
+ output wire field_ready,field_active,field_rejected,field_committed,field_running
 );
  wire cv,cr,pv,pr,pdone,pok,pc,pe,rv,rr,hv,eof;
  wire [7:0] cmd,parser_error;wire [63:0] ep,arg,active_epoch,end_time,last_time;
@@ -19,13 +22,39 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
  wire [15:0] last_group_cycles;wire [63:0] player_epoch;
  wire [31:0] inserted,consumed;
  wire preview_valid;wire [63:0] preview_time;wire [127:0] preview_notes;
+ wire field_cv,field_cr,field_rv,field_rr,field_hv,field_eof,field_internal_ready;
+ assign field_ready=field_internal_ready&&!cv;
+ wire [7:0] field_cmd;wire [63:0] field_ep,field_arg,field_verified;
+ wire [127:0] field_record;wire [8:0] field_visible;wire [5:0] field_voices;
+ wire player_cv=field_active?field_cv:cv;
+ wire [7:0] player_cmd=field_active?field_cmd:cmd;
+ wire [63:0] player_ep=field_active?field_ep:ep,player_arg=field_active?field_arg:arg;
+ wire player_cr;
+ assign cr=player_cr&&!field_active;
+ assign field_cr=player_cr&&field_active;
+ assign field_rr=mready&&field_active;
+ wire fifo_ready=mready&&!field_active;
+ generate if(ENABLE_S11)begin: field_enabled
+  s11_field_test_source field(.clk(clk),.rst(rst),.request_valid(field_valid&&!cv),
+   .request_start(field_start),.request_size(field_size),.request_ready(field_internal_ready),
+   .player_state(score_state),.player_epoch(player_epoch),.player_ctrl_ready(field_cr),.parser_clear(pc),
+   .active(field_active),.rejected(field_rejected),.committed(field_committed),.running(field_running),.ctrl_valid(field_cv),.ctrl_cmd(field_cmd),
+   .ctrl_epoch(field_ep),.ctrl_arg(field_arg),.header_valid(field_hv),.eof_seen(field_eof),
+   .last_verified_time(field_verified),.record_valid(field_rv),.record_ready(field_rr),
+   .record_data(field_record),.visible_records(field_visible),.voice_count(field_voices));
+ end else begin: no_field
+  assign field_internal_ready=0;assign field_committed=0;assign field_running=0;assign field_active=0;assign field_rejected=0;
+  assign field_cv=0;assign field_cmd=0;assign field_ep=0;assign field_arg=0;
+  assign field_hv=0;assign field_eof=0;assign field_verified=0;
+  assign field_rv=0;assign field_record=0;assign field_visible=0;assign field_voices=0;
+ end endgenerate
  wire clear=pc||(cv&&cr&&(cmd==3||cmd==6||cmd==7));
- score_spi_transport #(.WATCHDOG_CLOCKS(WATCHDOG_CLOCKS)) transport(
+ score_spi_transport #(.WATCHDOG_CLOCKS(WATCHDOG_CLOCKS),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_FIELD(ENABLE_S11)) transport(
   .clk(clk),.rst(rst),.spi_sck(spi_sck),.fpga_cs_n(fpga_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
-  .spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.ctrl_valid(cv),.ctrl_ready(cr),.ctrl_cmd(cmd),.ctrl_epoch(ep),.ctrl_arg(arg),
+  .spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.observe_status_bytes(observe_score_status),.ctrl_valid(cv),.ctrl_ready(cr),.ctrl_cmd(cmd),.ctrl_epoch(ep),.ctrl_arg(arg),
   .page_valid(pv),.page_ready(pr),.page_sequence(seq),.page_done(pdone),.page_ok(pok),.page_addr(addr),.page_data(data),
   .player_state(score_state),.player_error(score_error),.reload_request(reload_request),.active_epoch(active_epoch),
-  .accepted_pages(accepted_pages),.rejected_transactions(rejected_transactions),.cs_conflicts(cs_conflicts),.link_timeout(link_timeout));
+  .accepted_pages(accepted_pages),.rejected_transactions(rejected_transactions),.cs_conflicts(cs_conflicts),.link_timeout(link_timeout),.field_busy(field_active));
  score_file_parser parser(
   .clk(clk),.rst(rst),.clear(clear),.enable(pe),.page_valid(pv),.page_ready(pr),.page_sequence(seq),
   .page_done(pdone),.page_ok(pok),.page_addr(addr),.page_data(data),
@@ -33,12 +62,12 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
   .end_time(end_time),.last_verified_time(last_time),.total_records(total_records),.parsed_records(parsed_records),.error_code(parser_error));
  score_record_fifo records(
   .clk(clk),.rst(rst),.clear(clear),.s_valid(rv),.s_ready(rr),.s_record(record_in),
-  .m_valid(mvalid),.m_ready(mready),.m_record(record_out),.occupancy(occupancy),.visible_records(visible),
+  .m_valid(mvalid),.m_ready(fifo_ready),.m_record(record_out),.occupancy(occupancy),.visible_records(visible),
   .inserted(inserted),.consumed(consumed),.preview_valid(preview_valid),.preview_time(preview_time),.preview_notes(preview_notes));
  score_sequencer #(.TOKEN_WIDTH(TOKEN_WIDTH)) player(
-  .clk(clk),.rst(rst),.sample_tick(sample_tick),.stereo_locked(stereo_locked),.ctrl_valid(cv),.ctrl_ready(cr),
-  .ctrl_cmd(cmd),.ctrl_epoch(ep),.ctrl_arg(arg),.header_valid(hv),.eof_seen(eof),.last_verified_time(last_time),.parser_error(parser_error),
-  .parser_clear(pc),.parser_enable(pe),.record_valid(mvalid),.record_ready(mready),.record_data(record_out),.visible_records(visible),
+  .clk(clk),.rst(rst),.sample_tick(sample_tick),.stereo_locked(stereo_locked),.ctrl_valid(player_cv),.ctrl_ready(player_cr),
+  .ctrl_cmd(player_cmd),.ctrl_epoch(player_ep),.ctrl_arg(player_arg),.header_valid(field_active?field_hv:hv),.eof_seen(field_active?field_eof:eof),.last_verified_time(field_active?field_verified:last_time),.parser_error(field_active?8'd0:parser_error),
+  .parser_clear(pc),.parser_enable(pe),.record_valid(field_active?field_rv:mvalid),.record_ready(mready),.record_data(field_active?field_record:record_out),.visible_records(field_active?field_visible:visible),
   .local_backlog(local_backlog),.event_valid(event_valid),.event_ready(event_ready),.event_packet(event_packet),.dispatch_done(dispatch_done),
   .state(score_state),.error_code(score_error),.music_time(score_time),.epoch(player_epoch),
   .logical_held(logical_held),.logical_notes(logical_notes),.logical_pressures(logical_pressures),.guide_held(guide_held),.guide_notes(guide_notes),.reload_request(reload_request),

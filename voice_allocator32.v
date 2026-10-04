@@ -21,7 +21,30 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     output reg [7:0] vibrato_depth,
     output reg protocol_error,
     output reg [31:0] steal_count, stale_count, allocation_count,
-    output reg [31:0] reclaim_count, id_collision_skip_count, id_wrap_count
+    output reg [31:0] reclaim_count, id_collision_skip_count, id_wrap_count,
+    // Read-only publication/identity export. No observer feeds allocator state.
+    output wire observe_publish,
+    output wire [127:0] observe_sources,
+    output wire [255:0] observe_keys,
+    output wire [2047:0] observe_tokens,
+    // Stage11: passive decision taps, sampled on the ORIGINAL apply edge.
+    // outcome: 1 allocate, 2 off, 3 pitch/pressure, 4 vibrato, 5 stale,
+    // 6 invalid item. A working batch is durable only after publish_ok.
+    output wire observe_busy, observe_batch_begin, observe_publish_ok,
+    output wire observe_batch_abort, observe_apply_valid,
+    output wire [31:0] observe_batch_timestamp,
+    output wire [3:0] observe_apply_lane,
+    output wire [95:0] observe_apply_item,
+    output wire [7:0] observe_apply_outcome,
+    output wire [5:0] observe_apply_slot,
+    output wire [63:0] observe_apply_id,
+    output wire [15:0] observe_apply_generation,
+    output wire [2:0] observe_apply_timbre,
+    output wire observe_apply_steal,
+    output wire [63:0] observe_retired_id,
+    output wire [15:0] observe_retired_generation,
+    output wire [31:0] observe_reclaim_mask,
+    output wire [511:0] observe_reclaim_generations
 );
     reg valid_r[0:31], gate_r[0:31], trigger_r[0:31];
     // Working bank is updated one event lane per clock. Only the visible bank
@@ -34,6 +57,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     reg [ID_WIDTH-1:0] visible_id[0:31];
     reg [15:0] visible_generation[0:31];
     reg [2:0] visible_timbre[0:31];
+    reg [63:0] visible_token_observe[0:31];
     reg [3:0] source_r[0:31];
     reg [7:0] key_r[0:31], pressure_r[0:31];
     reg [6:0] note_r[0:31];
@@ -77,6 +101,43 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
     wire [ID_WIDTH-1:0] after_id=(next_id=={ID_WIDTH{1'b1}}) ?
         {{(ID_WIDTH-1){1'b0}},1'b1} : next_id+1'b1;
     assign event_ready=!rst && !busy;
+    assign observe_publish=!rst && busy && lane==9;
+    wire observed_invalid=event_word[0] || (kind<1 || kind>4) ||
+        (kind==4 && (key!=8'hff || note!=0)) ||
+        (kind!=4 && item_token==0);
+    wire observed_allocation=kind==1 && !token_collision &&
+        wrap_holdoff==0 && next_id!=0 && !id_collision;
+    assign observe_busy=busy;
+    assign observe_batch_begin=!rst && !panic && !protocol_error && !busy &&
+        event_valid && event_packet[872:864]!=0;
+    assign observe_publish_ok=observe_publish && !panic && !protocol_error;
+    assign observe_batch_abort=!rst && busy &&
+        (panic || protocol_error || (lane<9 && lane_enabled && observed_invalid));
+    assign observe_apply_valid=!rst && !panic && !protocol_error && busy &&
+        lane<9 && lane_enabled && (observed_invalid || kind!=1 ||
+                                 token_collision || observed_allocation);
+    assign observe_batch_timestamp=packet[904:873];
+    assign observe_apply_lane=lane;
+    assign observe_apply_item=item;
+    assign observe_apply_outcome=observed_invalid?8'd6:
+        ((kind==1 && token_collision) || (kind!=1 && kind!=4 && !found_target))?8'd5:
+        {4'd0,kind};
+    assign observe_apply_slot=kind==1?victim:((kind==4 || !found_target)?6'd63:target);
+    assign observe_apply_id=kind==1?{{(64-ID_WIDTH){1'b0}},next_id}:
+        ((kind==4 || !found_target)?64'd0:{{(64-ID_WIDTH){1'b0}},id_r[target]});
+    assign observe_apply_generation=kind==1?generation_r[victim]+1'b1:
+        ((kind==4 || !found_target)?16'd0:generation_r[target]);
+    assign observe_apply_timbre=kind==1?timbre_id:
+        ((kind==4 || !found_target)?3'd0:timbre_r[target]);
+    assign observe_apply_steal=observe_apply_valid && !observed_invalid && observed_allocation && !found_free;
+    assign observe_retired_id={{(64-ID_WIDTH){1'b0}},id_r[victim]};
+    assign observe_retired_generation=generation_r[victim];
+    generate for(genvar observe_g=0;observe_g<32;observe_g=observe_g+1) begin: observe_reclaims
+        assign observe_reclaim_mask[observe_g]=!rst && done_mask[observe_g] &&
+            valid_r[observe_g] && !gate_r[observe_g] &&
+            done_ids[observe_g*64 +:64]=={{(64-ID_WIDTH){1'b0}},id_r[observe_g]};
+        assign observe_reclaim_generations[observe_g*16+:16]=generation_r[observe_g];
+    end endgenerate
     always @* begin
         victim=0;found_free=0;found_release=0;
         lowest_level=17'h1ffff;oldest_age={64{1'b1}};
@@ -132,6 +193,9 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
         assign slot_ids[g*64 +:64]={{(64-ID_WIDTH){1'b0}},visible_id[g]};
         assign slot_generations[g*16 +:16]=visible_generation[g];
         assign slot_timbres[g*3 +:3]=visible_timbre[g];
+        assign observe_sources[g*4 +:4]=visible_source[g];
+        assign observe_keys[g*8 +:8]=visible_key[g];
+        assign observe_tokens[g*64 +:64]=visible_token_observe[g];
     end endgenerate
     always @(posedge clk) begin
         if (rst) begin
@@ -148,6 +212,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
                 visible_note[i]<=0;visible_pressure[i]<=0;
                 visible_source[i]<=0;visible_key[i]<=0;
                 visible_id[i]<=0;visible_generation[i]<=0;
+                visible_token_observe[i]<=0;
             end
         end else begin
             if (wrap_holdoff!=0) wrap_holdoff<=wrap_holdoff-1'b1;
@@ -164,6 +229,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64) (
                     visible_id[i]<=id_r[i];
                     visible_generation[i]<=generation_r[i];
                     visible_timbre[i]<=timbre_r[i];
+                    visible_token_observe[i]<=token_r[i];
                 end
             end
             if (sample_tick) for (i=0;i<32;i=i+1) begin

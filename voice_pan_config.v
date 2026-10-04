@@ -12,7 +12,8 @@ module voice_pan_config (
     output reg [287:0] snapshot_pan,
     output reg [2047:0] snapshot_ids,
     output reg [511:0] snapshot_generations,
-    output reg [31:0] accepted_count,stale_count,invalid_count
+    output reg [31:0] accepted_count,stale_count,invalid_count,
+    output wire [287:0] observe_current_pan
 );
     reg [31:0] owned;
     reg [8:0] value[0:31];
@@ -21,6 +22,7 @@ module voice_pan_config (
     wire [31:0] current;
     genvar g;
     generate for(g=0;g<32;g=g+1) begin: tags
+        assign observe_current_pan[g*9+:9]=current[g]?value[g]:9'd128;
         assign current[g]=owned[g] && slot_valid[g] &&
             owner[g]==slot_ids[g*64 +:64] && generation[g]==slot_generations[g*16 +:16];
     end endgenerate

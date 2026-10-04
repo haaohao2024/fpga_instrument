@@ -6,12 +6,22 @@ module master_gain_config (
     input wire [15:0] cfg_local_gain,cfg_external_gain,
     input wire cfg_local_mute,cfg_external_mute,
     output reg [15:0] local_gain,external_gain,
-    output reg [31:0] accepted_count,rejected_count
+    output reg [31:0] accepted_count,rejected_count,
+    output reg [31:0] observe_frame_version,
+    output wire [6:0] observe_remaining,
+    output wire [103:0] observe_state
 );
     reg pending;
     reg [15:0] pending_l,pending_e,target_l,target_e;
     reg [6:0] remaining;
     reg signed [31:0] delta_l,delta_e;
+    assign observe_remaining=remaining;
+    assign observe_state={pending,remaining,observe_frame_version,pending_l,pending_e,target_l,target_e};
+    // Read-only identity of the configuration actually consumed on a tick.
+    always @(posedge clk)begin
+        if(rst)observe_frame_version<=0;
+        else if(sample_tick && pending)observe_frame_version<=accepted_count;
+    end
     always @(posedge clk)begin
         if(rst)begin
             local_gain<=32768;external_gain<=32768;

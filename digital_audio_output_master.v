@@ -25,7 +25,14 @@ module digital_audio_output_master #(
     output reg deadline_error,
     output wire observe_load,
     output wire signed [15:0] observe_l,observe_r,
-    output wire [2:0] observe_stream_state
+    output wire [2:0] observe_stream_state,
+    output wire [11:0] observe_stream_buffered,
+    output wire [31:0] observe_stream_generation,
+    output wire observe_gain_sample,
+    output wire [31:0] observe_gain_frame,observe_gain_version,observe_gain_accepted,
+    output wire [15:0] observe_gain_l,observe_gain_e,
+    output wire [6:0] observe_gain_remaining,
+    output wire [103:0] observe_gain_state
 );
     wire signed [15:0] pcm_l,pcm_r;
     wire pcm_valid,pcm_ready;
@@ -38,11 +45,16 @@ module digital_audio_output_master #(
     wire [2:0] stream_state;
     assign observe_stream_state=stream_state;
     wire [11:0] buffered;
+    assign observe_stream_buffered=buffered;
     wire [32:0] rate_q32;
     wire [31:0] phase_q32,accepted_count,consumed_count,discard_count,stale_count,conceal_count,backpressure_count,rejected_control_count;
     wire [31:0] gain_accepted,gain_rejected;
     wire input_error,master_error;
+    assign observe_gain_sample=external_sample_valid;
+    assign observe_gain_accepted=gain_accepted;
+    assign observe_gain_l=local_gain;assign observe_gain_e=external_gain;
     reg [31:0] frame_number,active_frame;
+    assign observe_gain_frame=active_frame;
     reg [10:0] age;
     reg frame_active,have_external,have_local,have_pcm;
     reg signed [31:0] cached_l,cached_r;
@@ -55,14 +67,15 @@ module digital_audio_output_master #(
         .pcm_valid(external_valid),.pcm_ready(external_ready),.pcm_l(external_l),.pcm_r(external_r),.pcm_epoch(external_epoch),
         .sample_l_q16(external_l_q16),.sample_r_q16(external_r_q16),.stream_gain(stream_gain),
         .sample_valid(external_sample_valid),.sample_frame(external_frame),.sample_epoch(sample_epoch),.sample_generation(external_generation),
-        .state(stream_state),.buffered(buffered),.rate_q32(rate_q32),.phase_q32(phase_q32),
+        .state(stream_state),.buffered(buffered),.observe_generation(observe_stream_generation),.rate_q32(rate_q32),.phase_q32(phase_q32),
         .accepted_count(accepted_count),.consumed_count(consumed_count),.discard_count(discard_count),
         .stale_count(stale_count),.underflow_count(external_underflow_count),.conceal_count(conceal_count),
         .backpressure_count(backpressure_count),.rejected_control_count(rejected_control_count),.protocol_error(input_error));
     master_gain_config u_gain(.clk(clk),.rst(rst),.sample_tick(sample_tick),.cfg_valid(gain_cfg_valid),
         .cfg_local_gain(gain_cfg_local),.cfg_external_gain(gain_cfg_external),
         .cfg_local_mute(gain_cfg_local_mute),.cfg_external_mute(gain_cfg_external_mute),
-        .local_gain(local_gain),.external_gain(external_gain),.accepted_count(gain_accepted),.rejected_count(gain_rejected));
+        .local_gain(local_gain),.external_gain(external_gain),.accepted_count(gain_accepted),.rejected_count(gain_rejected),
+        .observe_state(observe_gain_state),.observe_frame_version(observe_gain_version),.observe_remaining(observe_gain_remaining));
     wire signed [63:0] master_l,master_r;
     wire master_valid;
     wire [31:0] master_frame;

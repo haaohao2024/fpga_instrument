@@ -1,8 +1,9 @@
 // 50MHz oversampled Mode0 shared-SPI slave. RAM content is never reset.
 // A page is visible only after both complete transaction and CRC validation.
-module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
+module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0)(
  input wire clk,rst,spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
+ output wire [255:0] observe_status_bytes,
  output reg ctrl_valid, input wire ctrl_ready,
  output reg [7:0] ctrl_cmd, output reg [63:0] ctrl_epoch,ctrl_arg,
  output reg page_valid,input wire page_ready,
@@ -13,6 +14,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
  output reg [63:0] active_epoch,
  output reg [31:0] accepted_pages,rejected_transactions,cs_conflicts,
  output reg link_timeout
+ ,input wire field_busy
 );
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
@@ -27,6 +29,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
  reg [2:0] bit_count;reg [7:0] rx_shift;
  reg [8:0] tx_index;
  reg in_transaction,bad,ram_available,page_busy;
+ reg transaction_s10;
  reg [63:0] pending_epoch;
  reg [31:0] pending_sequence;
  reg [31:0] watchdog;
@@ -36,6 +39,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
  wire [63:0] epoch=header[127:64],argument=header[255:192];
  wire [31:0] request_sequence=header[159:128];
  wire [15:0] length=header[175:160];
+ assign observe_status_bytes=status_tmp;
  assign spi_miso_oe=!rst&&!fpga_cs_n&&sd_cs_n&&in_transaction&&!bad&&tx_index<256;
  assign spi_miso=(tx_index<256)?response[255-tx_index]:1'b0;
  always @(*)begin
@@ -53,13 +57,13 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
   page_data<=memory[page_addr];
   if(rst)begin
    ss<=0;cs<=7;ds<=3;ms<=0;ctrl_valid<=0;page_valid<=0;page_busy<=0;
-   header<=0;response<=0;rx_crc<=32'hffffffff;footer<=0;last_sequence<=32'hffffffff;
+   transaction_s10<=0;header<=0;response<=0;rx_crc<=32'hffffffff;footer<=0;last_sequence<=32'hffffffff;
    byte_count<=0;bit_count<=0;tx_index<=0;expected_bytes<=36;in_transaction<=0;bad<=0;
    active_epoch<=0;accepted_pages<=0;rejected_transactions<=0;cs_conflicts<=0;
    watchdog<=0;link_timeout<=0;pending_epoch<=0;pending_sequence<=0;
    ctrl_cmd<=0;ctrl_epoch<=0;ctrl_arg<=0;page_sequence<=0;ram_available<=0;rx_shift<=0;
   end else begin
-   if(active_epoch!=0&&player_state!=0)begin
+   if(active_epoch!=0&&player_state!=0&&!(ENABLE_FIELD&&field_busy))begin
     if(watchdog<WATCHDOG_CLOCKS)watchdog<=watchdog+1;
     else if(!ctrl_valid)begin ctrl_valid<=1;ctrl_cmd<=7;ctrl_epoch<=active_epoch;ctrl_arg<=0;link_timeout<=1;end
    end
@@ -74,7 +78,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
     else rejected_transactions<=rejected_transactions+1;
    end
    if(select_start)begin
-    in_transaction<=1;header<=0;footer<=0;byte_count<=0;bit_count<=0;rx_shift<=0;tx_index<=0;
+    in_transaction<=1;transaction_s10<=0;header<=0;footer<=0;byte_count<=0;bit_count<=0;rx_shift<=0;tx_index<=0;
     expected_bytes<=36;rx_crc<=32'hffffffff;bad<=!ds[1];ram_available<=!page_busy&&page_ready;
     // Reverse byte order for wire MSB-first, without reversing bits within a byte.
     for(j=0;j<32;j=j+1)response[255-j*8-:8]<=status_tmp[j*8+:8];
@@ -87,10 +91,13 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
      if(byte_count<32)begin
       header[byte_count*8+:8]<=next_byte;
       rx_crc<=crcbyte(rx_crc,next_byte);
-      if(byte_count==31)begin
+      if(ENABLE_S10_ROUTE && byte_count==3 && ({next_byte,header[23:0]}==32'h50303153||{next_byte,header[23:0]}==32'h50313153))transaction_s10<=1;
+      if(byte_count==31 && !transaction_s10)begin
        if(header[175:160]>512)bad<=1;
        else expected_bytes<=36+header[175:160];
       end
+     end else if(transaction_s10)begin
+      // S10 owns this transaction. Never write the score RAM or commit a score command.
      end else if(byte_count<expected_bytes-4)begin
       rx_crc<=crcbyte(rx_crc,next_byte);
       if(ram_available&&byte_count<544)memory[byte_count-32]<=next_byte;
@@ -102,10 +109,12 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000)(
    if(in_transaction&&fall&&tx_index<256)tx_index<=tx_index+1;
    if(select_end&&in_transaction)begin
     in_transaction<=0;
-    if(bad||bit_count!=0||byte_count!=expected_bytes||footer!=~rx_crc||
+    if(transaction_s10)begin end // new handler owns validation and diagnostics
+    else if(bad||bit_count!=0||byte_count!=expected_bytes||footer!=~rx_crc||
        header[31:0]!=32'h4b503753||header[39:32]!=1||header[63:48]!=0||header[191:176]!=0||
        (command==2 ? length!=512 : length!=0))rejected_transactions<=rejected_transactions+1;
     else if(command==8)watchdog<=0;
+    else if(ENABLE_FIELD&&field_busy)rejected_transactions<=rejected_transactions+1;
     else if(command==2)begin
      watchdog<=0;
      if(epoch!=active_epoch||active_epoch==0)rejected_transactions<=rejected_transactions+1;

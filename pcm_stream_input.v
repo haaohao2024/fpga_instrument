@@ -21,6 +21,7 @@ module pcm_stream_input (
     output reg [31:0] sample_generation,
     output reg [2:0] state,
     output wire [11:0] buffered,
+    output wire [31:0] observe_generation,
     output reg [32:0] rate_q32,
     output reg [31:0] phase_q32,
     output reg [31:0] accepted_count,consumed_count,discard_count,
@@ -56,6 +57,7 @@ module pcm_stream_input (
     wire missing=sample_tick && state==PLAY && look_count<(track_mode ? 2:1);
     wire flush=start_ok || stop_cmd || loss_cmd || missing;
     assign ctrl_ready=!rst && (ctrl_cmd!=0 || state==STOPPED);
+    assign observe_generation=generation;
     assign buffered=fifo_count+look_count+read_pending;
     assign pcm_ready=!rst && !command && !missing && (state==PREFILL || state==PLAY)
                      && (pcm_epoch!=epoch || fifo_ready);

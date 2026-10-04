@@ -1,0 +1,13 @@
+plugins {
+    id 'com.android.application' version '9.2.1' apply false
+}
+
+allprojects {
+    dependencyLocking { lockAllConfigurations() }
+}
+
+// Keep generated artifacts outside the formal source tree.
+def stage9BuildRoot = file(findProperty('instrumentBuildRoot') ?: 'C:/Users/Haobai/Documents/Codex/2026-09-24/new-chat-3/outputs/stage9b_20261002/android_build')
+allprojects {
+    layout.buildDirectory.set(new File(stage9BuildRoot, project == rootProject ? '_root' : project.name))
+}
