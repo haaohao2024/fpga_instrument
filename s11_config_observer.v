@@ -99,7 +99,7 @@ module s11_config_observer(
  reg [255:0] c;reg [63:0] pan_pid;
  reg [3:0] gain_phase;
  always @(*)begin
-  tx_cells=0;tx_count=0;
+   tx_cells=0;tx_count=0;index=0;
   if((inflight&&selected==1)||(!inflight&&initial_phase==1))begin
    tx_count=14;
    for(integer q=0;q<14;q=q+1)tx_cells[q*256+:256]=snapshot_cell(q,initial_state,initial_frame,initial_subcycle);

@@ -163,6 +163,9 @@ module instrument_io_stage11 #(
  .display_presented(display_presented),
  .display_processing_cycles(display_processing_cycles),
  .control_cs_n(control_cs_n),
+ // Direct field-test controls are not part of this I/O interface. App field
+ // commands retain their existing route through the Stage9 config bridge.
+ .field_valid(1'b0),.field_start(1'b0),.field_size(2'd0),
  .phone_link_state(phone_link_state),
  .phone_held_keys(phone_held_keys),
  .phone_rejected_transactions(phone_rejected_transactions),

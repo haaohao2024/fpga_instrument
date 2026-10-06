@@ -13,7 +13,7 @@ module score_guide(
  always @(*)begin
   used=0;permutation_ok=cfg_lead<=9600;
   for(i=0;i<8;i=i+1)begin if(used[cfg_order[i*3+:3]])permutation_ok=0;used[cfg_order[i*3+:3]]=1;end
-  current=0;upcoming=0;unmapped_count=0;
+  current=0;upcoming=0;unmapped_count=0;found=0;
   for(i=0;i<32;i=i+1)if(held[i])begin
    found=0;for(j=0;j<8;j=j+1)if(notes[i*7+:7]==local_notes[j*7+:7])begin current[j]=1;found=1;end
    if(!found)unmapped_count=unmapped_count+1;
