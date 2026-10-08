@@ -61,6 +61,11 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
  wire [143:0] reclaim_map_word[0:3],apply_lane_word[0:3],cfg_lane_word[0:3];
  reg [63:0] snapshot_runtime[0:31],snapshot_token[0:31],snapshot_payload[0:31];
  reg [15:0] snapshot_source_key[0:31];
+ // The entire immutable snapshot has one lifetime, from the original
+ // simultaneous START edge to reset/the next START. Reset its ownership,
+ // not all 6656 data bits. The directory masks the selected word while
+ // unowned; the serializer cannot enter a snapshot batch before START.
+ reg snapshot_initialized;
  reg [31:0] snapshot_valid,snapshot_gate;
  reg [63:0] snapshot_frame;reg [15:0] snapshot_subcycle;
  reg [5:0] snapshot_index;
@@ -357,6 +362,18 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
  wire map_publish=(active || stop_pending) && batch_tracking && publish_ok && staged_count<37;
  wire map_start=start_valid && !active && !arming && !pending && !tx_inflight && !allocator_busy && start_record_id!=0;
  always @(posedge clk)begin
+  if(rst)snapshot_initialized<=0;
+  else if(map_start)snapshot_initialized<=1;
+ end
+ generate for(genvar s=0;s<32;s=s+1)begin: capture_snapshot_bank
+  always @(posedge clk)if(!rst&&map_start)begin
+   snapshot_runtime[s]<=slot_ids[s*64+:64];snapshot_token[s]<=slot_tokens[s*64+:64];
+   snapshot_payload[s]<=event_payload(subcycle,slot_notes[s*7+:7],slot_pressures[s*8+:8],
+    slot_timbres[s*3+:3],slot_pans[s*9+:9],slot_generations[s*16+:16],s);
+   snapshot_source_key[s]<={4'd0,slot_sources[s*4+:4],slot_keys[s*8+:8]};
+  end
+ end endgenerate
+ always @(posedge clk)begin
   if(rst)begin map_initial<=32'hffffffff;map_bank_select<=0;map_dirty<=0;end
   else begin
    if(map_start)begin map_initial<=32'hffffffff;map_bank_select<=0;map_dirty<=0;end
@@ -398,7 +415,8 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
     RAM16SDP4 memory(.CLK(clk),.WRE(write_enable),.WAD(write_address),
      .RAD(read_address),.DI(write_word[b*4+:4]),.DO(stored_word[b*4+:4]));
    end
-   assign port_word[p]=initial_select[read_slot[p]]?initial_words[read_slot[p]]:stored_word;
+   assign port_word[p]=initial_select[read_slot[p]]?
+    (snapshot_initialized?initial_words[read_slot[p]]:144'd0):stored_word;
   end
   assign reclaim_map_word[l]=port_word[0];
   assign apply_lane_word[l]=port_word[1];
@@ -559,8 +577,6 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
    persistent_id_next<=33;
    for(i=0;i<32;i=i+1)begin
        
-    snapshot_runtime[i]<=0;snapshot_token[i]<=0;snapshot_payload[i]<=0;
-    snapshot_source_key[i]<=0;
     if(!SYNC_READ)saved_reclaim_pid[i]<=0;
     saved_reclaim_subcycles[i]<=0;
    end
@@ -586,14 +602,6 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
     batch_tracking<=batch_begin;reclaim_pending<=0;saved_reclaim_mask<=0;
     saved_reclaim_next_frame<=0;reclaim_settle<=0;
     published_batches<=0;aborted_batches<=0;applied_items<=0;initial_instances<=0;
-    for(i=0;i<32;i=i+1)begin
-       
-      
-     snapshot_runtime[i]<=slot_ids[i*64+:64];snapshot_token[i]<=slot_tokens[i*64+:64];
-     snapshot_payload[i]<=event_payload(subcycle,slot_notes[i*7+:7],slot_pressures[i*8+:8],
-       slot_timbres[i*3+:3],slot_pans[i*9+:9],slot_generations[i*16+:16],i);
-     snapshot_source_key[i]<={4'd0,slot_sources[i*4+:4],slot_keys[i*8+:8]};
-    end
     n=0;for(i=0;i<32;i=i+1)if(slot_valid[i])n=n+1;
     initial_instances<=n;
    end

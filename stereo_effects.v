@@ -3,7 +3,7 @@
 // Histories/feedback retain their fixed /8192 scale. Sum weighted returns before
 // alignment; preserve full dry precision. Equal aligned wet preserves dry PCM
 // differences only without saturation. Reassess if Master Mixer/gain changes.
-module stereo_effects #(parameter integer MIX_SHIFT=5) (
+module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
     input wire clk,rst,sample_tick,
     input wire signed [31:0] in_l_q8,in_r_q8,
     input wire in_valid,
@@ -158,12 +158,48 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
             default:begin end
         endcase
     end
+    // Two postprocessors serve mutually exclusive existing consumer edges.
+    // Cycle 60 (six concurrent outputs) and final mix at 96 stay independent.
+    reg signed [47:0] post_a0,post_a1,post_b0,post_b1;
+    reg [4:0] post_shift;
+    always @*begin
+        post_a0=0;post_a1=0;post_b0=mq0;post_b1=mq1;post_shift=15;
+        case(cycle)
+            1:begin post_b0=dry_l;post_b1=dry_r;post_shift=13;end
+            11:begin post_a0=$signed(d_first[0])*48'sd1024;post_a1=$signed(d_first[1])*48'sd1024;post_shift=10;end
+            15:begin post_a0=d_input_product[0];post_a1=d_input_product[1];end
+            39:begin post_a0=$signed(c_floor[0])*48'sd65536;post_a1=$signed(c_floor[1])*48'sd65536;post_shift=16;end
+            41:begin post_a0=$signed(c_floor[2])*48'sd65536;post_a1=$signed(c_floor[3])*48'sd65536;post_shift=16;end
+            44:begin post_a0=$signed(c_interp[0])*48'sd1024;post_a1=$signed(c_interp[1])*48'sd1024;post_shift=10;end
+            64,65,66,67:begin post_a0=mq1;end
+            89:begin post_a0=r_tone_input[0];post_a1=r_tone_input[1];end
+            92,93,94:post_shift=2;
+            default:begin end
+        endcase
+    end
+    wire signed [47:0] post_sum0=post_a0+post_b0,post_sum1=post_a1+post_b1;
+    wire signed [47:0] post_abs0=post_sum0<0?-post_sum0:post_sum0;
+    wire signed [47:0] post_abs1=post_sum1<0?-post_sum1:post_sum1;
+    reg signed [47:0] post_scaled0,post_scaled1;
+    always @*begin
+        case(post_shift)
+            2:begin post_scaled0=post_abs0>>>2;post_scaled1=post_abs1>>>2;end
+            10:begin post_scaled0=post_abs0>>>10;post_scaled1=post_abs1>>>10;end
+            13:begin post_scaled0=post_abs0>>>13;post_scaled1=post_abs1>>>13;end
+            16:begin post_scaled0=post_abs0>>>16;post_scaled1=post_abs1>>>16;end
+            default:begin post_scaled0=post_abs0>>>15;post_scaled1=post_abs1>>>15;end
+        endcase
+    end
+    wire signed [47:0] post_value0=post_sum0<0?-post_scaled0:post_scaled0;
+    wire signed [47:0] post_value1=post_sum1<0?-post_scaled1:post_scaled1;
+    wire signed [17:0] post_sat0=sat18(post_value0),post_sat1=sat18(post_value1);
+
     wire start=in_valid && !busy;
     fx_config_frame config_bank(.clk(clk),.rst(rst),.sample_tick(sample_tick),
         .cfg_valid(cfg_valid),.cfg_data(cfg_data),.frame_config(frame_config),
         .frame_clear(frame_clear),.frame_version(frame_version),
         .accepted_count(cfg_accepted),.rejected_count(cfg_rejected));
-    fx_frame_control control(.clk(clk),.rst(rst),.start(start),
+    fx_frame_control #(.SCHEDULED_CONTROL(SCHEDULED_CONTROL)) control(.clk(clk),.rst(rst),.start(start),.sample_tick(sample_tick),
         .config_data(frame_config),.clear_request(frame_clear),.values(controls),
         .clear_pulse(clear_pulse),.effective_bypass(effective_bypass));
     always @(posedge clk)begin
@@ -195,8 +231,8 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
                 case(cycle)
                     1:begin
                         if(clear_pulse[2])begin r_tone[0]<=0;r_tone[1]<=0;end
-                        calc0=trunc0(dry_l,13);calc1=trunc0(dry_r,13);
-                        input_l<=sat18(calc0);input_r<=sat18(calc1);
+                        calc0=post_value0;calc1=post_value1;
+                        input_l<=post_sat0;input_r<=post_sat1;
                         input_saturations<=input_saturations+(calc0>131071 || calc0< -131072)+(calc1>131071 || calc1< -131072);
                         if(clear_pulse[0])begin
                             d_old<=frame_config[45:32];d_new<=frame_config[45:32];d_position<=0;d_transition<=0;
@@ -214,23 +250,23 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
                         end else begin c_base_old<=c_base_new;c_depth_old<=c_depth_new;c_position<=0;c_transition<=0;end
                     end
                     7:begin
-                        d_send[0]<=trunc0(mq0,15);d_send[1]<=trunc0(mq1,15);
+                        d_send[0]<=post_value0;d_send[1]<=post_value1;
                         d_first[0]<=d_read_l;d_first[1]<=d_read_r;
                         if(!d_read_valid_l || !d_read_valid_r)protocol_error<=1;
                     end
                     8:begin d_second[0]<=d_read_l;d_second[1]<=d_read_r;end
                     11:begin
-                        d_wet[0]<=trunc0(($signed(d_first[0])*48'sd1024)+mq0,10);
-                        d_wet[1]<=trunc0(($signed(d_first[1])*48'sd1024)+mq1,10);
+                        d_wet[0]<=post_value0;
+                        d_wet[1]<=post_value1;
                     end
                     14:begin d_input_product[0]<=mq0;d_input_product[1]<=mq1;end
                     15:begin
-                        calc0=trunc0(d_input_product[0]+mq0,15);calc1=trunc0(d_input_product[1]+mq1,15);
-                        d_write[0]<=sat18(calc0);d_write[1]<=sat18(calc1);
+                        calc0=post_value0;calc1=post_value1;
+                        d_write[0]<=post_sat0;d_write[1]<=post_sat1;
                         history_saturations<=history_saturations+(calc0>131071 || calc0< -131072)+(calc1>131071 || calc1< -131072);
                     end
-                    19:begin c_send[0]<=trunc0(mq0,15);c_send[1]<=trunc0(mq1,15);end
-                    20:begin r_send[0]<=trunc0(mq0,15);r_send[1]<=trunc0(mq1,15);end
+                    19:begin c_send[0]<=post_value0;c_send[1]<=post_value1;end
+                    20:begin r_send[0]<=post_value0;r_send[1]<=post_value1;end
                     31:begin c_delay[0]<=({21'd0,c_base_old}<<16)+mq0;c_delay[1]<=({21'd0,c_base_old}<<16)+mq1;end
                     32:begin c_delay[2]<=({21'd0,c_base_new}<<16)+mq0;c_delay[3]<=({21'd0,c_base_new}<<16)+mq1;end
                     35:begin
@@ -241,16 +277,16 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
                     37:begin c_floor[2]<=c_read_l;c_floor[3]<=c_read_r;end
                     38:begin c_ceil[2]<=c_read_l;c_ceil[3]<=c_read_r;end
                     39:begin
-                        c_interp[0]<=trunc0($signed(c_floor[0])*48'sd65536+mq0,16);
-                        c_interp[1]<=trunc0($signed(c_floor[1])*48'sd65536+mq1,16);
+                        c_interp[0]<=post_value0;
+                        c_interp[1]<=post_value1;
                     end
                     41:begin
-                        c_interp[2]<=trunc0($signed(c_floor[2])*48'sd65536+mq0,16);
-                        c_interp[3]<=trunc0($signed(c_floor[3])*48'sd65536+mq1,16);
+                        c_interp[2]<=post_value0;
+                        c_interp[3]<=post_value1;
                     end
                     44:begin
-                        c_wet[0]<=trunc0($signed(c_interp[0])*48'sd1024+mq0,10);
-                        c_wet[1]<=trunc0($signed(c_interp[1])*48'sd1024+mq1,10);
+                        c_wet[0]<=post_value0;
+                        c_wet[1]<=post_value1;
                     end
                     46:c_phase<=c_phase+controls[319:288];
                     57:begin r_tap[0]<=r_read[0];r_tap[1]<=r_read[1];if(r_read_valid[1:0]!=2'b11)protocol_error<=1;end
@@ -266,14 +302,14 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
                         r_wet[1]<=trunc0($signed(r_tap[1])-$signed(r_tap[3]),1);
                     end
                     64,65,66,67:begin
-                        calc0=trunc0(mq0+mq1,15);r_write[cycle-64]<=sat18(calc0);
+                        calc0=post_value0;r_write[cycle-64]<=post_sat0;
                         history_saturations<=history_saturations+(calc0>131071 || calc0< -131072);
                     end
                     88:begin r_tone_input[0]<=mq0;r_tone_input[1]<=mq1;end
-                    89:begin r_tone[0]<=sat18(trunc0(r_tone_input[0]+mq0,15));r_tone[1]<=sat18(trunc0(r_tone_input[1]+mq1,15));end
-                    92:begin d_return[0]<=trunc0(mq0,2);d_return[1]<=trunc0(mq1,2);end
-                    93:begin c_return[0]<=trunc0(mq0,2);c_return[1]<=trunc0(mq1,2);end
-                    94:begin r_return[0]<=trunc0(mq0,2);r_return[1]<=trunc0(mq1,2);end
+                    89:begin r_tone[0]<=post_sat0;r_tone[1]<=post_sat1;end
+                    92:begin d_return[0]<=post_value0;d_return[1]<=post_value1;end
+                    93:begin c_return[0]<=post_value0;c_return[1]<=post_value1;end
+                    94:begin r_return[0]<=post_value0;r_return[1]<=post_value1;end
                     96:begin
                         // Keep the full signed48 sum; never quantize each effect separately.
                         calc0=d_return[0]+c_return[0]+r_return[0];calc1=d_return[1]+c_return[1]+r_return[1];
@@ -296,4 +332,22 @@ module stereo_effects #(parameter integer MIX_SHIFT=5) (
     // synthesis translate_off
     initial if(MIX_SHIFT<0 || MIX_SHIFT>23)$fatal(1,"Effects MIX_SHIFT must be 0..23");
     // synthesis translate_on
+endmodule
+
+module r11_fx_scheduled_probe #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
+    input wire clk,rst,sample_tick,
+    input wire signed [31:0] in_l_q8,in_r_q8,
+    input wire in_valid,
+    input wire cfg_valid,
+    input wire [351:0] cfg_data,
+    output reg signed [31:0] out_l_q8,out_r_q8,
+    output reg out_valid,
+    output reg protocol_error,
+    output reg [31:0] frame_count,
+    output wire [31:0] cfg_accepted,cfg_rejected,
+    output wire effective_bypass,
+    output wire [351:0] observe_config,
+    output wire [31:0] observe_version
+);
+stereo_effects #(.MIX_SHIFT(MIX_SHIFT),.SCHEDULED_CONTROL(1)) impl(.clk(clk),.rst(rst),.sample_tick(sample_tick),.in_l_q8(in_l_q8),.in_r_q8(in_r_q8),.in_valid(in_valid),.cfg_valid(cfg_valid),.cfg_data(cfg_data),.out_l_q8(out_l_q8),.out_r_q8(out_r_q8),.out_valid(out_valid),.protocol_error(protocol_error),.frame_count(frame_count),.cfg_accepted(cfg_accepted),.cfg_rejected(cfg_rejected),.effective_bypass(effective_bypass),.observe_config(observe_config),.observe_version(observe_version));
 endmodule

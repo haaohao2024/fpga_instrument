@@ -127,7 +127,7 @@ module instrument_core_stage7 #(
 );
     wire [7:0] vibrato_depth;
     wire [31:0] slot_valid,slot_gate,slot_trigger;
-    wire [31:0] slot_cancel;
+    wire [31:0] slot_cancel,working_public_equal;
     wire [223:0] slot_notes;
     wire [255:0] slot_pressures;
     wire [2047:0] slot_ids,done_ids;
@@ -277,6 +277,7 @@ module instrument_core_stage7 #(
         .occupancy(event_queue_occupancy)
     );
     voice_allocator32 #(.ONE_RECLAIM_PER_LANE(1)) u_event_dispatch (
+        .observe_working_public_equal(working_public_equal),
         .clk(clk), .rst(rst), .panic(event_fault),
         .event_valid(event_valid), .event_ready(event_ready), .event_packet(event_packet),
         .timbre_id(timbre_id),
@@ -310,7 +311,10 @@ module instrument_core_stage7 #(
         .observe_publish(observe_allocator_publish),.observe_sources(observe_slot_sources),
         .observe_keys(observe_slot_keys),.observe_tokens(observe_slot_tokens)
     );
-    poly_synth_mixer32_stage3 #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) u_poly (
+    poly_synth_mixer32_owner_directory #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) u_poly (
+        .owner_allocate(observe_apply_valid&&observe_apply_outcome==1),.owner_publish(observe_allocator_publish),
+        .owner_allocate_slot(observe_apply_slot[4:0]),.owner_allocate_id(observe_apply_id),
+        .owner_allocate_generation(observe_apply_generation),.working_public_equal(working_public_equal),
         .clk(clk), .rst(rst), .sample_tick(frame_pulse),
         .slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),
         .slot_cancel(slot_cancel),
@@ -349,7 +353,7 @@ module instrument_core_stage7 #(
     assign observe_fx_bypass=fx_bypass;
     wire [31:0] fx_frames,fx_cfg_accepted,fx_cfg_rejected;
     assign observe_fx_accepted=fx_cfg_accepted;
-    stereo_effects #(.MIX_SHIFT(MIX_SHIFT)) u_effects(
+    stereo_effects #(.MIX_SHIFT(MIX_SHIFT),.SCHEDULED_CONTROL(1)) u_effects(
         .clk(clk),.rst(rst),.sample_tick(frame_pulse),
         .in_l_q8(mix_l_q8),.in_r_q8(mix_r_q8),.in_valid(mix_valid),
         .cfg_valid(fx_cfg_valid),.cfg_data(fx_cfg_data),
@@ -385,4 +389,68 @@ module instrument_core_stage7 #(
         end
     end endgenerate
     // synthesis translate_on
+endmodule
+
+// One system-clock event per cycle from a latched nine-lane batch.
+// NOTE_OFF and expression match source/key/press_token, never pitch.
+// Instance zero is invalid. ID_WIDTH can be reduced in TB to exercise wrap.
+module r12_owner_audio_probe #(parameter integer ID_WIDTH=64, ONE_RECLAIM_PER_LANE=1, OWNER_DIRECTORY=1) (
+    input wire clk, rst, panic, sample_tick,
+    input wire event_valid,
+    output wire event_ready,
+    input wire [904:0] event_packet,
+    // Configuration is sampled only when a NOTE_ON actually allocates a slot.
+    input wire [2:0] timbre_id,
+    output wire [543:0] envelope_levels,
+    output wire [31:0] done_mask,
+    output wire [2047:0] done_ids,
+    output wire [31:0] slot_valid, slot_gate, slot_trigger,
+    output wire [31:0] slot_cancel,
+    output wire [223:0] slot_notes,
+    output wire [255:0] slot_pressures,
+    output wire [2047:0] slot_ids,
+    output wire [511:0] slot_generations,
+    output wire [95:0] slot_timbres,
+    output reg [7:0] vibrato_depth,
+    output reg protocol_error,
+    output reg [31:0] steal_count, stale_count, allocation_count,
+    output reg [31:0] reclaim_count, id_collision_skip_count, id_wrap_count,
+    // Read-only publication/identity export. No observer feeds allocator state.
+    output wire [31:0] observe_working_public_equal,
+    output wire observe_publish,
+    output wire [127:0] observe_sources,
+    output wire [255:0] observe_keys,
+    output wire [2047:0] observe_tokens,
+    // Stage11: passive decision taps, sampled on the ORIGINAL apply edge.
+    // outcome: 1 allocate, 2 off, 3 pitch/pressure, 4 vibrato, 5 stale,
+    // 6 invalid item. A working batch is durable only after publish_ok.
+    output wire observe_busy, observe_batch_begin, observe_publish_ok,
+    output wire observe_batch_abort, observe_apply_valid,
+    output wire [31:0] observe_batch_timestamp,
+    output wire [3:0] observe_apply_lane,
+    output wire [95:0] observe_apply_item,
+    output wire [7:0] observe_apply_outcome,
+    output wire [5:0] observe_apply_slot,
+    output wire [63:0] observe_apply_id,
+    output wire [15:0] observe_apply_generation,
+    output wire [2:0] observe_apply_timbre,
+    output wire observe_apply_steal,
+    output wire [63:0] observe_retired_id,
+    output wire [15:0] observe_retired_generation,
+    output wire [31:0] observe_reclaim_mask,
+    output wire [511:0] observe_reclaim_generations,
+    output wire [23:0] mix_sample,output wire mix_valid,
+    output wire [95:0] envelope_states,output wire [575:0] voice_samples,
+    output wire [3:0] completion_valid,completion_accept,lane_deadline_error,
+    output wire [11:0] completion_slot,output wire [71:0] completion_sample,
+    output wire [255:0] completion_id,output wire [63:0] completion_generation
+);
+voice_allocator32 #(.ID_WIDTH(ID_WIDTH),.ONE_RECLAIM_PER_LANE(1)) allocator(.clk(clk),.rst(rst),.panic(panic),.sample_tick(sample_tick),.event_valid(event_valid),.event_ready(event_ready),.event_packet(event_packet),.timbre_id(timbre_id),.envelope_levels(envelope_levels),.done_mask(done_mask),.done_ids(done_ids),.slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),.slot_cancel(slot_cancel),.slot_notes(slot_notes),.slot_pressures(slot_pressures),.slot_ids(slot_ids),.slot_generations(slot_generations),.slot_timbres(slot_timbres),.vibrato_depth(vibrato_depth),.protocol_error(protocol_error),.steal_count(steal_count),.stale_count(stale_count),.allocation_count(allocation_count),.reclaim_count(reclaim_count),.id_collision_skip_count(id_collision_skip_count),.id_wrap_count(id_wrap_count),.observe_working_public_equal(observe_working_public_equal),.observe_publish(observe_publish),.observe_sources(observe_sources),.observe_keys(observe_keys),.observe_tokens(observe_tokens),.observe_busy(observe_busy),.observe_batch_begin(observe_batch_begin),.observe_publish_ok(observe_publish_ok),.observe_batch_abort(observe_batch_abort),.observe_apply_valid(observe_apply_valid),.observe_batch_timestamp(observe_batch_timestamp),.observe_apply_lane(observe_apply_lane),.observe_apply_item(observe_apply_item),.observe_apply_outcome(observe_apply_outcome),.observe_apply_slot(observe_apply_slot),.observe_apply_id(observe_apply_id),.observe_apply_generation(observe_apply_generation),.observe_apply_timbre(observe_apply_timbre),.observe_apply_steal(observe_apply_steal),.observe_retired_id(observe_retired_id),.observe_retired_generation(observe_retired_generation),.observe_reclaim_mask(observe_reclaim_mask),.observe_reclaim_generations(observe_reclaim_generations));
+generate if(OWNER_DIRECTORY)begin: optimized
+poly_synth_mixer32_owner_directory #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) poly(.owner_allocate(observe_apply_valid&&observe_apply_outcome==1),.owner_publish(observe_publish),
+ .owner_allocate_slot(observe_apply_slot[4:0]),.owner_allocate_id(observe_apply_id),.owner_allocate_generation(observe_apply_generation),
+ .working_public_equal(observe_working_public_equal),.clk(clk),.rst(rst),.sample_tick(sample_tick),.slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),.slot_cancel(slot_cancel),.slot_notes(slot_notes),.slot_pressures(slot_pressures),.slot_ids(slot_ids),.slot_generations(slot_generations),.slot_timbres(slot_timbres),.vibrato_depth(vibrato_depth),.mix_sample(mix_sample),.mix_valid(mix_valid),.envelope_levels(envelope_levels),.envelope_states(envelope_states),.done_mask(done_mask),.done_ids(done_ids),.voice_samples(voice_samples),.completion_valid(completion_valid),.completion_accept(completion_accept),.completion_slot(completion_slot),.completion_sample(completion_sample),.completion_id(completion_id),.completion_generation(completion_generation),.lane_deadline_error(lane_deadline_error),.glide_code(4'd7));
+end else begin: baseline
+poly_synth_mixer32_stage3 #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) poly(.clk(clk),.rst(rst),.sample_tick(sample_tick),.slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),.slot_cancel(slot_cancel),.slot_notes(slot_notes),.slot_pressures(slot_pressures),.slot_ids(slot_ids),.slot_generations(slot_generations),.slot_timbres(slot_timbres),.vibrato_depth(vibrato_depth),.mix_sample(mix_sample),.mix_valid(mix_valid),.envelope_levels(envelope_levels),.envelope_states(envelope_states),.done_mask(done_mask),.done_ids(done_ids),.voice_samples(voice_samples),.completion_valid(completion_valid),.completion_accept(completion_accept),.completion_slot(completion_slot),.completion_sample(completion_sample),.completion_id(completion_id),.completion_generation(completion_generation),.lane_deadline_error(lane_deadline_error),.glide_code(4'd7));
+end endgenerate
 endmodule

@@ -41,6 +41,33 @@ module pcm_stream_input (
     wire [31:0] read_data;
     reg [15:0] fade_gain;
     reg [6:0] fade_remaining;
+    // A 64-sample fade subtracts q+1 for the first r samples, then q,
+    // where the starting gain is 64*q+r. This is exactly the original
+    // repeated ceil(gain/remaining), including restarts of an active fade.
+    reg [9:0] fade_decrement;
+    reg [5:0] fade_extra;
+    wire [15:0] fade_successor=fade_gain-{6'd0,fade_decrement}-(fade_extra!=0);
+    wire [15:0] restarted_fade_gain=(sample_tick && state==FADE && fade_remaining!=0)?fade_successor:fade_gain;
+    function signed [63:0] rate_correction(input signed [63:0] e);
+        reg [17:0] magnitude;
+        reg [53:0] product;
+        reg [22:0] quotient;
+        begin
+            // The original input is a 24-bit sum plus a 12-bit count minus
+            // 2097152, so its multiplication by 2^36 never overflows int64.
+            // Outside this interval the ORIGINAL result is already clamped.
+            if(e>64'sd256000)rate_correction=64'sd4294967;
+            else if(e< -64'sd256000)rate_correction=-64'sd4294967;
+            else begin
+                magnitude=e<0?-e:e;
+                // Exhaustively exact for every magnitude 0..256000:
+                // floor(m*2^18/15625)=floor(m*36028797019/2^31).
+                product=magnitude*36'd36028797019;
+                quotient=product[53:31];
+                rate_correction=e<0?-$signed({41'd0,quotient}):$signed({41'd0,quotient});
+            end
+        end
+    endfunction
     reg signed [31:0] last_l,last_r;
     reg [31:0] held_data;
     reg [63:0] held_epoch;
@@ -68,6 +95,10 @@ module pcm_stream_input (
         .in_valid(accepted),.in_data({pcm_l,pcm_r}),.in_ready(fifo_ready),
         .pop(take_read),.pop_ready(read_ready),.out_valid(read_valid),
         .out_data(read_data),.occupancy(fifo_count));
+    // synthesis translate_off
+    always @(posedge clk)if(!rst && state==PLAY && fade_remaining!=0)
+        if(fade_gain !== (64-fade_remaining)*512)$fatal(1,"PCM_PLAY_FADE_INVARIANT");
+    // synthesis translate_on
     integer j,nlook;
     reg [15:0] next_fade;
     reg signed [63:0] water_error,correction,target_rate,current_rate;
@@ -89,7 +120,7 @@ module pcm_stream_input (
         if(rst)begin
             state<=STOPPED;epoch<=0;epoch_used<=0;track_mode<=1;recover<=0;
             generation<=0;frame_number<=0;look_count<=0;read_pending<=0;
-            fade_gain<=0;fade_remaining<=0;last_l<=0;last_r<=0;
+            fade_gain<=0;fade_remaining<=0;fade_decrement<=0;fade_extra<=0;last_l<=0;last_r<=0;
             sample_l_q16<=0;sample_r_q16<=0;stream_gain<=0;sample_valid<=0;
             sample_frame<=0;sample_epoch<=0;sample_generation<=0;render_pipe<=0;
             rate_q32<=33'h100000000;phase_q32<=0;window_count<=0;window_sum<=0;
@@ -125,7 +156,9 @@ module pcm_stream_input (
                     last_l<=interpolated_l;last_r<=interpolated_r;
                     next_fade=fade_gain;
                     if(fade_remaining!=0)begin
-                        next_fade=fade_gain+(32768-fade_gain)/fade_remaining;
+                        // PLAY starts at gain=0, remaining=64 and never
+                        // restarts in PLAY: each exact original step is 512.
+                        next_fade=fade_gain+16'd512;
                         fade_remaining<=fade_remaining-1'b1;
                     end
                     fade_gain<=next_fade;stream_gain<=next_fade;
@@ -138,7 +171,7 @@ module pcm_stream_input (
                             // Q12 mean error -> Q32 rate correction; all
                             // arithmetic widened before products or shifts.
                             water_error=$signed({1'b0,window_sum})+$signed({1'b0,buffered})-64'sd2097152;
-                            correction=(water_error*64'sd68719476736)/64'sd4096000000;
+                            correction=rate_correction(water_error);
                             if(correction>4294967)correction=4294967;
                             if(correction< -4294967)correction=-4294967;
                             target_rate=64'sd4294967296+correction;
@@ -153,7 +186,8 @@ module pcm_stream_input (
                     next_fade=fade_gain;
                     if(fade_remaining!=0)begin
                         // Subtract ceiling so that the final endpoint is exact.
-                        next_fade=fade_gain-(fade_gain+fade_remaining-1)/fade_remaining;
+                        next_fade=fade_successor;
+                        if(fade_extra!=0)fade_extra<=fade_extra-1'b1;
                         fade_remaining<=fade_remaining-1'b1;
                     end
                     fade_gain<=next_fade;stream_gain<=next_fade;
@@ -179,9 +213,13 @@ module pcm_stream_input (
                 window_count<=0;window_sum<=0;
                 if(start_ok)begin
                     epoch<=ctrl_epoch;epoch_used<=1;track_mode<=ctrl_track;state<=PREFILL;
-                    fade_gain<=0;fade_remaining<=0;last_l<=0;last_r<=0;recover<=0;
+                    fade_gain<=0;fade_remaining<=0;fade_decrement<=0;fade_extra<=0;last_l<=0;last_r<=0;recover<=0;
                 end else begin
                     state<=FADE;fade_remaining<=64;recover<=!stop_cmd;
+                    // A same-edge FADE tick still updates fade_gain before
+                    // restarting remaining, exactly as the original NBAs.
+                    fade_decrement<=restarted_fade_gain[15:6];
+                    fade_extra<=restarted_fade_gain[5:0];
                     if(loss_cmd || missing)underflow_count<=underflow_count+1;
                     // If flush meets a tick, this very frame holds the last
                     // sample at current gain. The following 64 frames fade.

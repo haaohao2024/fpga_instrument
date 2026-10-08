@@ -23,6 +23,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64, ONE_RECLAIM_PER_LANE=0
     output reg [31:0] steal_count, stale_count, allocation_count,
     output reg [31:0] reclaim_count, id_collision_skip_count, id_wrap_count,
     // Read-only publication/identity export. No observer feeds allocator state.
+    output wire [31:0] observe_working_public_equal,
     output wire observe_publish,
     output wire [127:0] observe_sources,
     output wire [255:0] observe_keys,
@@ -46,16 +47,16 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64, ONE_RECLAIM_PER_LANE=0
     output wire [31:0] observe_reclaim_mask,
     output wire [511:0] observe_reclaim_generations
 );
-    // Four-state equality, factored into independent four-bit groups.
+    // Four-state equality, factored into explicitly retained two-bit groups.
     // A known mismatch in any group still resolves the result to zero even
     // when another group is unknown, exactly as Verilog logical equality.
     function equal64(input [63:0] a,b);
-        reg [15:0] matched;integer c;
-        begin for(c=0;c<16;c=c+1)matched[c]=(a[c*4+:4]==b[c*4+:4]);equal64=&matched;end
+        reg [31:0] matched /* synthesis syn_keep=1 */;integer c;
+        begin for(c=0;c<32;c=c+1)matched[c]=(a[c*2+:2]==b[c*2+:2]);equal64=&matched;end
     endfunction
     function equal16(input [15:0] a,b);
-        reg [3:0] matched;integer c;
-        begin for(c=0;c<4;c=c+1)matched[c]=(a[c*4+:4]==b[c*4+:4]);equal16=&matched;end
+        reg [7:0] matched /* synthesis syn_keep=1 */;integer c;
+        begin for(c=0;c<8;c=c+1)matched[c]=(a[c*2+:2]==b[c*2+:2]);equal16=&matched;end
     endfunction
     reg valid_r[0:31], gate_r[0:31], trigger_r[0:31];
     // Working bank is updated one event lane per clock. Only the visible bank
@@ -214,6 +215,7 @@ module voice_allocator32 #(parameter integer ID_WIDTH=64, ONE_RECLAIM_PER_LANE=0
     generate for (g=0;g<32;g=g+1) begin : pack_slots
         // A working-bank allocation may not yet be published. Its envelope
         // starts at zero; feedback for the previous visible owner is unrelated.
+        assign observe_working_public_equal[g]=equal64(id_r[g],visible_id[g]) && equal16(generation_r[g],visible_generation[g]);
         assign current_levels[g*17 +:17]=
             (equal64(id_r[g],visible_id[g]) &&
              equal16(generation_r[g],visible_generation[g])) ?

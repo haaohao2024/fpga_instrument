@@ -1,5 +1,133 @@
+// Formal audio producer provides the complete frame configuration at tick,
+// and the FX job starts only after all four lanes and the stereo mixer finish.
+// The scheduled implementation prepares 10 independent ramp states during
+// tick+1..tick+10 and commits EVERY public value on the original start edge.
+module fx_frame_control #(parameter integer SCHEDULED_CONTROL=0)(
+ input wire clk,rst,start,sample_tick,
+ input wire [351:0] config_data,input wire [2:0] clear_request,
+ output wire [319:0] values,output wire [2:0] clear_pulse,
+ output wire effective_bypass
+);
+ generate if(SCHEDULED_CONTROL)begin: scheduled
+  fx_frame_control_scheduled impl(.*);
+ end else begin: parallel_control
+  fx_frame_control_parallel impl(.clk(clk),.rst(rst),.start(start),.config_data(config_data),
+   .clear_request(clear_request),.values(values),.clear_pulse(clear_pulse),.effective_bypass(effective_bypass));
+ end endgenerate
+endmodule
+
+module fx_frame_control_scheduled(
+ input wire clk,rst,start,sample_tick,
+ input wire [351:0] config_data,input wire [2:0] clear_request,
+ output wire [319:0] values,output reg [2:0] clear_pulse,
+ output wire effective_bypass
+);
+ reg signed [31:0] current[0:9],prepared_current[0:9];
+ reg [9:0] context_valid;
+ reg [3:0] prep_slot;
+ reg prep_busy,prepared;
+ reg [2:0] clearing;
+ wire [99:0] context_word;
+ reg [99:0] next_context;
+ reg signed [31:0] next_current;
+ function [31:0] reset_current(input [3:0] s);
+  begin case(s)
+   6:reset_current=12288;7:reset_current=24576;
+   8:reset_current=16384;9:reset_current=71583;
+   default:reset_current=0;
+  endcase end
+ endfunction
+ wire signed [31:0] target=context_valid[prep_slot]?context_word[31:0]:reset_current(prep_slot);
+ wire signed [31:0] increment=context_valid[prep_slot]?context_word[63:32]:32'd0;
+ wire [10:0] residue=context_valid[prep_slot]?context_word[74:64]:11'd0;
+ wire [10:0] error_acc=context_valid[prep_slot]?context_word[85:75]:11'd0;
+ wire [10:0] remaining=context_valid[prep_slot]?context_word[96:86]:11'd0;
+ wire sign_down=context_valid[prep_slot]?context_word[97]:1'b0;
+ wire [31:0] old_current=current[prep_slot];
+ reg signed [31:0] desired,delta,step_v,next_v;
+ reg [31:0] magnitude;
+ reg [11:0] err_v;
+ reg down_v;
+ wire [10:0] ramp_length=prep_slot==9?11'd1024:11'd64;
+ wire [31:0] ramp_mask=prep_slot==9?32'd1023:32'd63;
+ always @*begin
+  if(prep_slot<3)desired=(!config_data[3]&&config_data[prep_slot]&&!clearing[prep_slot]&&!clear_request[prep_slot])?32768:0;
+  else if(prep_slot<6)desired=(!config_data[3]&&!clearing[prep_slot-3]&&!clear_request[prep_slot-3])?config_data[(prep_slot+5)*32+:32]:0;
+  else case(prep_slot)
+   6:desired=config_data[95:64];7:desired=config_data[223:192];
+   8:desired=config_data[255:224];default:desired=config_data[191:160];
+  endcase
+  next_context={2'd0,sign_down,remaining,error_acc,residue,increment,target};
+  next_current=old_current;
+  delta=desired-old_current;down_v=delta<0;magnitude=down_v?-delta:delta;
+  step_v=prep_slot==9?$signed(magnitude>>10):$signed(magnitude>>6);
+  if(down_v)step_v=-step_v;
+  err_v={1'b0,error_acc}+{1'b0,residue};
+  next_v=old_current+increment;
+  if(err_v>=ramp_length)begin next_v=next_v+(sign_down?-1:1);err_v=err_v-ramp_length;end
+  if(desired!=target)begin
+   next_current=old_current+step_v;
+   next_context[31:0]=desired;next_context[63:32]=step_v;
+   next_context[74:64]=magnitude&ramp_mask;next_context[85:75]=magnitude&ramp_mask;
+   next_context[96:86]=ramp_length-1'b1;next_context[97]=down_v;
+  end else if(remaining!=0)begin
+   next_current=remaining==1?target:next_v;
+   next_context[96:86]=remaining-1'b1;next_context[85:75]=err_v;
+  end
+ end
+ for(genvar n=0;n<25;n=n+1)begin: context_memory
+  RAM16SDP4 memory(.CLK(clk),.WRE(!rst&&prep_busy),.WAD(prep_slot),.RAD(prep_slot),
+   .DI(next_context[n*4+:4]),.DO(context_word[n*4+:4]));
+ end
+ for(genvar s=0;s<10;s=s+1)begin: states
+  assign values[s*32+:32]=current[s];
+  always @(posedge clk)begin
+   if(rst)current[s]<=reset_current(s);
+   else if(start)current[s]<=prepared_current[s];
+   if(!rst&&prep_busy&&prep_slot==s)prepared_current[s]<=next_current;
+  end
+ end
+ assign effective_bypass=current[3]==0&&current[4]==0&&current[5]==0;
+ always @(posedge clk)begin
+  clear_pulse<=0;
+  if(rst)begin clearing<=0;context_valid<=0;prep_slot<=0;prep_busy<=0;prepared<=0;end
+  else begin
+   if(sample_tick)begin prep_slot<=0;prep_busy<=1;prepared<=0;end
+   if(prep_busy)begin
+    context_valid[prep_slot]<=1;
+    if(prep_slot==9)begin prep_busy<=0;prepared<=1;end
+    else prep_slot<=prep_slot+1'b1;
+   end
+   if(start)begin
+    prepared<=0;
+    for(integer c=0;c<3;c=c+1)begin
+     if(clear_request[c])clearing[c]<=1;
+     else if(clearing[c]&&current[c]==0&&current[c+3]==0)begin clear_pulse[c]<=1;clearing[c]<=0;end
+    end
+   end
+  end
+ end
+ // Internal scheduling is narrowed ONLY on the formal producer connection.
+ // No waiting path, backpressure, clock, PLL or public edge is introduced.
+ // synthesis translate_off
+ reg [351:0] preparing_config;reg [2:0] preparing_clear;
+ reg capture_config;
+ always @(posedge clk)begin
+  if(rst)capture_config<=0;
+  else begin
+   capture_config<=sample_tick;
+   if(capture_config)begin preparing_config<=config_data;preparing_clear<=clear_request;end
+   if((prep_busy&&!capture_config)||prepared)
+    if({config_data,clear_request}!={preparing_config,preparing_clear})$fatal(1,"FX_PREP_CONFIG_CHANGED");
+   if(sample_tick&&(prep_busy||prepared))$fatal(1,"FX_PREP_FRAME_OVERLAP");
+   if(start&&(!prepared||prep_busy||sample_tick))$fatal(1,"FX_PREP_DEADLINE");
+  end
+ end
+ // synthesis translate_on
+endmodule
+
 // Per-sample exact linear ramps: 64 samples (rate:1024), no divider/MAC.
-module fx_frame_control(
+module fx_frame_control_parallel(
     input wire clk,rst,start,
     input wire [351:0] config_data,
     input wire [2:0] clear_request,

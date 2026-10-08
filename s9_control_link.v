@@ -1,13 +1,14 @@
 // Real STE2 pins -> authenticated application commands / cached execution status.
 // Execution endpoints own semantic COMMITTED/EFFECTIVE updates. This module
 // never fabricates an effective sample frame from transport completion.
-module s9_control_link #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_CRC=0)(
+module s9_control_link #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_CRC=0, SHARED_FRAGMENT_POOL=0)(
  input wire clk,rst,input wire[31:0] now_ms,
  input wire spi_sck,control_cs_n,score_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
  input wire phone_open_ready,phone_active,phone_close_done,
  output wire phone_open,phone_close,session_flush,session_ready,
  output wire[127:0] session_id,output wire[2:0] link_state,
+ output wire identity_query_prepare,output wire [63:0] identity_prepare_press,
  output wire command_valid,input wire command_ready,output wire[2:0] command_slot,
  output wire[1535:0] command_bytes,output wire[7:0] command_length,
  input wire result_valid,output wire result_ready,input wire[2:0] result_slot,
@@ -16,12 +17,16 @@ module s9_control_link #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_C
  output wire lookup_done,output wire signed[15:0] lookup_error,output wire[511:0] lookup_result,
  output wire[31:0] rejected_transactions,cs_conflicts,lease_expirations,stale_result_updates
 );
+ wire [1:0] fragment_bank,pool_read_bank,pool_response_bank,pool_release_bank;
+ wire [6:0] pool_read_index,pool_response_index;wire [7:0] pool_read_data;
+ wire pool_read_enable,pool_response_valid,pool_release;
  wire fragment_valid,fragment_ready;wire[255:0] fragment_header;wire[1023:0] fragment_payload;wire[7:0] fragment_length;
  wire[31:0] physical_accepted,physical_rejected,physical_timeout;
  wire status_read;wire[511:0] status_snapshot,status_bytes;
- s9_spi_transport #(.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) u_spi(.clk(clk),.rst(rst),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
+ s9_spi_transport #(.STREAM_STATUS_CRC(STREAM_STATUS_CRC),.SHARED_FRAGMENT_POOL(SHARED_FRAGMENT_POOL)) u_spi(.clk(clk),.rst(rst),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
  .spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.status_bytes(status_bytes),.fragment_valid(fragment_valid),.fragment_ready(fragment_ready),
  .fragment_header(fragment_header),.fragment_payload(fragment_payload),.fragment_length(fragment_length),
+ .fragment_bank(fragment_bank),.pool_read_enable(pool_read_enable),.pool_read_bank(pool_read_bank),.pool_read_index(pool_read_index),.pool_read_data(pool_read_data),.pool_response_valid(pool_response_valid),.pool_response_bank(pool_response_bank),.pool_response_index(pool_response_index),.pool_release(pool_release),.pool_release_bank(pool_release_bank),
  .status_read(status_read),.status_snapshot(status_snapshot),.accepted_transactions(physical_accepted),.rejected_transactions(physical_rejected),.cs_conflicts(cs_conflicts),.timeouts(physical_timeout));
  wire management_valid,management_ready;wire[7:0] management_op;wire[127:0] management_session;
  wire management_done;wire signed[15:0] management_error;wire[31:0] opened,closed,management_rejected;
@@ -35,12 +40,15 @@ module s9_control_link #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_C
  reg status_pending;
  wire assembly_ready;
  assign fragment_ready=assembly_ready&&!status_pending&&request_ready;
- s9_command_reassembly u_reassembly(.clk(clk),.rst(rst),.flush(session_flush),.session_ready(session_ready),.session_id(session_id),.now_ms(now_ms),
+ s9_command_reassembly #(.SHARED_FRAGMENT_POOL(SHARED_FRAGMENT_POOL)) u_reassembly(.clk(clk),.rst(rst),.flush(session_flush),.session_ready(session_ready),.session_id(session_id),.now_ms(now_ms),
  .fragment_valid(fragment_valid&&!status_pending&&request_ready),.fragment_ready(assembly_ready),.fragment_header(fragment_header),.fragment_payload(fragment_payload),.fragment_length(fragment_length),
+ .fragment_bank(fragment_bank),.pool_read_enable(pool_read_enable),.pool_read_bank(pool_read_bank),.pool_read_index(pool_read_index),.pool_read_data(pool_read_data),.pool_response_valid(pool_response_valid),.pool_response_bank(pool_response_bank),.pool_response_index(pool_response_index),.pool_release(pool_release),.pool_release_bank(pool_release_bank),
  .management_valid(management_valid),.management_ready(management_ready),.management_op(management_op),.management_session(management_session),
  .command_valid(request_valid),.command_ready(request_ready),.command_bytes(request_bytes),.command_length(request_length),.command_channel(request_channel),.command_sequence(request_sequence),
  .error_valid(assembly_error),.error_code(assembly_error_code),.error_channel(assembly_error_channel),.error_sequence(assembly_error_sequence),
  .completed_count(assembled),.rejected_count(assembly_rejected),.duplicate_fragments(duplicate_fragments),.timeout_count(assembly_timeouts));
+ assign identity_query_prepare=request_valid&&request_ready&&session_ready&&request_bytes[55:48]==39;
+ assign identity_prepare_press=request_bytes[327:264];
  wire semantic_legal;wire signed[15:0] semantic_error;
  s9_request_validate u_validate(.command_bytes(request_bytes),.legal(semantic_legal),.error_code(semantic_error));
  wire cache_reply_valid,cache_error,cache_error_channel;wire[511:0] cache_reply;
@@ -99,7 +107,7 @@ module s9_control_link #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_C
  // synthesis translate_on
 endmodule
 
-module r8_control_crc_probe #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_CRC=0)(
+module r8_control_crc_probe #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_CRC=0, SHARED_FRAGMENT_POOL=0)(
  input wire clk,rst,input wire[31:0] now_ms,
  input wire spi_sck,control_cs_n,score_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
@@ -115,5 +123,5 @@ module r8_control_crc_probe #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STA
  output wire[31:0] rejected_transactions,cs_conflicts,lease_expirations,stale_result_updates
 );
 
-s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1)) impl(.*);
+s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1),.SHARED_FRAGMENT_POOL(1)) impl(.*);
 endmodule

@@ -147,7 +147,7 @@ module instrument_core_stage10 #(
  // Its front 32 bytes are the same score snapshot as the legacy response.
  assign spi_miso=(!score_cs_n&&route_s10)?media_miso:legacy_miso;
  assign spi_miso_oe=(!score_cs_n&&route_s10)?media_oe:legacy_oe;
- s10_pcm_transport #(.ENABLE_S11(ENABLE_S11)) transport(.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
+ s10_pcm_transport #(.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1)) transport(.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
   .control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .legacy_status_bytes(observe_score_status),.stream_buffered(observe_stream_buffered),
   .stream_generation(observe_stream_generation),.stream_state(observe_stream_state),.cancel(1'b0),

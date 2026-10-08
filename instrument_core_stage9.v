@@ -152,6 +152,7 @@ module instrument_core_stage9 #(
  end
  wire phone_open,phone_close,phone_open_ready,phone_active,phone_close_done,session_flush,session_ready;
  wire [127:0] session_id;
+ wire identity_query_prepare;wire [63:0] identity_prepare_press;wire identity_query_prepared;
  wire command_valid,command_ready;wire [2:0] command_slot;wire [1535:0] command_bytes;wire [7:0] command_length;
  wire config_valid,config_ready;wire [2:0] config_slot;wire [1535:0] config_bytes;
  wire rt_result_valid,rt_result_ready,cfg_result_valid,cfg_result_ready,cfg_result_final;
@@ -175,9 +176,10 @@ module instrument_core_stage9 #(
  end
  wire lookup_valid,lookup_ready,lookup_channel,lookup_echo,lookup_done;
  wire [31:0] lookup_sequence;wire signed[15:0] lookup_error;wire [511:0] lookup_result;
- s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1)) control(.clk(clk),.rst(rst),.now_ms(now_ms),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
+ s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1),.SHARED_FRAGMENT_POOL(1)) control(.clk(clk),.rst(rst),.now_ms(now_ms),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .spi_miso(control_miso),.spi_miso_oe(control_oe),.phone_open_ready(phone_open_ready),.phone_active(phone_active),.phone_close_done(phone_close_done),
   .phone_open(phone_open),.phone_close(phone_close),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),.link_state(phone_link_state),
+  .identity_query_prepare(identity_query_prepare),.identity_prepare_press(identity_prepare_press),
   .command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
   .result_valid(result_valid),.result_ready(result_ready),.result_slot(result_slot),.result_channel(result_channel),.result_sequence(result_sequence),.result_bytes(result_bytes),.result_final(result_final),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
@@ -191,7 +193,7 @@ module instrument_core_stage9 #(
   .held_keys(phone_held_keys),.accepted_commands(),.committed_commands(),.rejected_commands(),.cancelled_commands(),.cleanup_offs(phone_cleanup_offs),.token_exhausted());
  wire identity_stable,query_found,pan_found;wire [4:0] query_slot,pan_found_slot;
  wire [7:0] query_key;wire [63:0] query_press,query_id,identity_pan_id;wire [15:0] query_generation,identity_pan_generation;
- s9_instance_observer identity(.clk(clk),.rst(rst), .apply_batch_begin(observe_batch_begin),.apply_valid(observe_apply_valid),
+ s9_instance_observer_prepared identity(.query_prepare(identity_query_prepare),.prepare_press(identity_prepare_press),.query_prepared(identity_query_prepared),.query_consume(config_valid&&config_ready&&config_bytes[55:48]==39),.clk(clk),.rst(rst), .apply_batch_begin(observe_batch_begin),.apply_valid(observe_apply_valid),
   .apply_outcome(observe_apply_outcome),.apply_item(observe_apply_item),.apply_lane(observe_apply_lane),.apply_slot(observe_apply_slot),.session_flush(session_flush),.session_ready(session_ready),
   .allocator_publish(observe_allocator_publish),.remote_dispatch_done(remote_dispatch_done),.slot_valid(observe_slot_valid),.slot_cancel(observe_slot_cancel),
   .slot_sources(observe_slot_sources),.slot_keys(observe_slot_keys),.slot_tokens(observe_slot_tokens),.slot_ids(observe_slot_ids),.slot_generations(observe_slot_generations),

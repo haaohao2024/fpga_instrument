@@ -2,7 +2,7 @@
 // verification contract; this module does not qualify physical IO timing.
 // Two 512-byte synchronous byte RAMs own each accepted packet until its
 // stereo pairs handshake or an explicit stream barrier discards them.
-module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=0)(
+module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0)(
  input wire clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
  input wire [255:0] legacy_status_bytes,
  input wire [11:0] stream_buffered,input wire [31:0] stream_generation,
@@ -88,14 +88,28 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
   status_tmp[47:40]={6'd0,state};status_tmp[63:48]={7'd0,free_pair_credit};
   status_tmp[127:64]=stream_epoch;status_tmp[159:128]=last_sequence;
   status_tmp[223:160]=delivered_pair_count;
-  status_crc=32'hffffffff;for(j=0;j<28;j=j+1)status_crc=crcbyte(status_crc,status_tmp[j*8+:8]);
+  status_crc=32'hffffffff;if(!STREAM_STATUS_CRC)for(j=0;j<28;j=j+1)status_crc=crcbyte(status_crc,status_tmp[j*8+:8]);
   status_tmp[255:224]=~status_crc;
   telemetry_tmp=status_tmp;telemetry_tmp[47:40]={1'b1,4'd0,stream_state};
   telemetry_tmp[175:160]={4'd0,stream_buffered};telemetry_tmp[191:176]={7'd0,resident_pairs};
   telemetry_tmp[223:192]=stream_generation;
-  telemetry_crc=32'hffffffff;for(j=0;j<28;j=j+1)telemetry_crc=crcbyte(telemetry_crc,telemetry_tmp[j*8+:8]);
+  telemetry_crc=32'hffffffff;if(!STREAM_STATUS_CRC)for(j=0;j<28;j=j+1)telemetry_crc=crcbyte(telemetry_crc,telemetry_tmp[j*8+:8]);
   telemetry_tmp[255:224]=~telemetry_crc;
  end
+ // Both 28-byte response prefixes freeze at CS. One CRC datapath serves
+ // RX first, then the frozen status and telemetry prefixes in 56 free clocks.
+ // No transmit/receive edge or packet admission is delayed. The selector
+ // arrives at byte 28, much later than this bounded preparation interval.
+ reg response_crc_busy,response_crc_telemetry;
+ reg [4:0] response_crc_index;reg [31:0] response_crc_value;
+ wire receive_crc_step=!select_start&&transaction&&!cs[2]&&rise&&bit_count==7&&
+  (byte_count<32||(route_s11&&byte_count<64)||byte_count<expected_bytes-4);
+ wire [7:0] frozen_crc_byte=response_crc_telemetry?
+  telemetry_snapshot[255-response_crc_index*8-:8]:response[255-response_crc_index*8-:8];
+ wire [31:0] scheduled_crc_next=crcbyte(receive_crc_step?rx_crc:response_crc_value,
+  receive_crc_step?next_byte:frozen_crc_byte);
+ wire [31:0] received_crc_next=STREAM_STATUS_CRC?scheduled_crc_next:crcbyte(rx_crc,next_byte);
+ wire [31:0] completed_response_crc=~scheduled_crc_next;
  reg barrier;
  always @(posedge clk)begin
   ss<={ss[1:0],spi_sck};cs<={cs[1:0],score_cs_n};ms<={ms[0],spi_mosi};
@@ -114,10 +128,23 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
    route_s10<=0;route_s11<=0;record_cmd_valid<=0;record_cmd<=0;record_cmd_id<=0;
    record_cmd_mask<=0;record_ack_kind<=0;record_cmd_sequence<=0;record_ack_sequence<=0;request_header_crc<=0;
    transaction<=0;bad<=0;capacity<=0;receive_bank<=0;
+   response_crc_busy<=0;response_crc_telemetry<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
    header<=0;response<=0;telemetry_snapshot<=0;rx_crc<=32'hffffffff;footer<=0;watchdog<=0;
    byte_count<=0;expected_bytes<=36;wire_length<=64;bit_count<=0;rx_shift<=0;tx_index<=0;barrier<=0;
   end else begin
    barrier<=0;
+   if(STREAM_STATUS_CRC&&response_crc_busy&&!receive_crc_step&&!select_start)begin
+    response_crc_value<=scheduled_crc_next;
+    if(response_crc_index==27)begin
+     if(response_crc_telemetry)begin
+      for(integer b=0;b<4;b=b+1)telemetry_snapshot[31-b*8-:8]<=completed_response_crc[b*8+:8];
+      response_crc_busy<=0;
+     end else begin
+      for(integer b=0;b<4;b=b+1)response[31-b*8-:8]<=completed_response_crc[b*8+:8];
+      response_crc_telemetry<=1;response_crc_index<=0;response_crc_value<=32'hffffffff;
+     end
+    end else response_crc_index<=response_crc_index+1'b1;
+   end
    if(ENABLE_S11&&record_cmd_valid&&record_cmd_ready)record_cmd_valid<=0;
    // Every RAM request has bank, epoch and generation ownership. RAM is not
    // reset; a barrier removes read_pending before any old ram_q is usable.
@@ -151,6 +178,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
    end
    if(stop_pending&&!ctrl_valid)begin ctrl_valid<=1;ctrl_cmd<=1;ctrl_epoch<=stream_epoch;state<=CLOSING;stop_pending<=0;end
    if(select_start)begin
+    if(STREAM_STATUS_CRC)begin response_crc_busy<=1;response_crc_telemetry<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;end
     transaction<=1;route_s10<=0;route_s11<=0;bad<=!sd_sync[1]||!control_sync[1];
     capacity<=!bank_used[0]||!bank_used[1];receive_bank<=bank_used[0];
     header<=0;footer<=0;rx_crc<=32'hffffffff;watchdog<=0;byte_count<=0;expected_bytes<=36;wire_length<=64;
@@ -165,12 +193,12 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
      rx_shift<=next_byte;bit_count<=bit_count+1'b1;
      if(bit_count==7)begin
       if(byte_count<32||(route_s11&&byte_count<64))begin
-       header[byte_count*8+:8]<=next_byte;rx_crc<=crcbyte(rx_crc,next_byte);
+       header[byte_count*8+:8]<=next_byte;rx_crc<=received_crc_next;
        if(byte_count==3)begin
         route_s11<=ENABLE_S11&&{next_byte,header[23:0]}==32'h50313153;
         route_s10<=({next_byte,header[23:0]}==32'h50303153)||(ENABLE_S11&&{next_byte,header[23:0]}==32'h50313153);
        end
-       if(route_s11&&byte_count==59)request_header_crc<=~crcbyte(rx_crc,next_byte);
+       if(route_s11&&byte_count==59)request_header_crc<=~received_crc_next;
        if(route_s11&&byte_count==53)begin
         if({next_byte,header[423:416]}==0)begin expected_bytes<=68;wire_length<=68;end
         else if({next_byte,header[423:416]}!=512)bad<=1;
@@ -185,7 +213,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
         else begin expected_bytes<=36+(header[63:48]<<2);wire_length<=header[63:48]<7?64:36+(header[63:48]<<2);end
        end
       end else if(byte_count<expected_bytes-4)begin
-       rx_crc<=crcbyte(rx_crc,next_byte);
+       rx_crc<=received_crc_next;
        if(route_s11&&byte_count>=64+(request_pairs<<2)&&next_byte!=0)bad<=1;
        if(route_s10&&capacity&&byte_count<(route_s11?576:544))begin
         if(route_s11)begin if(receive_bank)memory1[byte_count-64]<=next_byte;else memory0[byte_count-64]<=next_byte;end
@@ -262,6 +290,13 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
   end
  end
  // synthesis translate_off
+ always @(posedge clk)if(!rst&&STREAM_STATUS_CRC)begin
+  if(transaction&&tx_index>=480&&tx_index<512&&response_crc_busy)$fatal(1,"MEDIA_STATUS_CRC_DEADLINE");
+  if(transaction&&!select_start&&!cs[2]&&rise&&bit_count==7&&byte_count==28&&route_s10&&!route_s11&&operation==OP_STATUS&&next_byte[0]&&response_crc_busy)
+   $fatal(1,"MEDIA_TELEMETRY_CRC_DEADLINE");
+ end
+ // synthesis translate_on
+ // synthesis translate_off
  reg previous_stall;reg [95:0] previous_pair;
  reg previous_ctrl_stall;reg [98:0] previous_ctrl;
  always @(posedge clk)begin
@@ -284,4 +319,41 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
   end
  end
  // synthesis translate_on
+endmodule
+
+// S10P v1, 50 MHz oversampled shared Mode0 SPI. 4 MHz is a digital
+// verification contract; this module does not qualify physical IO timing.
+// Two 512-byte synchronous byte RAMs own each accepted packet until its
+// stereo pairs handshake or an explicit stream barrier discards them.
+module r12_media_crc_probe #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=1)(
+ input wire clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
+ input wire [255:0] legacy_status_bytes,
+ input wire [11:0] stream_buffered,input wire [31:0] stream_generation,
+ input wire [2:0] stream_state,input wire cancel,
+ output wire spi_miso,spi_miso_oe,output reg route_s10,
+ output reg pcm_valid,input wire pcm_ready,
+ output reg signed [15:0] pcm_l,pcm_r,output reg [63:0] pcm_epoch,
+ output reg ctrl_valid,input wire ctrl_ready,
+ output reg [1:0] ctrl_cmd,output reg [63:0] ctrl_epoch,
+ output wire [31:0] ctrl_rate,output reg ctrl_track,
+ output reg [1:0] state,output wire [1:0] bank_count,
+ output wire [8:0] free_pair_credit,reserved_pair_count,resident_pairs,
+ output reg [63:0] accepted_pair_count,delivered_pair_count,discard_pair_count,
+ output reg [31:0] accepted_packets,duplicate_packets,rejected_transactions,
+ output reg [31:0] cs_conflicts,timeout_count,last_sequence,
+ output reg [63:0] stream_epoch,next_source_start,
+ output reg route_s11,
+ output reg record_cmd_valid,input wire record_cmd_ready,
+ output reg [1:0] record_cmd,output reg [63:0] record_cmd_id,
+ output reg [7:0] record_cmd_mask,record_ack_kind,
+ output reg [31:0] record_cmd_sequence,record_ack_sequence,
+ input wire [2:0] record_state,input wire record_incomplete,
+ input wire [7:0] record_mask,input wire [63:0] record_id,
+ input wire [31:0] record_last_command,record_error,record_captured_pcm,input wire [63:0] record_first_missing_frame,
+ input wire record_block_valid,input wire [7:0] record_block_kind,
+ input wire [31:0] record_block_sequence,input wire [63:0] record_block_first,
+ input wire [15:0] record_block_bytes,record_block_items,
+ output wire [8:0] record_peek_address,input wire [7:0] record_peek_data
+);
+s10_pcm_transport #(.ENABLE_S11(1),.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) impl(.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),.control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),.legacy_status_bytes(legacy_status_bytes),.stream_buffered(stream_buffered),.stream_generation(stream_generation),.stream_state(stream_state),.cancel(cancel),.spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.route_s10(route_s10),.pcm_valid(pcm_valid),.pcm_ready(pcm_ready),.pcm_l(pcm_l),.pcm_r(pcm_r),.pcm_epoch(pcm_epoch),.ctrl_valid(ctrl_valid),.ctrl_ready(ctrl_ready),.ctrl_cmd(ctrl_cmd),.ctrl_epoch(ctrl_epoch),.ctrl_rate(ctrl_rate),.ctrl_track(ctrl_track),.state(state),.bank_count(bank_count),.free_pair_credit(free_pair_credit),.reserved_pair_count(reserved_pair_count),.resident_pairs(resident_pairs),.accepted_pair_count(accepted_pair_count),.delivered_pair_count(delivered_pair_count),.discard_pair_count(discard_pair_count),.accepted_packets(accepted_packets),.duplicate_packets(duplicate_packets),.rejected_transactions(rejected_transactions),.cs_conflicts(cs_conflicts),.timeout_count(timeout_count),.last_sequence(last_sequence),.stream_epoch(stream_epoch),.next_source_start(next_source_start),.route_s11(route_s11),.record_cmd_valid(record_cmd_valid),.record_cmd_ready(record_cmd_ready),.record_cmd(record_cmd),.record_cmd_id(record_cmd_id),.record_cmd_mask(record_cmd_mask),.record_ack_kind(record_ack_kind),.record_cmd_sequence(record_cmd_sequence),.record_ack_sequence(record_ack_sequence),.record_state(record_state),.record_incomplete(record_incomplete),.record_mask(record_mask),.record_id(record_id),.record_last_command(record_last_command),.record_error(record_error),.record_captured_pcm(record_captured_pcm),.record_first_missing_frame(record_first_missing_frame),.record_block_valid(record_block_valid),.record_block_kind(record_block_kind),.record_block_sequence(record_block_sequence),.record_block_first(record_block_first),.record_block_bytes(record_block_bytes),.record_block_items(record_block_items),.record_peek_address(record_peek_address),.record_peek_data(record_peek_data));
 endmodule
