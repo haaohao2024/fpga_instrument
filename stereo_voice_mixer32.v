@@ -27,12 +27,25 @@ module stereo_voice_mixer32 (
     reg pair_valid,busy;
     reg [5:0] age;
     reg [7:0] seen[0:3];
-    integer k,index;
+    integer k;
     wire signed [27:0] variable_product[0:3],unity_product[0:3];
     genvar g;
     generate for(g=0;g<4;g=g+1)begin: multiply
         assign variable_product[g]=$signed(x1[g])*$signed({1'b0,coefficient[g]});
         assign unity_product[g]=$signed({{10{x1[g][17]}},x1[g]})<<<8;
+    end endgenerate
+    wire [63:0] selected_id[0:3];wire [15:0] selected_generation[0:3];
+    wire [8:0] selected_pan[0:3];
+    generate for(genvar l=0;l<4;l=l+1)begin: snapshot_lane
+        wire [63:0] ids[0:7];wire [15:0] generations[0:7];wire [8:0] pans[0:7];
+        for(genvar s=0;s<8;s=s+1)begin: snapshot_word
+            assign ids[s]=snapshot_ids[(l*8+s)*64+:64];
+            assign generations[s]=snapshot_generations[(l*8+s)*16+:16];
+            assign pans[s]=snapshot_pan[(l*8+s)*9+:9];
+        end
+        wire [2:0] slot=completion_slot[l*3+:3];
+        assign selected_id[l]=ids[slot];assign selected_generation[l]=generations[slot];
+        assign selected_pan[l]=pans[slot];
     end endgenerate
     always @(posedge clk)begin
         if(rst)begin
@@ -57,15 +70,14 @@ module stereo_voice_mixer32 (
             if(sums_valid!=0 && sums_valid!=4'b1111)protocol_error<=1;
             for(k=0;k<4;k=k+1)begin
                 if(completion_valid[k])begin
-                    index=k*8+completion_slot[k*3 +:3];
                     if(!busy || seen[k][completion_slot[k*3 +:3]])protocol_error<=1;
                     seen[k][completion_slot[k*3 +:3]]<=1;
                     if(completion_slot[k*3 +:3]==7 && seen[k]!=8'h7f)protocol_error<=1;
-                    if(completion_id[k*64 +:64]!=snapshot_ids[index*64 +:64] ||
-                       completion_generation[k*16 +:16]!=snapshot_generations[index*16 +:16] ||
-                       snapshot_pan[index*9 +:9]>256)protocol_error<=1;
+                    if(completion_id[k*64 +:64]!=selected_id[k] ||
+                       completion_generation[k*16 +:16]!=selected_generation[k] ||
+                       selected_pan[k]>256)protocol_error<=1;
                     x0[k]<=completion_accept[k]?$signed(completion_sample[k*18 +:18]):18'sd0;
-                    pan0[k]<=snapshot_pan[index*9 +:9];
+                    pan0[k]<=selected_pan[k];
                     last0[k]<=completion_slot[k*3 +:3]==7;
                 end
                 if(v0[k])begin

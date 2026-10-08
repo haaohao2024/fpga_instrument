@@ -3,7 +3,7 @@
 module shared_voice_lane_stage3 #(
     parameter integer ATTACK_MS=10, DECAY_MS=50, SUSTAIN_LEVEL=180,
     parameter integer RELEASE_MS=100, VIBRATO_RATE_HZ=5,
-    parameter integer VIBRATO_MAX_PPM=10000
+    parameter integer VIBRATO_MAX_PPM=10000, EXTERNAL_BACKEND=0, COMPACT_RECLAIM=0, DIRECT_BACKEND_SAMPLE=0
 ) (
     input wire clk,rst,sample_tick,
     input wire [7:0] slot_valid,slot_gate,slot_trigger,slot_cancel,
@@ -27,8 +27,12 @@ module shared_voice_lane_stage3 #(
     output wire signed [17:0] completion_sample,
     output wire [63:0] completion_id,
     output wire [15:0] completion_generation,
-    output reg deadline_error
-);
+    output reg deadline_error,
+    output wire backend_take_sample,output wire backend_issue,output wire [2:0] backend_write_slot,
+    output wire [193:0] backend_job,
+    output wire [2:0] backend_sample_slot,backend_phase_slot,
+    input wire signed [17:0] backend_sample,input wire [31:0] backend_phase
+) /*synthesis syn_srlstyle="distributed_ram"*/;
     localparam [31:0] LFO_STEP=(64'd4294967296*VIBRATO_RATE_HZ+24000)/48000;
     localparam signed [17:0] MAX_MOD_Q16=
         (64'd65536*VIBRATO_MAX_PPM+500000)/1000000;
@@ -47,21 +51,41 @@ module shared_voice_lane_stage3 #(
 
     reg [63:0] owner_id[0:7];
     reg [15:0] owner_generation[0:7];
-    reg [31:0] phase_acc[0:7],lfo_phase[0:7];
-    reg [6:0] held_note[0:7];
-    reg [7:0] held_pressure[0:7];
-    reg [2:0] env_state[0:7],timbre_state[0:7];
-    reg [16:0] env_level[0:7],env_quotient[0:7];
-    reg [31:0] env_remaining[0:7],env_duration[0:7],
-               env_remainder[0:7],env_error[0:7];
-    reg [22:0] pitch_q[0:7];
-    reg [6:0] pitch_target[0:7];
-    reg [16:0] glide_remaining[0:7],glide_base[0:7],glide_error[0:7];
-    reg [15:0] glide_remainder[0:7];
-    reg glide_up[0:7];
-    reg [3:0] glide_duration_code[0:7];
-    reg [16:0] pressure_gain[0:7],transient_gain[0:7],body_gain[0:7];
 
+    reg [2:0] env_state[0:7];
+    reg [16:0] env_level[0:7];
+    // These 32-bit constants exactly match voice_adsr_step, including its
+    // parameter rounding/truncation. State starts within the maximum duration;
+    // remaining only decreases, and remainder/error are bounded by duration.
+    localparam [31:0] ENV_A=(64'd48000*ATTACK_MS+999)/1000;
+    localparam [31:0] ENV_D=(64'd48000*DECAY_MS+999)/1000;
+    localparam [31:0] ENV_R=(64'd48000*RELEASE_MS+999)/1000;
+    localparam [31:0] ENV_AD_MAX=(ENV_A>ENV_D)?ENV_A:ENV_D;
+    localparam [31:0] ENV_MAX0=(ENV_AD_MAX>ENV_R)?ENV_AD_MAX:ENV_R;
+    localparam [31:0] ENV_MAX=(ENV_MAX0<1)?32'd1:ENV_MAX0;
+    localparam integer ENV_W=$clog2({1'b0,ENV_MAX}+33'd1);
+
+    wire [32-1:0] lfo_phase;
+    wire [7-1:0] held_note;
+    wire [8-1:0] held_pressure;
+    wire [3-1:0] timbre_state;
+    wire [17-1:0] env_quotient;
+    wire [ENV_W-1:0] env_remaining;
+    wire [ENV_W-1:0] env_duration;
+    wire [ENV_W-1:0] env_remainder;
+    wire [ENV_W-1:0] env_error;
+    wire [23-1:0] pitch_q;
+    wire [7-1:0] pitch_target;
+    wire [17-1:0] glide_remaining;
+    wire [17-1:0] glide_base;
+    wire [17-1:0] glide_error;
+    wire [16-1:0] glide_remainder;
+    wire [1-1:0] glide_up;
+    wire [4-1:0] glide_duration_code;
+    wire [17-1:0] pressure_gain;
+    wire [17-1:0] transient_gain;
+    wire [17-1:0] body_gain;
+    wire [31:0] phase_acc;
     wire owner_matches=(owner_id[sel]==snap_ids[sel*64 +:64] &&
                         owner_generation[sel]==snap_generations[sel*16 +:16]);
     wire issue_current=slot_valid[sel] && !slot_cancel[sel] &&
@@ -69,16 +93,16 @@ module shared_voice_lane_stage3 #(
         snap_generations[sel*16 +:16]==slot_generations[sel*16 +:16];
     wire [2:0] adsr_state=owner_matches?env_state[sel]:3'd0;
     wire [16:0] adsr_level=owner_matches?env_level[sel]:17'd0;
-    wire [31:0] adsr_remaining=owner_matches?env_remaining[sel]:0;
-    wire [31:0] adsr_duration=owner_matches?env_duration[sel]:1;
-    wire [31:0] adsr_remainder=owner_matches?env_remainder[sel]:0;
-    wire [31:0] adsr_error=owner_matches?env_error[sel]:0;
-    wire [16:0] adsr_quotient=owner_matches?env_quotient[sel]:0;
-    wire [31:0] issue_phase=owner_matches?phase_acc[sel]:0;
-    wire [31:0] issue_lfo=owner_matches?lfo_phase[sel]:0;
-    wire [6:0] issue_held_note=owner_matches?held_note[sel]:0;
-    wire [7:0] issue_held_pressure=owner_matches?held_pressure[sel]:0;
-    wire [2:0] issue_timbre=owner_matches?timbre_state[sel]:
+    wire [31:0] adsr_remaining=owner_matches?env_remaining:0;
+    wire [31:0] adsr_duration=owner_matches?env_duration:1;
+    wire [31:0] adsr_remainder=owner_matches?env_remainder:0;
+    wire [31:0] adsr_error=owner_matches?env_error:0;
+    wire [16:0] adsr_quotient=owner_matches?env_quotient:0;
+    wire [31:0] issue_phase=owner_matches?phase_acc:0;
+    wire [31:0] issue_lfo=owner_matches?lfo_phase:0;
+    wire [6:0] issue_held_note=owner_matches?held_note:0;
+    wire [7:0] issue_held_pressure=owner_matches?held_pressure:0;
+    wire [2:0] issue_timbre=owner_matches?timbre_state:
         snap_timbres[sel*3 +:3];
     wire [2:0] state_next;
     wire [16:0] level_next,quotient_next;
@@ -105,11 +129,11 @@ module shared_voice_lane_stage3 #(
     wire [31:0] note_step;
     glide_pitch_step u_glide(
         .new_owner(!owner_matches),.note_target(effective_note),
-        .glide_code(snap_glide),.current_pitch(pitch_q[sel]),
-        .stored_target(pitch_target[sel]),.remaining(glide_remaining[sel]),
-        .base_step(glide_base[sel]),.remainder(glide_remainder[sel]),
-        .error_acc(glide_error[sel]),.direction_up(glide_up[sel]),
-        .stored_code(glide_duration_code[sel]),
+        .glide_code(snap_glide),.current_pitch(pitch_q),
+        .stored_target(pitch_target),.remaining(glide_remaining),
+        .base_step(glide_base),.remainder(glide_remainder),
+        .error_acc(glide_error),.direction_up(glide_up),
+        .stored_code(glide_duration_code),
         .pitch_next(next_pitch),.target_next(next_target),
         .remaining_next(next_glide_remaining),.base_next(next_glide_base),
         .remainder_next(next_glide_remainder),.error_next(next_glide_error),
@@ -121,11 +145,11 @@ module shared_voice_lane_stage3 #(
     wire [16:0] next_pressure;
     pressure_gain_step u_pressure(
         .new_owner(!owner_matches),.release_hold(state_next==4),
-        .pressure(effective_pressure),.current_gain(pressure_gain[sel]),
+        .pressure(effective_pressure),.current_gain(pressure_gain),
         .gain_next(next_pressure)
     );
-    wire [16:0] old_transient=owner_matches?transient_gain[sel]:17'd65536;
-    wire [16:0] old_body=owner_matches?body_gain[sel]:17'd65536;
+    wire [16:0] old_transient=owner_matches?transient_gain:17'd65536;
+    wire [16:0] old_body=owner_matches?body_gain:17'd65536;
     wire [16:0] decay_amount=(issue_timbre==3)?
         ((old_transient+17'd1023)>>10):((old_transient+17'd2047)>>11);
     wire [16:0] next_transient=(!owner_matches ||
@@ -213,21 +237,16 @@ module shared_voice_lane_stage3 #(
                     total=$signed(carrier)*$signed({1'b0,amplitude});
                     timbre_wave=total >>> 16;
                 end
-                3'd2: begin // Organ: fixed drawbar partials.
-                    w1=17'd18000;
-                    if (base_step<32'h40000000) w2=17'd10000;
-                    if (base_step<32'd715827882) w3=17'd4000;
-                    total=$signed(h1)*$signed({1'b0,w1})+
-                          $signed(h2)*$signed({1'b0,w2})+
-                          $signed(h3)*$signed({1'b0,w3});
-                    timbre_wave=(total+64'sd16384) >>> 15;
-                end
-                3'd3: begin // Pluck: fundamental and partials decay together.
-                    w1=17'd1000+scale_const(body,17'd24000);
-                    if (base_step<32'h40000000)
-                        w2=scale_const(transient,17'd5000);
-                    if (base_step<32'd715827882)
-                        w3=scale_const(transient,17'd2500);
+                3'd2,3'd3: begin // Select drawbar/decay coefficients before the shared harmonic MAC.
+                    if(timbre==2)begin
+                        w1=17'd18000;
+                        if(base_step<32'h40000000)w2=17'd10000;
+                        if(base_step<32'd715827882)w3=17'd4000;
+                    end else begin
+                        w1=17'd1000+scale_const(body,17'd24000);
+                        if(base_step<32'h40000000)w2=scale_const(transient,17'd5000);
+                        if(base_step<32'd715827882)w3=scale_const(transient,17'd2500);
+                    end
                     total=$signed(h1)*$signed({1'b0,w1})+
                           $signed(h2)*$signed({1'b0,w2})+
                           $signed(h3)*$signed({1'b0,w3});
@@ -258,6 +277,20 @@ module shared_voice_lane_stage3 #(
     reg [16:0] p_transient[0:11],p_body[0:11],p_fm_index[0:11];
     reg [16:0] p_shape_gain[0:11];
     reg [31:0] p_base_step[0:11],p_base_phase[0:11];
+    // Interpolate the phase step in the existing stage 1. Stage 0 retains
+    // the exact computed pitch; stages 1..11 still receive the original job
+    // on the original edge. The flag preserves reset/idle pipeline contents.
+    reg [22:0] issue_pitch;
+    reg have_issue_pitch;
+    wire [6:0] phase_lower_note=issue_pitch[22:16];
+    wire [6:0] phase_upper_note=phase_lower_note==7'd127 ? 7'd127 : phase_lower_note+1'b1;
+    wire [31:0] phase_lower_step,phase_upper_step;
+    phase_step_rom phase_lower(.note_code(phase_lower_note),.phase_step(phase_lower_step));
+    phase_step_rom phase_upper(.note_code(phase_upper_note),.phase_step(phase_upper_step));
+    wire [31:0] phase_step_delta=phase_upper_step-phase_lower_step;
+    wire [47:0] phase_fraction_product=phase_step_delta*issue_pitch[15:0];
+    wire [48:0] phase_interpolated={17'd0,phase_lower_step}+
+        (({1'b0,phase_fraction_product}+49'd32768)>>16);
     reg p_restart[0:11],p_gate[0:11];
     reg signed [15:0] p_lfo[0:11],p_h1[0:11],p_h2[0:11],p_h3[0:11];
     reg signed [17:0] p_wave[0:11];
@@ -273,7 +306,18 @@ module shared_voice_lane_stage3 #(
     wire [31:0] new_phase=p_restart[5]?32'd0:p_base_phase[5]+adjusted_step;
     wire signed [15:0] fm_source=(p_timbre[7]==1)?p_h2[7]:p_h1[7];
     wire signed [33:0] fm_product=fm_source*$signed({1'b0,p_fm_index[7]});
-    wire signed [17:0] final_sample=round_audio(wave_pressure);
+    reg signed [17:0] backend_sample_hold;
+    always @(posedge clk)begin
+        if(rst)backend_sample_hold<=0;
+        else if(valid_pipe[10])backend_sample_hold<=backend_sample;
+    end
+    assign backend_take_sample=valid_pipe[10];
+    assign backend_issue=issue;
+    assign backend_write_slot=sel;
+    assign backend_sample_slot=p_slot[10];
+    assign backend_phase_slot=p_slot[11];
+    assign backend_job={issue_phase,snap_trigger[sel] && snap_valid[sel],next_pitch,lfo_sine,gain(snap_vibrato),level_next,next_pressure,next_transient,next_body,issue_fm_index,fm_taper,issue_timbre};
+    wire signed [17:0] final_sample=EXTERNAL_BACKEND?(DIRECT_BACKEND_SAMPLE?backend_sample:backend_sample_hold):round_audio(wave_pressure);
     wire final_current=(p_id[11]==slot_ids[p_slot[11]*64 +:64] &&
                         p_generation[11]==slot_generations[p_slot[11]*16 +:16] &&
                         slot_valid[p_slot[11]] && !slot_cancel[p_slot[11]]);
@@ -284,6 +328,31 @@ module shared_voice_lane_stage3 #(
     assign completion_sample=final_sample;
     assign completion_id=p_id[11];
     assign completion_generation=p_generation[11];
+
+    // Per-voice private context: exactly the original issue edge and read
+    // value, with a small reset-valid bitmap instead of a resettable wide bank.
+    localparam integer CONTEXT_WIDTH=32+7+8+3+17+ENV_W+ENV_W+ENV_W+ENV_W+23+7+17+17+17+16+1+4+17+17+17;
+
+    wire [CONTEXT_WIDTH-1:0] context_stored;
+    wire [31:0] phase_stored;
+    reg [7:0] context_initialized,phase_initialized;
+    wire context_write=!rst && issue && issue_current;
+    wire phase_write=!rst && valid_pipe[11] && final_current;
+    assign {lfo_phase,held_note,held_pressure,timbre_state,env_quotient,env_remaining,env_duration,env_remainder,env_error,pitch_q,pitch_target,glide_remaining,glide_base,glide_error,glide_remainder,glide_up,glide_duration_code,pressure_gain,transient_gain,body_gain}=context_initialized[sel]?context_stored:{32'(0),7'(0),8'(0),3'(0),17'(0),ENV_W'(0),ENV_W'(1),ENV_W'(0),ENV_W'(0),23'(0),7'(0),17'(0),17'(0),17'(0),16'(0),1'(0),4'(0),17'(0),17'(0),17'(0)};
+    assign phase_acc=phase_initialized[sel]?phase_stored:32'd0;
+    s3_private_context_store #(.WIDTH(CONTEXT_WIDTH)) context_memory(
+        .clk(clk),.write_enable(context_write),.write_slot(sel),.read_slot(sel),
+        .write_value({32'(issue_lfo+LFO_STEP),7'((snap_trigger[sel]||snap_gate[sel])?snap_notes[sel*7+:7]:(state_next==0?7'd0:held_note)),8'((snap_trigger[sel]||snap_gate[sel])?snap_pressures[sel*8+:8]:(state_next==0?8'd0:held_pressure)),3'(issue_timbre),17'(quotient_next),ENV_W'(remaining_next),ENV_W'(duration_next),ENV_W'(remainder_next),ENV_W'(error_next),23'(next_pitch),7'(next_target),17'(next_glide_remaining),17'(next_glide_base),17'(next_glide_error),16'(next_glide_remainder),1'(next_glide_up),4'(next_glide_code),17'(next_pressure),17'(next_transient),17'(next_body)}),.read_value(context_stored));
+    s3_private_context_store #(.WIDTH(32)) phase_memory(
+        .clk(clk),.write_enable(phase_write),.write_slot(p_slot[11]),.read_slot(sel),
+        .write_value(EXTERNAL_BACKEND?backend_phase:phase_value[11]),.read_value(phase_stored));
+    always @(posedge clk)begin
+        if(rst)begin context_initialized<=0;phase_initialized<=0;end
+        else begin
+            if(context_write)context_initialized[sel]<=1;
+            if(phase_write)phase_initialized[p_slot[11]]<=1;
+        end
+    end
     genvar g;
     generate for (g=0;g<8;g=g+1) begin : levels
         wire feedback_current=slot_valid[g] &&
@@ -298,22 +367,16 @@ module shared_voice_lane_stage3 #(
             snap_valid<=0;snap_gate<=0;snap_trigger<=0;snap_notes<=0;
             snap_pressures<=0;snap_ids<=0;snap_generations<=0;
             snap_timbres<=0;snap_vibrato<=0;snap_glide<=0;
-            running<=0;issue_index<=0;valid_pipe<=0;
+            running<=0;issue_index<=0;valid_pipe<=0;issue_pitch<=0;have_issue_pitch<=0;
             lane_sum<=0;lane_sum_valid<=0;done_mask<=0;done_ids<=0;
             voice_samples<=0;issued_count<=0;completed_count<=0;deadline_error<=0;
             lfo_depth<=0;lfo_max<=0;modulation<=0;frequency_product<=0;
             adjusted_step<=0;wave_env<=0;wave_pressure<=0;
             for (i=0;i<8;i=i+1) begin
                 owner_id[i]<=0;owner_generation[i]<=0;
-                phase_acc[i]<=0;lfo_phase[i]<=0;
-                held_note[i]<=0;held_pressure[i]<=0;timbre_state[i]<=0;
+
                 env_state[i]<=0;env_level[i]<=0;
-                env_remaining[i]<=0;env_duration[i]<=1;
-                env_remainder[i]<=0;env_error[i]<=0;env_quotient[i]<=0;
-                pitch_q[i]<=0;pitch_target[i]<=0;glide_remaining[i]<=0;
-                glide_base[i]<=0;glide_remainder[i]<=0;glide_error[i]<=0;
-                glide_up[i]<=0;glide_duration_code[i]<=0;
-                pressure_gain[i]<=0;transient_gain[i]<=0;body_gain[i]<=0;
+
             end
             for (i=0;i<12;i=i+1) begin
                 p_slot[i]<=0;p_timbre[i]<=0;p_id[i]<=0;p_generation[i]<=0;
@@ -335,7 +398,7 @@ module shared_voice_lane_stage3 #(
                 p_body[i]<=p_body[i-1];
                 p_fm_index[i]<=p_fm_index[i-1];
                 p_shape_gain[i]<=p_shape_gain[i-1];
-                p_base_step[i]<=p_base_step[i-1];p_base_phase[i]<=p_base_phase[i-1];
+                p_base_step[i]<=i==1?(have_issue_pitch?phase_interpolated[31:0]:32'd0):p_base_step[i-1];p_base_phase[i]<=p_base_phase[i-1];
                 p_restart[i]<=p_restart[i-1];p_gate[i]<=p_gate[i-1];
                 p_lfo[i]<=p_lfo[i-1];p_h1[i]<=p_h1[i-1];
                 p_h2[i]<=p_h2[i-1];p_h3[i]<=p_h3[i-1];
@@ -365,33 +428,15 @@ module shared_voice_lane_stage3 #(
                 p_fm_index[0]<=issue_fm_index;
                 p_shape_gain[0]<=fm_taper;
                 p_base_step[0]<=note_step;p_base_phase[0]<=issue_phase;
+                issue_pitch<=next_pitch;have_issue_pitch<=1;
                 p_restart[0]<=snap_trigger[sel] && snap_valid[sel];
                 p_gate[0]<=snap_gate[sel];p_lfo[0]<=lfo_sine;
                 if (issue_current) begin
                     owner_id[sel]<=snap_ids[sel*64 +:64];
                     owner_generation[sel]<=snap_generations[sel*16 +:16];
-                    timbre_state[sel]<=issue_timbre;
+                    
                     env_state[sel]<=state_next;env_level[sel]<=level_next;
-                    env_remaining[sel]<=remaining_next;env_duration[sel]<=duration_next;
-                    env_remainder[sel]<=remainder_next;env_error[sel]<=error_next;
-                    env_quotient[sel]<=quotient_next;
-                    lfo_phase[sel]<=issue_lfo+LFO_STEP;
-                    pitch_q[sel]<=next_pitch;pitch_target[sel]<=next_target;
-                    glide_remaining[sel]<=next_glide_remaining;
-                    glide_base[sel]<=next_glide_base;
-                    glide_remainder[sel]<=next_glide_remainder;
-                    glide_error[sel]<=next_glide_error;
-                    glide_up[sel]<=next_glide_up;
-                    glide_duration_code[sel]<=next_glide_code;
-                    pressure_gain[sel]<=next_pressure;
-                    transient_gain[sel]<=next_transient;
-                    body_gain[sel]<=next_body;
-                    if (snap_trigger[sel] || snap_gate[sel]) begin
-                        held_note[sel]<=snap_notes[sel*7 +:7];
-                        held_pressure[sel]<=snap_pressures[sel*8 +:8];
-                    end else if (state_next==0) begin
-                        held_note[sel]<=0;held_pressure[sel]<=0;
-                    end
+
                 end
             end
             if (valid_pipe[0])
@@ -417,13 +462,14 @@ module shared_voice_lane_stage3 #(
             if (valid_pipe[11]) begin
                 completed_count<=completed_count+1'b1;
                 if (final_current) begin
-                    phase_acc[p_slot[11]]<=phase_value[11];
+                    
                     voice_samples[p_slot[11]*18 +:18]<=final_sample;
                     lane_sum<=lane_sum+{{6{final_sample[17]}},final_sample};
                     if (!p_gate[11] && env_state[p_slot[11]]==0 &&
                         final_sample==0) begin
                         done_mask[p_slot[11]]<=1;
-                        done_ids[p_slot[11]*64 +:64]<=p_id[11];
+                        if(COMPACT_RECLAIM)done_ids<={8{p_id[11]}};
+                        else done_ids[p_slot[11]*64 +:64]<=p_id[11];
                     end
                 end
                 if (p_slot[11]==7) lane_sum_valid<=1;
@@ -431,7 +477,166 @@ module shared_voice_lane_stage3 #(
         end
     end
     // synthesis translate_off
+    always @(posedge clk)if(!rst && issue && issue_current)begin
+        if(remaining_next>ENV_MAX || duration_next>ENV_MAX || remainder_next>ENV_MAX || error_next>ENV_MAX)
+            $fatal(1,"S3_ENV_STORAGE_BOUND");
+    end
+    always @(posedge clk)if(!rst)begin
+        if($isunknown(done_mask))$fatal(1,"S3_RECLAIM_MASK_XZ");
+        if(!$onehot0(done_mask))$fatal(1,"S3_RECLAIM_MULTI");
+    end
     always @(posedge clk) if (!rst && sample_tick && (running || valid_pipe!=0))
         $fatal(1,"shared_voice_lane_stage3: frame deadline missed");
     // synthesis translate_on
+endmodule
+
+// One asynchronous read, one synchronous write. The unused upper eight words
+// are unreachable. Caller-owned initialization bits preserve reset values.
+module s3_private_context_store #(parameter integer WIDTH=32)(
+ input wire clk,write_enable,input wire [2:0] write_slot,read_slot,
+ input wire [WIDTH-1:0] write_value,output wire [WIDTH-1:0] read_value);
+ localparam integer PADDED=((WIDTH+3)/4)*4;
+ wire [PADDED-1:0] padded_write={{(PADDED-WIDTH){1'b0}},write_value};
+ wire [PADDED-1:0] padded_read;
+ generate for(genvar n=0;n<PADDED/4;n=n+1)begin: nibble
+  RAM16SDP4 memory(.CLK(clk),.WRE(write_enable),.WAD({1'b0,write_slot}),
+   .RAD({1'b0,read_slot}),.DI(padded_write[n*4+:4]),.DO(padded_read[n*4+:4]));
+ end endgenerate
+ assign read_value=padded_read[WIDTH-1:0];
+endmodule
+
+// Two compute engines serve four independent context banks.
+// Fixed eight-job Lane bursts avoid a general result-bank crossbar.
+// All 32 oscillator states and original update/writeback edges are retained.
+module r8_voice_backend(input wire clk,rst,in_valid,input wire [4:0] in_tag,
+ input wire [193:0] job_in,output wire out_valid,output wire [4:0] out_tag,
+ output wire signed [17:0] out_sample,output wire [31:0] out_phase);
+ localparam signed [17:0] MAX_MOD_Q16=(64'd65536*10000+500000)/1000000;
+ reg [2:0] valid;reg [4:0] tag[0:2];reg [193:0] job[0:2];reg [31:0] phase[0:2];
+ reg [31:0] base_step,base_step1;reg signed [17:0] modulation,wave;
+    function [16:0] scale_const;
+        input [16:0] value,coefficient;
+        reg [33:0] product;
+        begin product=value*coefficient;scale_const=product>>16;end
+    endfunction
+    function signed [17:0] round_mod;
+        input signed [51:0] value;
+        reg signed [52:0] wide;
+        begin
+            wide={value[51],value};
+            if (wide<0) round_mod=-(((-wide)+53'sd1073741824) >>> 31);
+            else round_mod=(wide+53'sd1073741824) >>> 31;
+        end
+    endfunction
+    function signed [34:0] round_delta;
+        input signed [50:0] value;
+        reg signed [51:0] wide;
+        begin
+            wide={value[50],value};
+            if (wide<0) round_delta=-(((-wide)+52'sd32768) >>> 16);
+            else round_delta=(wide+52'sd32768) >>> 16;
+        end
+    endfunction
+    function signed [17:0] round_audio;
+        input signed [53:0] value;
+        reg signed [54:0] wide;
+        reg signed [22:0] shifted;
+        begin
+            wide={value[53],value};
+            if (wide<0) shifted=-(((-wide)+55'sd2147483648) >>> 32);
+            else shifted=(wide+55'sd2147483648) >>> 32;
+            if (shifted>23'sd131071) round_audio=18'sh1ffff;
+            else if (shifted< -23'sd131072) round_audio=18'h20000;
+            else round_audio=shifted[17:0];
+        end
+    endfunction
+    function signed [17:0] timbre_wave;
+        input [2:0] timbre;
+        input signed [15:0] h1,h2,h3,carrier;
+        input [16:0] transient,body,shape_gain;
+        input [31:0] base_step;
+        reg signed [63:0] total;
+        reg signed [17:0] shaped;
+        reg [16:0] w1,w2,w3,amplitude;
+        begin
+            total=0;w1=0;w2=0;w3=0;amplitude=65536;shaped=0;
+            case (timbre)
+                3'd1: begin // Electric piano: decaying-index 2:1 FM.
+                    amplitude=17'd13107+scale_const(transient,17'd52429);
+                    total=$signed(carrier)*$signed({1'b0,amplitude});
+                    timbre_wave=total >>> 16;
+                end
+                3'd2,3'd3: begin // Select drawbar/decay coefficients before the shared harmonic MAC.
+                    if(timbre==2)begin
+                        w1=17'd18000;
+                        if(base_step<32'h40000000)w2=17'd10000;
+                        if(base_step<32'd715827882)w3=17'd4000;
+                    end else begin
+                        w1=17'd1000+scale_const(body,17'd24000);
+                        if(base_step<32'h40000000)w2=scale_const(transient,17'd5000);
+                        if(base_step<32'd715827882)w3=scale_const(transient,17'd2500);
+                    end
+                    total=$signed(h1)*$signed({1'b0,w1})+
+                          $signed(h2)*$signed({1'b0,w2})+
+                          $signed(h3)*$signed({1'b0,w3});
+                    timbre_wave=(total+64'sd16384) >>> 15;
+                end
+                3'd4: begin // Sustained FM; fade nonlinear shaping at high pitch.
+                    if (carrier>16'sd16384)
+                        shaped=18'sd16384+(($signed(carrier)-18'sd16384) >>> 1);
+                    else if (carrier< -16'sd16384)
+                        shaped=-18'sd16384+(($signed(carrier)+18'sd16384) >>> 1);
+                    else shaped=carrier;
+                    // FM=0 alone is insufficient: clipping also generates harmonics.
+                    // Blend to the unshaped carrier using the same pitch taper.
+                    total=($signed(shaped)-$signed(carrier))*
+                          $signed({1'b0,shape_gain});
+                    timbre_wave=$signed(carrier)+(total >>> 16);
+                end
+                default: timbre_wave=h1; // ID0 sine; same pressure semantics.
+            endcase
+        end
+    endfunction
+ wire [6:0] lower_note=job_in[138+:23]>>16;
+ wire [6:0] upper_note=lower_note==127?7'd127:lower_note+1'b1;
+ wire [31:0] lower_step,upper_step;
+ phase_step_rom lo(.note_code(lower_note),.phase_step(lower_step));
+ phase_step_rom hi(.note_code(upper_note),.phase_step(upper_step));
+ wire [31:0] step_delta=upper_step-lower_step;
+ wire [47:0] fraction_product=step_delta*job_in[138+:16];
+ wire [48:0] interpolated={17'd0,lower_step}+(({1'b0,fraction_product}+49'd32768)>>16);
+ wire signed [33:0] lfo_depth=$signed(job_in[122+:16])*$signed({1'b0,job_in[105+:17]});
+ wire signed [51:0] lfo_max=lfo_depth*MAX_MOD_Q16;
+ wire signed [50:0] frequency_product=$signed({1'b0,base_step})*modulation;
+ wire signed [35:0] adjusted_wide=$signed({4'b0,base_step})+$signed(round_delta(frequency_product));
+ wire [31:0] adjusted_step=adjusted_wide[31:0];
+ wire signed [15:0] sine1,sine2,sine3,carrier;
+ wire [31:0] phase2=phase[1]<<1,phase3=phase[1]+(phase[1]<<1);
+ sine_rom s1(.address(phase[1][31:24]),.sample(sine1));
+ sine_rom s2(.address(phase2[31:24]),.sample(sine2));
+ sine_rom s3(.address(phase3[31:24]),.sample(sine3));
+ wire signed [15:0] fm_source=job[1][0+:3]==1?sine2:sine1;
+ wire signed [33:0] fm_product=fm_source*$signed({1'b0,job[1][20+:17]});
+ wire [31:0] fm_offset=fm_product[31:0]<<1;
+ wire [31:0] carrier_phase=phase[1]+fm_offset;
+ sine_rom sc(.address(carrier_phase[31:24]),.sample(carrier));
+ wire signed [35:0] wave_env=$signed(wave)*$signed({1'b0,job[2][88+:17]});
+ wire signed [53:0] wave_pressure=wave_env*$signed({1'b0,job[2][71+:17]});
+ assign out_valid=valid[2];assign out_tag=tag[2];
+ assign out_sample=round_audio(wave_pressure);assign out_phase=phase[2];
+ integer q;
+ always @(posedge clk)begin
+  if(rst)begin
+   valid<=0;modulation<=0;wave<=0;base_step<=0;base_step1<=0;
+   for(q=0;q<3;q=q+1)begin tag[q]<=0;job[q]<=0;phase[q]<=0;end
+  end else begin
+   valid<={valid[1:0],in_valid};
+   for(q=1;q<3;q=q+1)begin tag[q]<=tag[q-1];job[q]<=job[q-1];phase[q]<=phase[q-1];end
+   if(in_valid)begin tag[0]<=in_tag;job[0]<=job_in;base_step<=interpolated[31:0];modulation<=round_mod(lfo_max);end
+   if(valid[0])base_step1<=base_step;
+   if(valid[0])phase[1]<=job[0][161+:1]?32'd0:job[0][162+:32]+adjusted_step;
+   if(valid[1])wave<=timbre_wave(job[1][0+:3],sine1,sine2,sine3,carrier,
+     job[1][54+:17],job[1][37+:17],job[1][3+:17],base_step1);
+  end
+ end
 endmodule

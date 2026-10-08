@@ -62,6 +62,11 @@ module instrument_io_stage11 #(
 
 );
     wire [79:0] pressure_raw;
+    wire [63:0] pressure_normalized;
+    wire [79:0] calibrated_frame;
+    generate for(genvar c=0;c<8;c=c+1)begin: normalized_channel
+        assign calibrated_frame[c*10+:10]={2'b00,pressure_normalized[c*8+:8]};
+    end endgenerate
     wire pressure_valid, step_pulse, step_dir;
     wire ec11_ready, ec11_invalid;
     wire signed [31:0] ec11_position;
@@ -70,7 +75,7 @@ module instrument_io_stage11 #(
     pressure_input_top #(.CLK_FREQ_HZ(CLK_FREQ_HZ), .SPI_CLK_HZ(SPI_CLK_HZ)) u_adc (
         .sys_clk(clk), .rst_n(~rst), .adc_cs_n(adc_cs_n),
         .adc_sclk(adc_sclk), .adc_din(adc_din), .adc_dout(adc_dout),
-        .pressure_raw(pressure_raw), .pressure_valid(pressure_valid)
+        .pressure_raw(pressure_raw), .pressure_normalized(pressure_normalized), .pressure_valid(pressure_valid)
     );
     ec11_encoder #(.CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(EC11_DEBOUNCE_US),
         .TRANSITIONS_PER_STEP(EC11_TRANSITIONS_PER_STEP), .DIR_INVERT(EC11_DIR_INVERT)) u_ec11 (
@@ -91,7 +96,7 @@ module instrument_io_stage11 #(
  wire video_pixel_clk,video_serial_clk,video_pll_locked;
  video_pll_800x600 video_pll(.clkin(clk),.reset(rst),.lock(video_pll_locked),
  .clkout0(video_serial_clk),.clkout1(video_pixel_clk));
- instrument_core_stage11 #(.CLK_FREQ_HZ(CLK_FREQ_HZ)) u_core(
+ instrument_core_stage11 #(.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1)) u_core(
  .spi_sck(spi_sck),
  .score_cs_n(score_cs_n),
  .sd_cs_n(sd_cs_n),
@@ -124,7 +129,7 @@ module instrument_io_stage11 #(
  .pan_value(pan_value),
  .clk(clk),
  .rst(rst),
- .pressure_raw(pressure_raw),
+ .pressure_raw(calibrated_frame),
  .pressure_valid(pressure_valid),
  .step_pulse(step_pulse),
  .step_dir(step_dir),

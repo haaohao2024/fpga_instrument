@@ -2,7 +2,7 @@
 // Outputs become valid only at a complete CS end with BOTH CRC and pad checked.
 // Physical fragment staging is 128 bytes of registers; application RAM is owned
 // by the downstream reassembler. Busy transactions may still read a snapshot.
-module s9_spi_transport #(parameter integer WATCHDOG_CLOCKS=500000)(
+module s9_spi_transport #(parameter integer WATCHDOG_CLOCKS=500000, STREAM_STATUS_CRC=0)(
  input wire clk,rst,spi_sck,control_cs_n,score_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
  input wire [511:0] status_bytes,
@@ -27,7 +27,14 @@ module s9_spi_transport #(parameter integer WATCHDOG_CLOCKS=500000)(
  reg[7:0] bytes_received,expected,wire_length,rx_shift;
  reg[2:0] bits_received;
  reg[9:0] tx_bit;
+ reg [31:0] response_crc;reg [5:0] response_crc_index;reg response_crc_busy;
+ // Incoming byte updates have priority. At most one every16 clocks, so
+ //60 outgoing bytes finish in <=64 clocks, before MISO bit480 can be read.
+ wire receive_crc_step=transaction&&!start&&!cs_sync[2]&&rise&&bits_received==7&&
+   (bytes_received<32 || bytes_received<expected-4);
  wire[7:0] next_byte={rx_shift[6:0],mosi_sync[1]};
+ wire [31:0] shared_crc_next=crcbyte(receive_crc_step?crc:response_crc,
+   receive_crc_step?next_byte:response[511-response_crc_index*8-:8]);
  wire[7:0] operation=header[47:40];
  wire[15:0] length=header[63:48],offset=header[239:224];
  wire management=operation==8'h80||operation==8'h90||operation==8'h91||operation==8'h92;
@@ -46,17 +53,26 @@ module s9_spi_transport #(parameter integer WATCHDOG_CLOCKS=500000)(
    sck_sync<=0;cs_sync<=7;mosi_sync<=0;score_sync<=3;sd_sync<=3;
    transaction<=0;bad<=0;capacity<=0;header<=0;response<=0;crc<=32'hffffffff;footer<=0;watchdog<=0;
    bytes_received<=0;expected<=36;wire_length<=80;rx_shift<=0;bits_received<=0;tx_bit<=0;
+   response_crc<=32'hffffffff;response_crc_index<=0;response_crc_busy<=0;
    fragment_valid<=0;fragment_header<=0;fragment_length<=0;status_read<=0;
    accepted_transactions<=0;rejected_transactions<=0;cs_conflicts<=0;timeouts<=0;
    // Payload data need not reset. Valid and explicit length protect all reads.
   end else begin
    status_read<=0;
+   if(STREAM_STATUS_CRC&&!start&&response_crc_busy&&!receive_crc_step)begin
+    response_crc<=shared_crc_next;
+    if(response_crc_index==59)begin
+     response[31:0]<={~shared_crc_next[7:0],~shared_crc_next[15:8],~shared_crc_next[23:16],~shared_crc_next[31:24]};
+     response_crc_busy<=0;
+    end else response_crc_index<=response_crc_index+1'b1;
+   end
    if(fragment_valid&&fragment_ready)fragment_valid<=0;
    if(start)begin
     transaction<=1;bad<=!score_sync[1]||!sd_sync[1];capacity<=!fragment_valid||fragment_ready;
     header<=0;footer<=0;crc<=32'hffffffff;watchdog<=0;bytes_received<=0;bits_received<=0;rx_shift<=0;tx_bit<=0;
     expected<=36;wire_length<=80;
     for(i=0;i<64;i=i+1)response[511-i*8-:8]<=status_bytes[i*8+:8];
+    if(STREAM_STATUS_CRC)begin response_crc<=32'hffffffff;response_crc_index<=0;response_crc_busy<=1;end
     if(!score_sync[1]||!sd_sync[1])cs_conflicts<=cs_conflicts+1'b1;
    end else if(transaction)begin
     if(watchdog<WATCHDOG_CLOCKS)watchdog<=watchdog+1'b1;
@@ -66,13 +82,13 @@ module s9_spi_transport #(parameter integer WATCHDOG_CLOCKS=500000)(
      rx_shift<=next_byte;bits_received<=bits_received+1'b1;
      if(bits_received==7)begin
       if(bytes_received<32)begin
-       header[bytes_received*8+:8]<=next_byte;crc<=crcbyte(crc,next_byte);
+       header[bytes_received*8+:8]<=next_byte;crc<=STREAM_STATUS_CRC?shared_crc_next:crcbyte(crc,next_byte);
        if(bytes_received==31)begin
         if(header[63:48]>128)bad<=1;
         else begin expected<=36+header[63:48];wire_length<=(header[63:48]>44)?36+header[63:48]:80;end
        end
       end else if(bytes_received<expected-4)begin
-       crc<=crcbyte(crc,next_byte);
+       crc<=STREAM_STATUS_CRC?shared_crc_next:crcbyte(crc,next_byte);
        if(capacity&&bytes_received<160)payload[(bytes_received-32)*8+:8]<=next_byte;
       end else if(bytes_received<expected)footer[(bytes_received-expected+4)*8+:8]<=next_byte;
       else if(next_byte!=0||bytes_received>=wire_length)bad<=1;
@@ -105,6 +121,7 @@ module s9_spi_transport #(parameter integer WATCHDOG_CLOCKS=500000)(
  end
  // synthesis translate_off
  always @(posedge clk)if(!rst)begin
+  if(STREAM_STATUS_CRC&&transaction&&tx_bit>=480&&tx_bit<512&&response_crc_busy)$fatal(1,"S9_STATUS_CRC_NOT_READY_AT_BIT");
   if((^{spi_sck,control_cs_n,score_cs_n,sd_cs_n,fragment_ready})===1'bx)$fatal(1,"S9_SPI_CONTROL_XZ");
   if(!control_cs_n&&spi_mosi!==1'b0&&spi_mosi!==1'b1)$fatal(1,"S9_SPI_MOSI_XZ");
   if(start&&(^status_bytes)===1'bx)$fatal(1,"S9_SPI_STATUS_XZ");

@@ -1,6 +1,7 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage9 #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -174,14 +175,14 @@ module instrument_core_stage9 #(
  end
  wire lookup_valid,lookup_ready,lookup_channel,lookup_echo,lookup_done;
  wire [31:0] lookup_sequence;wire signed[15:0] lookup_error;wire [511:0] lookup_result;
- s9_control_link control(.clk(clk),.rst(rst),.now_ms(now_ms),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
+ s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1)) control(.clk(clk),.rst(rst),.now_ms(now_ms),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .spi_miso(control_miso),.spi_miso_oe(control_oe),.phone_open_ready(phone_open_ready),.phone_active(phone_active),.phone_close_done(phone_close_done),
   .phone_open(phone_open),.phone_close(phone_close),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),.link_state(phone_link_state),
   .command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
   .result_valid(result_valid),.result_ready(result_ready),.result_slot(result_slot),.result_channel(result_channel),.result_sequence(result_sequence),.result_bytes(result_bytes),.result_final(result_final),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .rejected_transactions(phone_rejected_transactions),.cs_conflicts(phone_cs_conflicts),.lease_expirations(phone_lease_expirations),.stale_result_updates());
- s9_event_endpoint events(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
+ s9_event_endpoint #(.DEFER_RESULT_CRC(1)) events(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
   .phone_open(phone_open),.phone_close(phone_close),.phone_open_ready(phone_open_ready),.phone_active(phone_active),.phone_close_done(phone_close_done),
   .command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
   .config_valid(config_valid),.config_ready(config_ready),.config_slot(config_slot),.config_bytes(config_bytes),
@@ -190,12 +191,13 @@ module instrument_core_stage9 #(
   .held_keys(phone_held_keys),.accepted_commands(),.committed_commands(),.rejected_commands(),.cancelled_commands(),.cleanup_offs(phone_cleanup_offs),.token_exhausted());
  wire identity_stable,query_found,pan_found;wire [4:0] query_slot,pan_found_slot;
  wire [7:0] query_key;wire [63:0] query_press,query_id,identity_pan_id;wire [15:0] query_generation,identity_pan_generation;
- s9_instance_observer identity(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),
+ s9_instance_observer identity(.clk(clk),.rst(rst), .apply_batch_begin(observe_batch_begin),.apply_valid(observe_apply_valid),
+  .apply_outcome(observe_apply_outcome),.apply_item(observe_apply_item),.apply_lane(observe_apply_lane),.apply_slot(observe_apply_slot),.session_flush(session_flush),.session_ready(session_ready),
   .allocator_publish(observe_allocator_publish),.remote_dispatch_done(remote_dispatch_done),.slot_valid(observe_slot_valid),.slot_cancel(observe_slot_cancel),
   .slot_sources(observe_slot_sources),.slot_keys(observe_slot_keys),.slot_tokens(observe_slot_tokens),.slot_ids(observe_slot_ids),.slot_generations(observe_slot_generations),
   .event_packet(remote_event_packet),.event_press_ids(remote_press_ids),.query_key(query_key),.query_press_id(query_press),.stable(identity_stable),.found(query_found),.query_slot(query_slot),.query_instance_id(query_id),.query_generation(query_generation),
   .pan_instance_id(identity_pan_id),.pan_generation(identity_pan_generation),.pan_found(pan_found),.pan_slot(pan_found_slot),.owned_slots());
- s9_config_bridge #(.ENABLE_FIELD(ENABLE_S11)) parameters(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
+ s9_config_bridge #(.ENABLE_FIELD(ENABLE_S11),.DEFER_RESULT_CRC(1)) parameters(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
   .config_valid(config_valid),.config_ready(config_ready),.config_slot(config_slot),.config_bytes(config_bytes),
   .sample_tick(frame_pulse),.sample_time(observe_sample_time),.now_ms(now_ms),.local_glide_code(local_glide_code),.glide_code(glide_code),.timbre_id(timbre_id),
   .fx_cfg_valid(fx_cfg_valid),.fx_cfg_data(fx_cfg_data),.fx_accepted(observe_fx_accepted),.fx_frame_version(observe_fx_version),
@@ -210,6 +212,7 @@ module instrument_core_stage9 #(
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .result_valid(cfg_result_valid),.result_ready(cfg_result_ready),.result_slot(cfg_result_slot),.result_sequence(cfg_result_sequence),.result_bytes(cfg_result_bytes),.result_final(cfg_result_final));
  instrument_core_stage8 #(
+  .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
   .ADC_FULL(ADC_FULL),

@@ -2,6 +2,7 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage10 #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -185,6 +186,7 @@ module instrument_core_stage10 #(
   .record_peek_address(record_peek_address),
   .record_peek_data(record_peek_data));
  instrument_core_stage9 #(
+  .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
  .CLK_FREQ_HZ(CLK_FREQ_HZ),
  .ADC_ZERO(ADC_ZERO),
  .ADC_FULL(ADC_FULL),

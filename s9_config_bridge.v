@@ -1,7 +1,7 @@
 // Stage9 parameter adapter. Frozen parameter engines retain their arithmetic.
 // COMMITTED follows the real configuration edge; EFFECTIVE names an observed
 // snapshot frame. It never asserts that a muted/cancelled sound was audible.
-module s9_config_bridge #(parameter integer ENABLE_FIELD=0)(
+module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
  input wire clk,rst,session_flush,session_ready,input wire[127:0] session_id,
  input wire config_valid,output wire config_ready,input wire[2:0] config_slot,input wire[1535:0] config_bytes,
  input wire sample_tick,input wire[31:0] sample_time,now_ms,
@@ -84,7 +84,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0)(
  always @*begin
   packed_result=0;packed_result[31:0]=32'h54533953;packed_result[39:32]=1;packed_result[47:40]=2;
   packed_result[63:56]=result_flags;packed_result[191:64]=session_id;packed_result[447:192]=result_fields;
-  crc=32'hffffffff;for(j=0;j<60;j=j+1)crc=crcbyte(crc,packed_result[j*8+:8]);packed_result[511:480]=~crc;
+  crc=32'hffffffff;if(!DEFER_RESULT_CRC)begin for(j=0;j<60;j=j+1)crc=crcbyte(crc,packed_result[j*8+:8]);packed_result[511:480]=~crc;end
  end
  assign result_bytes=packed_result;
  reg found_dirty;reg[2:0] selected;integer n;

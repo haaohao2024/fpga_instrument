@@ -23,7 +23,7 @@ module s11_pcm_recorder #(
     output reg [63:0] block_first_frame,
     output reg [15:0] block_pair_count,
     input wire [8:0] peek_byte_address,
-    output reg [7:0] peek_byte_data,
+    output wire [7:0] peek_byte_data,
     input wire ack_valid,
     input wire [63:0] ack_record_id,
     input wire [31:0] ack_block_sequence,
@@ -42,8 +42,20 @@ module s11_pcm_recorder #(
     wire has_space=(buffered_pairs<CAPACITY) || accepted_ack;
     wire store_pair=capture && frame_matches && has_space;
     wire [12:0] ack_count=accepted_ack?block_pair_count:13'd0;
-    integer peek_pair_index;
+    // One registered full-word RAM read preserves the original edge-visible
+    // byte. The byte selector and ownership flag are registered on that same
+    // edge; ACK/clear/START/reset still override the visible byte to zero.
+    wire peek_enable=block_valid && peek_byte_address<block_pair_count*4;
+    wire [PTR_W:0] peek_sum={1'b0,read_pointer}+(peek_byte_address>>2);
+    wire [PTR_W-1:0] peek_pair_index=peek_sum>=CAPACITY?peek_sum-CAPACITY:peek_sum;
     reg [31:0] peek_word;
+    reg [1:0] peek_byte_select;
+    reg peek_owned;
+    always @(posedge clk) if(!rst && peek_enable)begin
+        peek_word<=pcm_ram[peek_pair_index];
+        peek_byte_select<=peek_byte_address[1:0];
+    end
+    assign peek_byte_data=peek_owned?peek_word[peek_byte_select*8+:8]:8'd0;
     function [PTR_W-1:0] advance;
         input [PTR_W-1:0] ptr;
         input [15:0] amount;
@@ -59,24 +71,18 @@ module s11_pcm_recorder #(
             retired_pairs<=0;discarded_pairs<=0;first_missing_frame<=64'hffffffffffffffff;buffered_pairs<=0;
             write_pointer<=0;read_pointer<=0;expected_frame<=0;have_first<=0;
             block_valid<=0;block_sequence<=0;block_first_frame<=0;
-            block_pair_count<=0;peek_byte_data<=0;stale_ack_count<=0;
+            block_pair_count<=0;peek_owned<=0;stale_ack_count<=0;
             rejected_start_count<=0;
         end else begin
             // RAM is not reset. Its count/ownership fences make old bytes
             // unreachable after clear/start, including the registered read.
-            peek_byte_data<=0;
-            if(block_valid && peek_byte_address<block_pair_count*4)begin
-                peek_pair_index=read_pointer+(peek_byte_address>>2);
-                if(peek_pair_index>=CAPACITY)peek_pair_index=peek_pair_index-CAPACITY;
-                peek_word=pcm_ram[peek_pair_index];
-                peek_byte_data<=peek_word[(peek_byte_address[1:0])*8 +:8];
-            end
+            peek_owned<=peek_enable;
             if(ack_valid && !accepted_ack)stale_ack_count<=stale_ack_count+1'b1;
             if(accepted_ack)begin
                 read_pointer<=advance(read_pointer,block_pair_count);
                 retired_pairs<=retired_pairs+block_pair_count;
                 block_valid<=0;block_sequence<=block_sequence+1'b1;
-                block_pair_count<=0;peek_byte_data<=0;
+                block_pair_count<=0;peek_owned<=0;
             end
             buffered_pairs<=buffered_pairs-ack_count+(store_pair?13'd1:13'd0);
             if(store_pair)begin
@@ -107,13 +113,13 @@ module s11_pcm_recorder #(
                     first_frame_id<=0;last_frame_id<=0;captured_pairs<=0;
                     retired_pairs<=0;discarded_pairs<=0;first_missing_frame<=64'hffffffffffffffff;write_pointer<=0;
                     read_pointer<=0;expected_frame<=0;have_first<=0;
-                    block_sequence<=0;peek_byte_data<=0;
+                    block_sequence<=0;peek_owned<=0;
                 end else rejected_start_count<=rejected_start_count+1'b1;
             end
             if(clear_valid)begin
                 discarded_pairs<=discarded_pairs+buffered_pairs-ack_count;
                 active<=0;block_valid<=0;block_pair_count<=0;buffered_pairs<=0;
-                write_pointer<=0;read_pointer<=0;peek_byte_data<=0;
+                write_pointer<=0;read_pointer<=0;peek_owned<=0;
                 if(active)begin incomplete<=1;error_code<=8'd4;
                     first_missing_frame<=have_first?expected_frame:64'hffffffffffffffff;end
             end

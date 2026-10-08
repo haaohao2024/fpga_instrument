@@ -25,14 +25,112 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
  reg [7:0] font[0:1023];reg [7:0] font0,font1;
  reg [2:0] fontbit0,fontbit1;reg text0,text1,text2,text3;
  reg [6:0] character;reg [2:0] glyph_x,glyph_y;reg text_enable;
- integer col,row,local_x,local_y,voices,held,i,hist_count;
+ reg [6:0] col;reg [4:0] row;reg [10:0] local_x;reg [9:0] local_y;integer i;
  reg [191:0] text_line;
  reg [7:0] dynamic_char;
  initial $readmemh(FONT_FILE,font);
- function [7:0] digit(input integer v);begin digit="0"+(v%10);end endfunction
+ function [7:0] digit(input [5:0] v);begin digit="0"+(v%6'd10);end endfunction
  function [7:0] hex_digit(input [3:0] v);begin hex_digit=v<10?"0"+v:"A"+v-10;end endfunction
+ // Prepare decimal statistics once per immutable front snapshot. The
+ // bank exchange switches only in vertical blank. Eight preparation clocks
+ // finish before any statistic text pixel (first one is x=720,y=316).
+ reg [31:0] statistics_sequence;reg statistics_valid;reg [3:0] statistics_phase;
+ reg [5:0] statistics_counts[0:7];reg [15:0] statistics_digits[0:7];
+ reg [5:0] current_counts[0:7];integer count_slot,count_timbre;
+ function [15:0] decimal_pair(input [5:0] count);
+  begin case(count)
+   6'd0:decimal_pair=16'h3030;
+   6'd1:decimal_pair=16'h3031;
+   6'd2:decimal_pair=16'h3032;
+   6'd3:decimal_pair=16'h3033;
+   6'd4:decimal_pair=16'h3034;
+   6'd5:decimal_pair=16'h3035;
+   6'd6:decimal_pair=16'h3036;
+   6'd7:decimal_pair=16'h3037;
+   6'd8:decimal_pair=16'h3038;
+   6'd9:decimal_pair=16'h3039;
+   6'd10:decimal_pair=16'h3130;
+   6'd11:decimal_pair=16'h3131;
+   6'd12:decimal_pair=16'h3132;
+   6'd13:decimal_pair=16'h3133;
+   6'd14:decimal_pair=16'h3134;
+   6'd15:decimal_pair=16'h3135;
+   6'd16:decimal_pair=16'h3136;
+   6'd17:decimal_pair=16'h3137;
+   6'd18:decimal_pair=16'h3138;
+   6'd19:decimal_pair=16'h3139;
+   6'd20:decimal_pair=16'h3230;
+   6'd21:decimal_pair=16'h3231;
+   6'd22:decimal_pair=16'h3232;
+   6'd23:decimal_pair=16'h3233;
+   6'd24:decimal_pair=16'h3234;
+   6'd25:decimal_pair=16'h3235;
+   6'd26:decimal_pair=16'h3236;
+   6'd27:decimal_pair=16'h3237;
+   6'd28:decimal_pair=16'h3238;
+   6'd29:decimal_pair=16'h3239;
+   6'd30:decimal_pair=16'h3330;
+   6'd31:decimal_pair=16'h3331;
+   6'd32:decimal_pair=16'h3332;
+   default:decimal_pair=16'h3030;
+  endcase end
+ endfunction
+ always @*begin
+  for(integer c=0;c<8;c=c+1)current_counts[c]=0;
+  for(count_slot=0;count_slot<32;count_slot=count_slot+1)begin
+   current_counts[0]=current_counts[0]+metadata[256+count_slot];
+   current_counts[1]=current_counts[1]+(metadata[256+count_slot]&&metadata[288+count_slot]);
+   for(count_timbre=0;count_timbre<5;count_timbre=count_timbre+1)
+    if(metadata[256+count_slot] && metadata[320+count_slot*3+:3]==count_timbre)
+     current_counts[3+count_timbre]=current_counts[3+count_timbre]+1'b1;
+  end
+  current_counts[2]=current_counts[0]-current_counts[1];
+ end
+ wire statistics_changed=front_valid&&(!statistics_valid||metadata[159:128]!=statistics_sequence);
+ always @(posedge pixel_clk)begin
+  if(rst)begin
+   statistics_valid<=0;statistics_sequence<=0;statistics_phase<=0;
+   for(integer c=0;c<8;c=c+1)begin statistics_counts[c]<=0;statistics_digits[c]<=16'h3030;end
+  end else if(statistics_changed)begin
+   statistics_valid<=1;statistics_sequence<=metadata[159:128];statistics_phase<=1;
+   for(integer c=0;c<8;c=c+1)statistics_counts[c]<=current_counts[c];
+  end else if(statistics_phase!=0)begin
+   for(integer c=0;c<8;c=c+1)if(statistics_phase==c+1)statistics_digits[c]<=decimal_pair(statistics_counts[c]);
+   statistics_phase<=statistics_phase==8?0:statistics_phase+1'b1;
+  end
+ end
+ reg [4:0] panel_row;reg [3:0] panel_y;reg fx_text_rows,statistics_text_rows;
+ always @*begin
+  panel_row=0;panel_y=0;fx_text_rows=0;statistics_text_rows=0;
+  for(integer r=0;r<6;r=r+1)if(y>=216+r*12 && y<224+r*12)begin
+   panel_row=r;panel_y=y-(216+r*12);fx_text_rows=1;
+  end
+  for(integer r=0;r<24;r=r+1)if(y>=304+r*12 && y<312+r*12)begin
+   panel_row=r;panel_y=y-(304+r*12);statistics_text_rows=1;
+  end
+ end
+ wire [7:0] text_words[0:23];wire [4:0] text_index=5'd23-col[4:0];
+ wire [2:0] hex_index=3'd7-col[2:0];wire [1:0] age_index=2'd3-col[1:0];
+ wire [3:0] hex_fx[0:7],hex_hi[0:7],hex_lo[0:7],hex_under[0:7],hex_deadline[0:7],hex_skip[0:7],hex_cancel[0:7],hex_dac[0:7],hex_age[0:3];
+ generate for(genvar c=0;c<24;c=c+1)begin: text_word
+  assign text_words[c]=text_line[c*8+:8];
+ end
+ for(genvar c=0;c<8;c=c+1)begin: metadata_hex_word
+  assign hex_fx[c]=metadata[540+c*4+:4];assign hex_hi[c]=metadata[473+c*4+:4];
+  assign hex_lo[c]=metadata[441+c*4+:4];assign hex_under[c]=metadata[508+c*4+:4];
+  assign hex_deadline[c]=metadata[572+c*4+:4];assign hex_skip[c]=metadata[192+c*4+:4];
+  assign hex_cancel[c]=metadata[768+c*4+:4];assign hex_dac[c]=metadata[64+c*4+:4];
+ end
+ for(genvar c=0;c<4;c=c+1)begin: age_hex_word
+  assign hex_age[c]=age_frames[c*4+:4];
+ end endgenerate
+ // synthesis translate_off
+ always @(posedge pixel_clk)if(!rst && front_valid && statistics_phase!=0 &&
+  x>=720 && x<736 && statistics_text_rows &&
+  (panel_row==1||panel_row==2||panel_row==3||(panel_row>=17&&panel_row<=21)))
+  $fatal(1,"S8_STATISTICS_NOT_READY");
+ // synthesis translate_on
  always @* begin
-  voices=0;held=0;hist_count=0;for(i=0;i<32;i=i+1)begin voices=voices+metadata[256+i];held=held+(metadata[256+i]&&metadata[288+i]);end
   local_x=x-32;local_y=y-16;col=0;row=0;text_line=0;dynamic_char=0;
   text_enable=0;glyph_x=0;glyph_y=0;character=32;
   if(x>=32&&x<736&&y>=16&&y<32)begin
@@ -61,8 +159,8 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
     else if(x>=480&&x<528)begin local_x=x-480;text_line="10KHZ                   ";end
     else text_enable=0;
    end
-   if(x>=592&&x<784&&y>=216&&y<288&&((y-216)%12)<8)begin
-    local_x=x-592;local_y=(y-216)%12;row=(y-216)/12;text_enable=1;col=local_x/8;
+   if(x>=592&&x<784&&fx_text_rows)begin
+    local_x=x-592;local_y=panel_y;row=panel_row;text_enable=1;col=local_x/8;
     case(row)
      0:text_line="FX VERSION HEX:         ";
      1:text_line="TIME HI HEX:            ";
@@ -73,17 +171,17 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
     endcase
     if(col>=16&&col<24)begin
      case(row)
-      0:dynamic_char=hex_digit(metadata[540+(23-col)*4+:4]);
-      1:dynamic_char=hex_digit(metadata[473+(23-col)*4+:4]);
-      2:dynamic_char=hex_digit(metadata[441+(23-col)*4+:4]);
-      3:dynamic_char=hex_digit(metadata[508+(23-col)*4+:4]);
+      0:dynamic_char=hex_digit(hex_fx[hex_index]);
+      1:dynamic_char=hex_digit(hex_hi[hex_index]);
+      2:dynamic_char=hex_digit(hex_lo[hex_index]);
+      3:dynamic_char=hex_digit(hex_under[hex_index]);
       4:if(col==16)dynamic_char=digit(metadata[604]);
-      5:dynamic_char=hex_digit(metadata[572+(23-col)*4+:4]);
+      5:dynamic_char=hex_digit(hex_deadline[hex_index]);
      endcase
     end
    end
-   if(x>=592&&x<784&&y>=304&&y<592&&((y-304)%12)<8)begin
-    local_x=x-592;local_y=(y-304)%12;row=(y-304)/12;text_enable=1;
+   if(x>=592&&x<784&&statistics_text_rows)begin
+    local_x=x-592;local_y=panel_y;row=panel_row;text_enable=1;
     case(row)
      0:text_line="SNAPSHOT STATUS         ";
      1:text_line="VOICES:                 ";
@@ -112,32 +210,31 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
      default:text_line=0;
     endcase
     col=local_x/8;
-    if(row>=17&&row<=21)for(i=0;i<32;i=i+1)if(metadata[256+i]&&metadata[320+i*3+:3]==row-17)hist_count=hist_count+1;
     if(col==16||col==17)begin
      case(row)
-      1:dynamic_char=col==16?digit(voices/10):digit(voices);
-      2:dynamic_char=col==16?digit(held/10):digit(held);
-      3:dynamic_char=col==16?digit((voices-held)/10):digit(voices-held);
+      1:dynamic_char=col==16?statistics_digits[0][15:8]:statistics_digits[0][7:0];
+      2:dynamic_char=col==16?statistics_digits[1][15:8]:statistics_digits[1][7:0];
+      3:dynamic_char=col==16?statistics_digits[2][15:8]:statistics_digits[2][7:0];
       4:dynamic_char=col==16?"0":digit(metadata[418:416]);
       8:dynamic_char=col==16?hex_digit(metadata[432:429]):hex_digit(metadata[428:425]);
       9:dynamic_char=col==16?hex_digit(metadata[440:437]):hex_digit(metadata[436:433]);
       10:dynamic_char=col==16?"0":digit(metadata[507:505]);
       11:dynamic_char=col==16?hex_digit(metadata[135:132]):hex_digit(metadata[131:128]);
-      17,18,19,20,21:dynamic_char=col==16?digit(hist_count/10):digit(hist_count);
+      17,18,19,20,21:dynamic_char=col==16?statistics_digits[row-14][15:8]:statistics_digits[row-14][7:0];
      endcase
     end
     if(row==5&&col>=16&&col<=20&&!(col%2))dynamic_char=digit(metadata[419+(col-16)/2]);
     if(row==6&&col==16)dynamic_char=digit(metadata[422]);
     if(row==7&&col==16)dynamic_char=digit(metadata[423]);
     if(row==7&&col==18)dynamic_char=digit(metadata[424]);
-    if(row==12&&col>=16&&col<24)dynamic_char=hex_digit(metadata[192+(23-col)*4+:4]);
-    if(row==13&&col>=16&&col<24)dynamic_char=hex_digit(metadata[768+(23-col)*4+:4]);
-    if(row==22&&col>=16&&col<20)dynamic_char=hex_digit(age_frames[(19-col)*4+:4]);
-    if(row==23&&col>=16&&col<24)dynamic_char=hex_digit(metadata[64+(23-col)*4+:4]);
+    if(row==12&&col>=16&&col<24)dynamic_char=hex_digit(hex_skip[hex_index]);
+    if(row==13&&col>=16&&col<24)dynamic_char=hex_digit(hex_cancel[hex_index]);
+    if(row==22&&col>=16&&col<20)dynamic_char=hex_digit(hex_age[age_index]);
+    if(row==23&&col>=16&&col<24)dynamic_char=hex_digit(hex_dac[hex_index]);
    end
    if(text_enable)begin
     col=local_x/8;glyph_x=local_x%8;glyph_y=local_y%8;
-    if(col<24)character=text_line[(23-col)*8+:8];
+    if(col<24)character=text_words[text_index];
     if(dynamic_char!=0)character=dynamic_char;
    end
   end
@@ -147,10 +244,14 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
  always @* begin
   color=24'h101823;center=0;offset=0;scale=1<<metadata[177:176];y_min=0;y_max=0;amplitude=0;
   if(test_pipe[3])begin
-   case(x3/100)
-    0:color=24'hffffff;1:color=24'hffff00;2:color=24'h00ffff;3:color=24'h00ff00;
-    4:color=24'hff00ff;5:color=24'hff0000;6:color=24'h0000ff;default:color=24'h000000;
-   endcase
+   if(x3<11'd100)color=24'hffffff;
+   else if(x3<11'd200)color=24'hffff00;
+   else if(x3<11'd300)color=24'h00ffff;
+   else if(x3<11'd400)color=24'h00ff00;
+   else if(x3<11'd500)color=24'hff00ff;
+   else if(x3<11'd600)color=24'hff0000;
+   else if(x3<11'd700)color=24'h0000ff;
+   else color=24'h000000;
   end else begin
    if(x3>=32&&x3<544&&((y3>=64&&y3<144)||(y3>=176&&y3<256)))begin
     center=y3>=176?216:104;offset=y3>=176?176:64;
@@ -172,7 +273,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
      color=y3>=280?24'hffaf40:24'h40dcff;
    end
    if(x3>=32&&x3<544&&y3>=320&&y3<544)begin
-    color=((543-y3)%56==0||((x3-32)%64)==0)?24'h34404f:24'h08111b;
+    color=((y3==543||y3==487||y3==431||y3==375)||((x3-32)%64)==0)?24'h34404f:24'h08111b;
     if(valid_pipe[3])begin
      if(543-y3<spec3[15:8])color=24'h40dcff;
      if(543-y3<spec3[7:0])color=color==24'h40dcff ? 24'hfff0be : 24'hffaf40;

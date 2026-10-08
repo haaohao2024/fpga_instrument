@@ -70,7 +70,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
  wire s11_serial_bit;wire [511:0] s11_snapshot;wire s11_payload_ready;
  wire short_s11=route_s11&&header[431:416]==0;
  generate if(ENABLE_S11)begin: s11_response_enabled
-  s11_spi_response response_encoder(.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
+  s11_spi_response #(.STREAM_HEADER_CRC(1)) response_encoder(.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
    .media_state(state),.media_epoch(stream_epoch),.media_last_sequence(last_sequence),.media_credit(free_pair_credit),
    .recorder_state(record_state),.recorder_incomplete(record_incomplete),.recorder_mask(record_mask),.recorder_id(record_id),
    .recorder_command_sequence(record_last_command),.recorder_error(record_error),.captured_pcm_pairs(record_captured_pcm),.first_missing_frame(record_first_missing_frame),

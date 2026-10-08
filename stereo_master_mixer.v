@@ -19,6 +19,13 @@ module stereo_master_mixer #(
     reg [31:0] tag;
     reg signed [48:0] mul_l,mul_r,local_product_l,local_product_r,external_product_l,external_product_r;
     reg signed [63:0] external_integer_l,external_integer_r,sum_l,sum_r;
+    // Select operands before the two multipliers. The existing age-0/age-1
+    // write enables and seven-clock output schedule remain unchanged.
+    wire signed [31:0] multiply_l = (age==0) ? ll : el;
+    wire signed [31:0] multiply_r = (age==0) ? lr : er;
+    wire signed [16:0] multiply_gain = $signed({1'b0,(age==0) ? gl : ge});
+    wire signed [48:0] multiply_result_l = multiply_l * multiply_gain;
+    wire signed [48:0] multiply_result_r = multiply_r * multiply_gain;
     function signed [63:0] trunc_external;
         input signed [48:0] x;
         reg signed [63:0] wide;
@@ -45,10 +52,10 @@ module stereo_master_mixer #(
             if(busy)begin
                 age<=age+1'b1;
                 case(age)
-                    0:begin mul_l<=ll*$signed({1'b0,gl});mul_r<=lr*$signed({1'b0,gl});end
+                    0:begin mul_l<=multiply_result_l;mul_r<=multiply_result_r;end
                     1:begin
                         local_product_l<=mul_l;local_product_r<=mul_r;
-                        mul_l<=el*$signed({1'b0,ge});mul_r<=er*$signed({1'b0,ge});
+                        mul_l<=multiply_result_l;mul_r<=multiply_result_r;
                     end
                     2:begin external_product_l<=mul_l;external_product_r<=mul_r;end
                     3:begin external_integer_l<=trunc_external(external_product_l);external_integer_r<=trunc_external(external_product_r);end

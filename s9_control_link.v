@@ -1,7 +1,7 @@
 // Real STE2 pins -> authenticated application commands / cached execution status.
 // Execution endpoints own semantic COMMITTED/EFFECTIVE updates. This module
 // never fabricates an effective sample frame from transport completion.
-module s9_control_link(
+module s9_control_link #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_CRC=0)(
  input wire clk,rst,input wire[31:0] now_ms,
  input wire spi_sck,control_cs_n,score_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
@@ -19,7 +19,7 @@ module s9_control_link(
  wire fragment_valid,fragment_ready;wire[255:0] fragment_header;wire[1023:0] fragment_payload;wire[7:0] fragment_length;
  wire[31:0] physical_accepted,physical_rejected,physical_timeout;
  wire status_read;wire[511:0] status_snapshot,status_bytes;
- s9_spi_transport u_spi(.clk(clk),.rst(rst),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
+ s9_spi_transport #(.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) u_spi(.clk(clk),.rst(rst),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
  .spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.status_bytes(status_bytes),.fragment_valid(fragment_valid),.fragment_ready(fragment_ready),
  .fragment_header(fragment_header),.fragment_payload(fragment_payload),.fragment_length(fragment_length),
  .status_read(status_read),.status_snapshot(status_snapshot),.accepted_transactions(physical_accepted),.rejected_transactions(physical_rejected),.cs_conflicts(cs_conflicts),.timeouts(physical_timeout));
@@ -50,7 +50,7 @@ module s9_control_link(
  assign command_valid=cache_command_valid&&session_ready&&!session_flush;
  wire cache_update_ready;
  assign result_ready=cache_update_ready&&assembly_ready;
- s9_command_cache u_cache(.clk(clk),.rst(rst),.flush(session_flush),.session_id(session_id),
+ s9_command_cache #(.REBUILD_UPDATE_CRC(REBUILD_RESULT_CRC)) u_cache(.clk(clk),.rst(rst),.flush(session_flush),.session_id(session_id),
  .request_valid(request_valid&&session_ready),.request_ready(request_ready),.request_bytes(request_bytes),.request_length(request_length),
  .request_channel(request_channel),.request_sequence(request_sequence),.request_error(semantic_error),
  .dispatch_valid(cache_command_valid),.dispatch_ready(command_ready&&session_ready&&!session_flush),.dispatch_slot(command_slot),.dispatch_bytes(command_bytes),.dispatch_length(command_length),
@@ -71,7 +71,7 @@ module s9_control_link(
   status_build[55:48]=(session_ready&&!status_pending)?{4'd0,credits}:8'd0;
   status_build[63:56]=result_flags;status_build[191:64]=session_id;
   status_build[447:192]=result_fields;
-  crc=32'hffffffff;for(k=0;k<60;k=k+1)crc=crcbyte(crc,status_build[k*8+:8]);status_build[511:480]=~crc;
+  crc=32'hffffffff;if(!STREAM_STATUS_CRC)begin for(k=0;k<60;k=k+1)crc=crcbyte(crc,status_build[k*8+:8]);status_build[511:480]=~crc;end
  end
  assign status_bytes=status_build;
  wire read_our_result=status_read&&status_snapshot[191:64]==result_session&&
@@ -97,4 +97,23 @@ module s9_control_link(
   if(result_valid&&(^({result_slot,result_channel,result_sequence,result_bytes,result_final}))===1'bx)$fatal(1,"S9_LINK_RESULT_XZ");
  end
  // synthesis translate_on
+endmodule
+
+module r8_control_crc_probe #(parameter integer REBUILD_RESULT_CRC=0, STREAM_STATUS_CRC=0)(
+ input wire clk,rst,input wire[31:0] now_ms,
+ input wire spi_sck,control_cs_n,score_cs_n,sd_cs_n,spi_mosi,
+ output wire spi_miso,spi_miso_oe,
+ input wire phone_open_ready,phone_active,phone_close_done,
+ output wire phone_open,phone_close,session_flush,session_ready,
+ output wire[127:0] session_id,output wire[2:0] link_state,
+ output wire command_valid,input wire command_ready,output wire[2:0] command_slot,
+ output wire[1535:0] command_bytes,output wire[7:0] command_length,
+ input wire result_valid,output wire result_ready,input wire[2:0] result_slot,
+ input wire result_channel,input wire[31:0] result_sequence,input wire[511:0] result_bytes,input wire result_final,
+ input wire lookup_valid,output wire lookup_ready,input wire lookup_channel,lookup_echo,input wire[31:0] lookup_sequence,
+ output wire lookup_done,output wire signed[15:0] lookup_error,output wire[511:0] lookup_result,
+ output wire[31:0] rejected_transactions,cs_conflicts,lease_expirations,stale_result_updates
+);
+
+s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1)) impl(.*);
 endmodule

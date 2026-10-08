@@ -44,7 +44,11 @@ module s11_recording_subsystem(
  input wire [287:0] slot_pans,
  input wire cfg_tx_valid,
  input wire [5:0] cfg_tx_count,
- input wire [10239:0] cfg_tx_cells,
+ input wire [255:0] cfg_tx_cell,
+ output wire [5:0] cfg_tx_index,
+ output wire cfg_tx_read_valid,output wire [15:0] cfg_tx_read_epoch,
+ input wire cfg_tx_response_valid,input wire [5:0] cfg_tx_response_index,
+ input wire [15:0] cfg_tx_response_epoch,
  output wire cfg_tx_ready,cfg_tx_done,
  input wire cfg_fault_valid,
  input wire [7:0] cfg_fault_code,
@@ -66,8 +70,9 @@ module s11_recording_subsystem(
  output wire [63:0] first_missing_event_frame,
  output wire [8:0] buffered_event_cells,
  output wire [31:0] published_batches,aborted_batches,applied_items,initial_instances,
- output wire [2047:0] mapped_runtime_ids,mapped_persistent_ids,
- output wire [511:0] mapped_generations
+ input wire [4:0] map_query_slot,
+ output wire [63:0] map_query_runtime,map_query_persistent,
+ output wire [15:0] map_query_generation
 );
  wire pcm_start_ready,event_start_ready,observer_idle;
  wire pcm_active,pcm_incomplete,event_active,event_incomplete,exec_active,exec_arming,exec_incomplete;
@@ -85,7 +90,7 @@ module s11_recording_subsystem(
  wire [15:0] pcm_block_items,event_block_items;
  wire [7:0] pcm_peek,event_peek;
  wire [31:0] pcm_stale_ack,event_stale_ack,pcm_rejected_start,event_rejected_start,event_aborted_cells;
- wire [10239:0] exec_cells;
+ wire [255:0] exec_tx_cell;
  wire [5:0] exec_count;
  wire exec_valid,exec_ready,exec_done,event_tx_ready,event_tx_done;
  reg [1:0] tx_owner;
@@ -149,7 +154,29 @@ module s11_recording_subsystem(
  wire choose_cfg=tx_owner==0 && !exec_valid && cfg_tx_valid && record_mask[1] && !incomplete;
  wire event_tx_valid=choose_exec || choose_cfg;
  wire [5:0] event_tx_count=(tx_owner==2 || choose_cfg)?cfg_tx_count:exec_count;
- wire [10239:0] event_tx_cells=(tx_owner==2 || choose_cfg)?cfg_tx_cells:exec_cells;
+ wire [255:0] event_tx_cell=(tx_owner==2 || choose_cfg)?cfg_tx_cell:exec_tx_cell;
+ wire [5:0] event_tx_index,event_prefetch_index;
+ wire event_prefetch_valid,event_ram_write_enable;
+ wire [15:0] prefetch_epoch;
+ wire batch_accept=event_tx_valid&&event_tx_ready;
+ wire [15:0] request_epoch;
+ wire [1:0] request_owner=tx_owner!=0?tx_owner:choose_cfg?2'd2:2'd1;
+ wire exec_read_valid=event_prefetch_valid&&request_owner==1;
+ wire exec_response_valid;wire [5:0] exec_response_index;wire [15:0] exec_response_epoch;
+ assign cfg_tx_read_valid=event_prefetch_valid&&request_owner==2;
+ assign cfg_tx_read_epoch=request_epoch;
+ wire [1:0] response_owner=(tx_owner==2||choose_cfg)?2'd2:2'd1;
+ wire response_pulse=response_owner==2?cfg_tx_response_valid:exec_response_valid;
+ wire [5:0] response_index=response_owner==2?cfg_tx_response_index:exec_response_index;
+ wire [15:0] response_epoch=response_owner==2?cfg_tx_response_epoch:exec_response_epoch;
+ s11_cell_prefetch_control prefetch_control(.clk(clk),.rst(rst),.clear_valid(1'b0),
+  .batch_accept(batch_accept),.request_valid(event_prefetch_valid),.request_owner(request_owner),.request_index(event_prefetch_index),
+  .response_pulse(response_pulse),.response_owner(response_owner),.response_index(response_index),.response_epoch(response_epoch),
+  .consume_valid(event_ram_write_enable),.consume_owner(tx_owner),.consume_index(event_tx_index),.consume_cell(event_tx_cell),
+  .request_epoch(request_epoch),.active_epoch(prefetch_epoch));
+ // Both passive producers expose the requested immutable cell.
+
+ assign cfg_tx_index=event_prefetch_index;
  assign exec_ready=choose_exec && event_tx_ready;
  assign cfg_tx_ready=choose_cfg && event_tx_ready;
  assign exec_done=event_tx_done && tx_owner==1;
@@ -186,7 +213,7 @@ module s11_recording_subsystem(
   .peek_byte_address(peek_byte_address),.peek_byte_data(pcm_peek),.ack_valid(pcm_ack),
   .ack_record_id(command_record_id),.ack_block_sequence(ack_block_sequence),
   .stale_ack_count(pcm_stale_ack),.rejected_start_count(pcm_rejected_start));
- s11_execution_observer u_exec(.clk(clk),.rst(rst),.audio_reset(audio_reset),
+ s11_execution_observer #(.INDEXED_OVERLAY(1)) u_exec(.clk(clk),.rst(rst),.audio_reset(audio_reset),
   .capture_fault((event_incomplete || cfg_fault_valid) && !new_start),
   .capture_fault_code(cfg_fault_valid?cfg_fault_code:event_error),
   .stop_delivery_idle(cfg_idle && tx_owner!=2),
@@ -203,18 +230,21 @@ module s11_recording_subsystem(
   .slot_sources(slot_sources),.slot_ids(slot_ids),.slot_tokens(slot_tokens),
   .slot_generations(slot_generations),.slot_timbres(slot_timbres),.slot_pans(slot_pans),
   .active(exec_active),.arming(exec_arming),.incomplete(exec_incomplete),.error_code(exec_error),
-  .first_missing_frame(exec_missing),.tx_valid(exec_valid),.tx_count(exec_count),.tx_cells(exec_cells),
+  .first_missing_frame(exec_missing),.tx_valid(exec_valid),.tx_count(exec_count),.tx_index(event_prefetch_index),.tx_cell(exec_tx_cell),
+  .tx_read_valid(exec_read_valid),.tx_read_epoch(request_epoch),.tx_response_valid(exec_response_valid),
+  .tx_response_index(exec_response_index),.tx_response_epoch(exec_response_epoch),
   .tx_ready(exec_ready),.tx_done(exec_done),.published_batches(published_batches),
   .aborted_batches(aborted_batches),.applied_items(applied_items),.initial_instances(initial_instances),
   .persistent_id_next(persistent_id_next),.observer_idle(observer_idle),
-  .mapped_runtime_ids(mapped_runtime_ids),.mapped_persistent_ids(mapped_persistent_ids),
-  .mapped_generations(mapped_generations));
+  .map_query_slot(map_query_slot),.map_query_runtime(map_query_runtime),
+  .map_query_persistent(map_query_persistent),.map_query_generation(map_query_generation));
  s11_event_recorder u_events(.clk(clk),.rst(rst),
   .start_valid(new_start && command_mask[1]),.stop_valid(new_stop),.clear_valid(1'b0),
   .start_record_id(command_record_id),.start_ready(event_start_ready),.active(event_active),
   .incomplete(event_incomplete),.error_code(event_error),.record_id(event_id),
-  .tx_valid(event_tx_valid),.tx_count(event_tx_count),.tx_cells(event_tx_cells),
+  .tx_valid(event_tx_valid),.tx_count(event_tx_count),.tx_cell(event_tx_cell),.tx_index(event_tx_index),
   .tx_ready(event_tx_ready),.tx_done(event_tx_done),
+  .observe_write_enable(event_ram_write_enable),.prefetch_req_valid(event_prefetch_valid),.prefetch_req_index(event_prefetch_index),
   .fault_valid((exec_incomplete || cfg_fault_valid) && record_mask[1] && !new_start),
   .fault_code(cfg_fault_valid?cfg_fault_code:exec_error),
   .captured_cells(captured_event_cells),.retired_cells(retired_event_cells),
@@ -233,6 +263,50 @@ module s11_recording_subsystem(
    $fatal(1,"S11_SUBSYSTEM_CFG_FAULT_XZ");
   if(record_cmd_valid && $isunknown({record_cmd,command_record_id,command_mask,
       command_sequence,ack_kind,ack_block_sequence}))$fatal(1,"S11_SUBSYSTEM_COMMAND_XZ");
+ end
+ // synthesis translate_on
+endmodule
+
+// The production controller is also used by the independent clear/reset and
+// faulty-response fixture. It never drives ready, write-enable or done.
+module s11_cell_prefetch_control(
+ input wire clk,rst,clear_valid,batch_accept,request_valid,
+ input wire [1:0] request_owner,input wire [5:0] request_index,
+ input wire response_pulse,input wire [1:0] response_owner,input wire [5:0] response_index,
+ input wire [15:0] response_epoch,
+ input wire consume_valid,input wire [1:0] consume_owner,input wire [5:0] consume_index,
+ input wire [255:0] consume_cell,
+ output wire [15:0] request_epoch,output reg [15:0] active_epoch
+);
+ reg cached_response_valid,request_due;
+ reg [1:0] cached_owner,due_owner;
+ reg [5:0] cached_index,due_index;
+ reg [15:0] cached_epoch,due_epoch;
+ assign request_epoch=batch_accept?active_epoch+16'd1:active_epoch;
+ always @(posedge clk)begin
+  if(rst)begin active_epoch<=0;cached_response_valid<=0;request_due<=0;
+   cached_owner<=0;cached_index<=0;cached_epoch<=0;due_owner<=0;due_index<=0;due_epoch<=0;end
+  else begin
+   if(batch_accept)active_epoch<=active_epoch+1'b1;
+   if(clear_valid)begin cached_response_valid<=0;request_due<=0;end
+   else begin
+    request_due<=request_valid;
+    if(request_valid)begin due_owner<=request_owner;due_index<=request_index;due_epoch<=request_epoch;end
+    if(response_pulse)begin cached_response_valid<=1;cached_owner<=response_owner;cached_index<=response_index;cached_epoch<=response_epoch;end
+   end
+  end
+ end
+ // synthesis translate_off
+ always @(posedge clk)if(!rst&&!clear_valid)begin
+  if(request_due&&(!response_pulse||{response_owner,response_index,response_epoch}!=={due_owner,due_index,due_epoch}))
+   $fatal(1,"PREFETCH_WRONG_OR_STALE_RESPONSE");
+  if(consume_valid)begin
+   if(response_pulse)begin
+    if({response_owner,response_index,response_epoch}!=={consume_owner,consume_index,active_epoch})$fatal(1,"PREFETCH_CONSUMER_TAG");
+   end else if(!cached_response_valid||{cached_owner,cached_index,cached_epoch}!=={consume_owner,consume_index,active_epoch})
+    $fatal(1,"PREFETCH_CONSUMER_NOT_READY");
+   if($isunknown(consume_cell))$fatal(1,"PREFETCH_CONSUMER_DATA_XZ");
+  end
  end
  // synthesis translate_on
 endmodule

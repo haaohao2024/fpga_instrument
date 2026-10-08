@@ -35,6 +35,10 @@ module s9_command_reassembly (
   reg[31:0] v;integer k;begin v=c^b;for(k=0;k<8;k=k+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
  always @*read_address={channel,8'd0}+offset+index;
+ wire [7:0] payload_words[0:127];
+ generate for(genvar b=0;b<128;b=b+1)begin: payload_word
+  assign payload_words[b]=payload[b*8+:8];
+ end endgenerate
  integer i;
  always @(posedge clk)begin
   read_data<=memory[read_address];
@@ -81,7 +85,7 @@ module s9_command_reassembly (
     end
    end
    COPY:begin
-    memory[{channel,8'd0}+offset+index]<=payload[index*8+:8];
+    memory[{channel,8'd0}+offset+index]<=payload_words[index];
     if(index+1'b1==length)begin
      used[channel]<=offset+length;progress[channel]<=now_ms;
      if(offset+length>=32)begin
@@ -91,7 +95,7 @@ module s9_command_reassembly (
    end
    COMPARE_WAIT:state<=COMPARE;
    COMPARE:begin
-    if(read_data!=payload[index*8+:8])begin
+    if(read_data!=payload_words[index])begin
      error_valid<=1;error_code<=-9;error_channel<=channel;error_sequence<=message_seq[channel];
      rejected_count<=rejected_count+1'b1;state<=IDLE;
     end else if(index+1'b1==length)begin duplicate_fragments<=duplicate_fragments+1'b1;state<=IDLE;end
@@ -99,7 +103,7 @@ module s9_command_reassembly (
    end
    SCAN_WAIT:state<=SCAN;
    SCAN:begin
-    command_bytes[index*8+:8]<=read_data;
+    for(integer b=0;b<192;b=b+1)if(index==b)command_bytes[b*8+:8]<=read_data;
     if(index<total-4)crc<=crcbyte(crc,read_data);
     if(index+1'b1==total)state<=CHECK;
     else begin index<=index+1'b1;state<=SCAN_WAIT;end

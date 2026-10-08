@@ -3,6 +3,7 @@
 // Voice tables and ADSR use 48 kHz, so the system audio rate is fixed at 48 kHz.
 module instrument_core_stage7 #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -192,7 +193,7 @@ module instrument_core_stage7 #(
     end
 
     local_performance_control #(
-        .ADC_ZERO(ADC_ZERO), .ADC_FULL(ADC_FULL), .DEADZONE(DEADZONE),
+        .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED), .ADC_ZERO(ADC_ZERO), .ADC_FULL(ADC_FULL), .DEADZONE(DEADZONE),
         .PRESS_THRESHOLD(PRESS_THRESHOLD), .RELEASE_THRESHOLD(RELEASE_THRESHOLD),
         .VIBRATO_STEP(VIBRATO_STEP), .OCTAVE_MIN(OCTAVE_MIN), .OCTAVE_MAX(OCTAVE_MAX)
     ) u_control (
@@ -275,7 +276,7 @@ module instrument_core_stage7 #(
         .m_valid(event_valid), .m_ready(event_ready), .m_data(event_packet),
         .occupancy(event_queue_occupancy)
     );
-    voice_allocator32 u_event_dispatch (
+    voice_allocator32 #(.ONE_RECLAIM_PER_LANE(1)) u_event_dispatch (
         .clk(clk), .rst(rst), .panic(event_fault),
         .event_valid(event_valid), .event_ready(event_ready), .event_packet(event_packet),
         .timbre_id(timbre_id),
@@ -309,7 +310,7 @@ module instrument_core_stage7 #(
         .observe_publish(observe_allocator_publish),.observe_sources(observe_slot_sources),
         .observe_keys(observe_slot_keys),.observe_tokens(observe_slot_tokens)
     );
-    poly_synth_mixer32_stage3 u_poly (
+    poly_synth_mixer32_stage3 #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) u_poly (
         .clk(clk), .rst(rst), .sample_tick(frame_pulse),
         .slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),
         .slot_cancel(slot_cancel),
@@ -325,7 +326,7 @@ module instrument_core_stage7 #(
         .done_mask(done_mask),.done_ids(done_ids),.voice_samples(voice_samples),
         .lane_deadline_error(lane_deadline_error)
     );
-    voice_pan_config u_pan (
+    voice_pan_config #(.ALLOCATOR_OWNERSHIP(1)) u_pan (
         .clk(clk),.rst(rst),.sample_tick(frame_pulse),
         .slot_valid(slot_valid),.slot_cancel(slot_cancel),.slot_ids(slot_ids),
         .slot_generations(slot_generations),
@@ -372,4 +373,16 @@ module instrument_core_stage7 #(
         .observe_gain_version(observe_gain_version),.observe_gain_accepted(observe_gain_accepted),
         .observe_gain_l(observe_gain_l),.observe_gain_e(observe_gain_e),.observe_gain_remaining(observe_gain_remaining)
     );
+    // synthesis translate_off
+    generate for(genvar contract_lane=0;contract_lane<4;contract_lane=contract_lane+1)begin: reclaim_contract
+        always @(posedge clk)if(!rst)begin
+            if($isunknown({done_mask[contract_lane*8+:8],observe_reclaim_mask[contract_lane*8+:8]}))
+                $fatal(1,"CORE7_RECLAIM_XZ");
+            if(!$onehot0(done_mask[contract_lane*8+:8]) || !$onehot0(observe_reclaim_mask[contract_lane*8+:8]))
+                $fatal(1,"CORE7_RECLAIM_MULTI");
+            if((observe_reclaim_mask[contract_lane*8+:8] & ~done_mask[contract_lane*8+:8])!=0)
+                $fatal(1,"CORE7_RECLAIM_NOT_SUBSET");
+        end
+    end endgenerate
+    // synthesis translate_on
 endmodule

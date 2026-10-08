@@ -1,6 +1,7 @@
 // Local physical input events -> hardware-independent performance controls.
 // All state uses clk; synchronous HIGH-active rst. No device primitives.
 module local_performance_control #(
+    parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -66,7 +67,7 @@ module local_performance_control #(
     genvar pad;
     generate for (pad=0; pad<8; pad=pad+1) begin : pads
         localparam integer BASE_NOTE = BASE_NOTES[pad*7 +: 7];
-        wire [7:0] normalized = normalize_pressure(pressure_raw[pad*10 +: 10]);
+        wire [7:0] normalized = PRESSURE_PRENORMALIZED?pressure_raw[pad*10+:8]:normalize_pressure(pressure_raw[pad*10 +: 10]);
         wire signed [31:0] absolute_note = BASE_NOTE + $signed(octave_shift)*32'sd12;
         assign note_code[pad*7 +: 7] = absolute_note[6:0];
 

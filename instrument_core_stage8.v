@@ -1,6 +1,7 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage8 #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -125,6 +126,7 @@ module instrument_core_stage8 #(
     output wire [103:0] observe_gain_state
 );
  instrument_core_stage7 #(
+  .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),.ADC_ZERO(ADC_ZERO),.ADC_FULL(ADC_FULL),.DEADZONE(DEADZONE),.PRESS_THRESHOLD(PRESS_THRESHOLD),.RELEASE_THRESHOLD(RELEASE_THRESHOLD),.VIBRATO_STEP(VIBRATO_STEP),.OCTAVE_MIN(OCTAVE_MIN),.OCTAVE_MAX(OCTAVE_MAX),.MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.ENABLE_REMOTE(ENABLE_REMOTE)) u_audio (
   .field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
     .observe_allocator_busy(observe_allocator_busy),

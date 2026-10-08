@@ -37,6 +37,11 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  assign parser_enable=state==1||state==2||state==3;
  assign record_ready=!rst&&!sample_tick&&state==2&&window_open&&!resuming&&!event_valid&&
   outstanding<2&&!local_backlog&&rec_time==music_time&&!destructive_control&&!parser_error;
+ wire [6:0] resume_notes[0:31];wire [7:0] resume_pressures[0:31];
+ wire [63:0] next_token=token_counter+64'd1;
+ generate for(genvar s=0;s<32;s=s+1)begin: resume_word
+  assign resume_notes[s]=logical_notes[s*7+:7];assign resume_pressures[s]=logical_pressures[s*8+:8];
+ end endgenerate
  reg [95:0] item;integer i;
  task begin_stop(input [7:0] destination,input [7:0] cause);
   begin state<=4;stop_phase<=0;cleanup_key<=0;stop_destination<=destination;window_open<=0;resuming<=0;
@@ -49,17 +54,29 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
    event_valid<=1;events_offered<=events_offered+1;build_count<=0;build_items<=0;
   end
  endtask
+ // All five append sites use old state and are mutually exclusive:
+ // normal record requires !resuming, resume requires resuming, cleanup state4.
+ // Capture the original request in source order, then encode it once below.
+ reg append_valid,append_flush;reg [95:0] append_data;
+ reg [863:0] append_items;reg [3:0] append_count;
+ // synthesis translate_off
+ integer append_calls;
+ // synthesis translate_on
  task append_item(input [95:0] x,input flush);
-  reg [863:0] items;reg [3:0] count;
   begin
-   items=build_items;items[build_count*96+:96]=x;count=build_count+1;
-   if(flush||count==9)begin
-    event_packet<={system_sample,((9'd1<<count)-1'b1),items};event_valid<=1;
-    events_offered<=events_offered+1;build_count<=0;build_items<=0;
-   end else begin build_items<=items;build_count<=count;end
+   append_valid=1;append_data=x;append_flush=flush;
+   // synthesis translate_off
+   append_calls=append_calls+1;
+   // synthesis translate_on
   end
  endtask
+ wire [4:0] token_read_slot=state==4?cleanup_key[4:0]:key[4:0];
+ wire [63:0] selected_key_token=key_tokens[token_read_slot];
  always @(posedge clk)begin
+  append_valid=0;append_flush=0;append_data=0;
+  // synthesis translate_off
+  append_calls=0;
+  // synthesis translate_on
   parser_clear<=0;
   if(rst)begin
    state<=0;error_code<=0;music_time<=0;epoch<=0;logical_held<=0;sound_held<=0;logical_notes<=0;logical_pressures<=0;guide_held<=0;guide_notes<=0;
@@ -92,24 +109,24 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
      last_group_cycles<=frame_age;
      // LED sees a complete chord state, never an intermediate partial group.
      guide_held<=logical_held;guide_notes<=logical_notes;
-     if(op==1)begin guide_held[key[4:0]]<=1;guide_notes[key*7+:7]<=note[6:0];end
+     if(op==1)begin guide_held[key[4:0]]<=1;for(integer s=0;s<32;s=s+1)if(key==s)guide_notes[s*7+:7]<=note[6:0];end
      else if(op==2)guide_held[key[4:0]]<=0;
-     else if(op==3)guide_notes[key*7+:7]<=note[6:0];
+     else if(op==3)for(integer s=0;s<32;s=s+1)if(key==s)guide_notes[s*7+:7]<=note[6:0];
     end
     if(op==1)begin
-     logical_held[key[4:0]]<=1;logical_notes[key*7+:7]<=note[6:0];logical_pressures[key*8+:8]<=value;
+     logical_held[key[4:0]]<=1;for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];for(integer s=0;s<32;s=s+1)if(key==s)logical_pressures[s*8+:8]<=value;
      if(!teach)begin
       if(token_counter==TOKEN_MAX)begin token_exhaustions<=token_exhaustions+1;begin_stop(0,9);end
-      else begin token_counter<=token_counter+1;key_tokens[key[4:0]]<=token_counter+1;sound_held[key[4:0]]<=1;
-       append_item({token_counter+64'd1,4'd1,4'd1,key,note[6:0],value,1'b0},closed);
+      else begin token_counter<=next_token;key_tokens[key[4:0]]<=next_token;sound_held[key[4:0]]<=1;
+       append_item({next_token,4'd1,4'd1,key,note[6:0],value,1'b0},closed);
       end
      end
     end else if(op==2)begin
      logical_held[key[4:0]]<=0;
-     if(!teach)begin sound_held[key[4:0]]<=0;append_item({key_tokens[key[4:0]],4'd1,4'd2,key,7'd0,8'd0,1'b0},closed);end
+     if(!teach)begin sound_held[key[4:0]]<=0;append_item({selected_key_token,4'd1,4'd2,key,7'd0,8'd0,1'b0},closed);end
     end else if(op==3)begin
-     logical_notes[key*7+:7]<=note[6:0];logical_pressures[key*8+:8]<=value;
-     if(!teach)append_item({key_tokens[key[4:0]],4'd1,4'd3,key,note[6:0],value,1'b0},closed);
+     for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];for(integer s=0;s<32;s=s+1)if(key==s)logical_pressures[s*8+:8]<=value;
+     if(!teach)append_item({selected_key_token,4'd1,4'd3,key,note[6:0],value,1'b0},closed);
     end else if(op==4)begin
      natural_end<=1;begin_stop(0,0);
     end
@@ -120,7 +137,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
     1:begin
      if(cleanup_key==32)begin if(build_count!=0)offer_build();else stop_phase<=2;end
      else if(sound_held[cleanup_key[4:0]])begin
-      append_item({key_tokens[cleanup_key[4:0]],4'd1,4'd2,{3'd0,cleanup_key[4:0]},7'd0,8'd0,1'b0},1'b0);
+      append_item({selected_key_token,4'd1,4'd2,{3'd0,cleanup_key[4:0]},7'd0,8'd0,1'b0},1'b0);
       sound_held[cleanup_key[4:0]]<=0;cleanup_key<=cleanup_key+1;
      end else cleanup_key<=cleanup_key+1;
     end
@@ -138,8 +155,8 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
      if(build_count!=0)offer_build();else if(outstanding==0)resuming<=0;
     end else if(logical_held[resume_key[4:0]])begin
      if(token_counter==TOKEN_MAX)begin token_exhaustions<=token_exhaustions+1;begin_stop(0,9);end
-     else begin token_counter<=token_counter+1;key_tokens[resume_key[4:0]]<=token_counter+1;sound_held[resume_key[4:0]]<=1;
-      append_item({token_counter+64'd1,4'd1,4'd1,{3'd0,resume_key[4:0]},logical_notes[resume_key*7+:7],logical_pressures[resume_key*8+:8],1'b0},1'b0);
+     else begin token_counter<=next_token;key_tokens[resume_key[4:0]]<=next_token;sound_held[resume_key[4:0]]<=1;
+      append_item({next_token,4'd1,4'd1,{3'd0,resume_key[4:0]},resume_notes[resume_key],resume_pressures[resume_key],1'b0},1'b0);
       resume_key<=resume_key+1;
      end
     end else resume_key<=resume_key+1;
@@ -164,6 +181,18 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
     end
     5:if(state==3)resume_pending<=1;
    endcase
+   if(append_valid)begin
+    append_items=build_items;
+    for(integer s=0;s<9;s=s+1)if(build_count==s)append_items[s*96+:96]=append_data;
+    append_count=build_count+1;
+    if(append_flush || append_count==9)begin
+     event_packet<={system_sample,((9'd1<<append_count)-1'b1),append_items};
+     event_valid<=1;events_offered<=events_offered+1;build_count<=0;build_items<=0;
+    end else begin build_items<=append_items;build_count<=append_count;end
+   end
+   // synthesis translate_off
+   if(append_calls>1)$fatal(1,"SCORE_APPEND_MULTIPLE_REQUESTS");
+   // synthesis translate_on
   end
  end
  // synthesis translate_off

@@ -1,7 +1,7 @@
 // Production RT execution adapter. COMMITTED is driven by the actual allocator
 // publication, never by a packet-time budget. It does not label COMMITTED as
 // an audible/EFFECTIVE response; parameters have separate snapshot feedback.
-module s9_event_endpoint(
+module s9_event_endpoint #(parameter integer DEFER_RESULT_CRC=0)(
  input wire clk,rst,session_flush,session_ready,input wire[127:0] session_id,
  input wire phone_open,phone_close,output wire phone_open_ready,phone_active,phone_close_done,
  input wire command_valid,output wire command_ready,input wire[2:0] command_slot,
@@ -40,7 +40,7 @@ module s9_event_endpoint(
   packed_result=0;packed_result[31:0]=32'h54533953;packed_result[39:32]=1;packed_result[47:40]=2;
   packed_result[191:64]=session_id;packed_result[223:192]=result_sequence;
   packed_result[239:232]=(result_error==0)?3:7;packed_result[255:240]=result_error;
-  crc=32'hffffffff;for(i=0;i<60;i=i+1)crc=crcbyte(crc,packed_result[i*8+:8]);packed_result[511:480]=~crc;
+  crc=32'hffffffff;if(!DEFER_RESULT_CRC)begin for(i=0;i<60;i=i+1)crc=crcbyte(crc,packed_result[i*8+:8]);packed_result[511:480]=~crc;end
  end
  assign result_bytes=packed_result;
  always @(posedge clk)begin

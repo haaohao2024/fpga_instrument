@@ -2,6 +2,7 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage11 #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -148,9 +149,10 @@ module instrument_core_stage11 #(
  wire [8:0] record_peek_address;wire [7:0] record_peek_data;
  wire cfg_tx_valid,cfg_tx_ready,cfg_tx_done,cfg_fault_valid,cfg_idle,cfg_capture_fault;
  wire [63:0] cfg_first_missing_frame;
- wire [5:0] cfg_tx_count;wire [10239:0] cfg_tx_cells;wire [7:0] cfg_fault_code;
- wire [2047:0] mapped_runtime_ids,mapped_persistent_ids;
- wire [511:0] mapped_generations;
+ wire cfg_tx_read_valid,cfg_tx_response_valid;wire [15:0] cfg_tx_read_epoch,cfg_tx_response_epoch;wire [5:0] cfg_tx_response_index;
+ wire [5:0] cfg_tx_count;wire [255:0] cfg_tx_cell;wire [5:0] cfg_tx_index;wire [7:0] cfg_fault_code;
+ wire [63:0] map_query_runtime,map_query_persistent;
+ wire [15:0] map_query_generation;
  wire [63:0] recorder_first_missing=record_mask[0]&&record_first_missing_frame!=64'hffffffffffffffff ? record_first_missing_frame:record_first_missing_event_frame;
  wire [2:0] wire_record_state;
  wire wire_record_incomplete,record_drained;
@@ -164,6 +166,7 @@ module instrument_core_stage11 #(
   else if(since_load!=65535)since_load<=since_load+1'b1;
  end
  instrument_core_stage10 #(
+  .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
   .ADC_FULL(ADC_FULL),
@@ -363,7 +366,9 @@ module instrument_core_stage11 #(
   .slot_notes(observe_slot_notes),.slot_pressures(observe_slot_pressures),.slot_keys(observe_slot_keys),
   .slot_sources(observe_slot_sources),.slot_ids(observe_slot_ids),.slot_tokens(observe_slot_tokens),
   .slot_generations(observe_slot_generations),.slot_timbres(observe_slot_timbres),.slot_pans(observe_current_pan),
-  .cfg_tx_valid(cfg_tx_valid),.cfg_tx_count(cfg_tx_count),.cfg_tx_cells(cfg_tx_cells),.cfg_tx_ready(cfg_tx_ready),.cfg_tx_done(cfg_tx_done),
+  .cfg_tx_read_valid(cfg_tx_read_valid),.cfg_tx_read_epoch(cfg_tx_read_epoch),
+  .cfg_tx_response_valid(cfg_tx_response_valid),.cfg_tx_response_index(cfg_tx_response_index),.cfg_tx_response_epoch(cfg_tx_response_epoch),
+  .cfg_tx_valid(cfg_tx_valid),.cfg_tx_count(cfg_tx_count),.cfg_tx_cell(cfg_tx_cell),.cfg_tx_index(cfg_tx_index),.cfg_tx_ready(cfg_tx_ready),.cfg_tx_done(cfg_tx_done),
   .cfg_fault_valid(cfg_fault_valid),.cfg_fault_code(cfg_fault_code),.cfg_first_missing_frame(cfg_first_missing_frame),
   .cfg_capture_fault(cfg_capture_fault),.cfg_idle(cfg_idle),.block_request(1'b1),
   .block_valid(record_block_valid),.block_kind(record_block_kind),.block_sequence(record_block_sequence),
@@ -374,8 +379,8 @@ module instrument_core_stage11 #(
   .buffered_pcm_pairs(record_buffered_pairs),.captured_event_cells(record_captured_cells),.retired_event_cells(record_retired_cells),.first_missing_event_frame(record_first_missing_event_frame),
   .discarded_event_cells(record_discarded_cells),.buffered_event_cells(record_buffered_cells),
   .published_batches(record_published_batches),.aborted_batches(record_aborted_batches),.applied_items(record_applied_items),
-  .initial_instances(record_initial_instances),.mapped_runtime_ids(mapped_runtime_ids),
-  .mapped_persistent_ids(mapped_persistent_ids),.mapped_generations(mapped_generations));
+  .initial_instances(record_initial_instances),.map_query_slot(pan_slot),.map_query_runtime(map_query_runtime),
+  .map_query_persistent(map_query_persistent),.map_query_generation(map_query_generation));
  s11_config_observer configs(.clk(clk),.rst(rst),.capture_fault(cfg_capture_fault),.start(record_start_pulse&&record_cmd_mask[1]),
   .stop(record_stop_pulse),.recording(record_mask[1]&&(record_state==1||record_state==2)),
   .frame_id(observe_event_frame_id),.subcycle(observe_event_subcycle),
@@ -388,8 +393,10 @@ module instrument_core_stage11 #(
   .gain_state(observe_gain_state),.gain_remaining(observe_gain_remaining),.pan_valid(pan_valid),.pan_slot(pan_slot),.pan_id(pan_id),
   .pan_generation(pan_generation),.pan_value(pan_value),.slot_valid(observe_slot_valid),.slot_cancel(observe_slot_cancel),
   .slot_ids(observe_slot_ids),.slot_generations(observe_slot_generations),
-  .mapped_runtime_ids(mapped_runtime_ids),.mapped_persistent_ids(mapped_persistent_ids),.mapped_generations(mapped_generations),
+  .map_query_runtime(map_query_runtime),.map_query_persistent(map_query_persistent),.map_query_generation(map_query_generation),
   .stream_state(observe_stream_state),.stream_generation(observe_stream_generation),.media_epoch(observe_media_epoch),
-  .tx_valid(cfg_tx_valid),.tx_count(cfg_tx_count),.tx_cells(cfg_tx_cells),.tx_ready(cfg_tx_ready),.tx_done(cfg_tx_done),
+  .tx_read_valid(cfg_tx_read_valid),.tx_read_epoch(cfg_tx_read_epoch),
+  .tx_response_valid(cfg_tx_response_valid),.tx_response_index(cfg_tx_response_index),.tx_response_epoch(cfg_tx_response_epoch),
+  .tx_valid(cfg_tx_valid),.tx_count(cfg_tx_count),.tx_cell(cfg_tx_cell),.tx_index(cfg_tx_index),.tx_ready(cfg_tx_ready),.tx_done(cfg_tx_done),
   .fault_valid(cfg_fault_valid),.first_missing_frame(cfg_first_missing_frame),.fault_code(cfg_fault_code),.idle(cfg_idle));
 endmodule
