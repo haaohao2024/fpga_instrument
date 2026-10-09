@@ -1,7 +1,7 @@
 // Four passive completion streams -> paired signed Q8 stereo mix.
 // Only the original completion-edge accept is authoritative. Never recheck
 // live Voice ownership after capturing this transaction.
-module stereo_voice_mixer32 (
+module stereo_voice_mixer32 #(parameter integer COMPLETION_LIMIT=25) (
     input wire clk,rst,sample_tick,
     input wire [3:0] completion_valid,completion_accept,
     input wire [11:0] completion_slot,
@@ -100,7 +100,7 @@ module stereo_voice_mixer32 (
             if(pair_valid)begin
                 mix_l_q8<=pair_l0+pair_l1;mix_r_q8<=pair_r0+pair_r1;
                 busy<=0;last_complete_cycle<=age+1'b1;
-                if(!busy || age>=25)deadline_error<=1;
+                if(!busy || age>=COMPLETION_LIMIT)deadline_error<=1;
             end
         end
     end

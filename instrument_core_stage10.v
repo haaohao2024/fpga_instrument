@@ -1,6 +1,7 @@
 // Stage10 SPI PCM composition only; no change to the frozen audio/video algorithms.
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage10 #(
+    parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -14,6 +15,10 @@ module instrument_core_stage10 #(
     parameter integer ENABLE_S11 = 0,
     parameter integer MIX_SHIFT = 5
 ) (
+    input wire token_snapshot_capture,token_snapshot_read,
+    input wire [4:0] token_snapshot_slot,
+    output wire [63:0] token_snapshot_data,
+
     input wire spi_sck,score_cs_n,sd_cs_n,spi_mosi,
     output wire spi_miso,spi_miso_oe,guide_led_dout,
     input wire guide_cfg_valid,guide_cfg_prefix,
@@ -147,7 +152,7 @@ module instrument_core_stage10 #(
  // Its front 32 bytes are the same score snapshot as the legacy response.
  assign spi_miso=(!score_cs_n&&route_s10)?media_miso:legacy_miso;
  assign spi_miso_oe=(!score_cs_n&&route_s10)?media_oe:legacy_oe;
- s10_pcm_transport #(.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1)) transport(.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
+ s10_pcm_transport #(.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
   .control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .legacy_status_bytes(observe_score_status),.stream_buffered(observe_stream_buffered),
   .stream_generation(observe_stream_generation),.stream_state(observe_stream_state),.cancel(1'b0),
@@ -185,7 +190,7 @@ module instrument_core_stage10 #(
   .record_block_items(record_block_items),
   .record_peek_address(record_peek_address),
   .record_peek_data(record_peek_data));
- instrument_core_stage9 #(
+ instrument_core_stage9 #(.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
  .CLK_FREQ_HZ(CLK_FREQ_HZ),
  .ADC_ZERO(ADC_ZERO),
@@ -198,6 +203,7 @@ module instrument_core_stage10 #(
  .OCTAVE_MAX(OCTAVE_MAX),
  .MIX_SHIFT(MIX_SHIFT),
  .ENABLE_S10_ROUTE(1),.ENABLE_S11(ENABLE_S11)) base(
+ .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
  .field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
    .observe_allocator_busy(observe_allocator_busy),
   .observe_batch_begin(observe_batch_begin),

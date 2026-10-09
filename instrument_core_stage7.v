@@ -2,6 +2,7 @@
 // All logic uses clk; rst is synchronous and HIGH active. No vendor IP.
 // Voice tables and ADSR use 48 kHz, so the system audio rate is fixed at 48 kHz.
 module instrument_core_stage7 #(
+    parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -17,6 +18,10 @@ module instrument_core_stage7 #(
     parameter integer MIX_SHIFT = 5,
     parameter integer ENABLE_REMOTE = 0
 ) (
+    input wire token_snapshot_capture,token_snapshot_read,
+    input wire [4:0] token_snapshot_slot,
+    output wire [63:0] token_snapshot_data,
+
     input wire score_spi_sck,score_cs_n,score_sd_cs_n,score_spi_mosi,
     output wire score_spi_miso,score_spi_miso_oe,guide_led_dout,
     input wire guide_cfg_valid,guide_cfg_prefix,
@@ -143,6 +148,26 @@ module instrument_core_stage7 #(
     wire [3:0] lane_deadline_error;
     wire signed [23:0] mix_sample;
     wire mix_valid,mono_mix_valid;
+    // The score window is a frame-control boundary, independent of when
+    // the deeper arithmetic pipeline delivers PCM. Original stereo lock
+    // becomes high after C25 and is consumed on C26, including cold reset.
+    reg [5:0] control_frame_age;
+    wire stereo_control_locked=control_frame_age==25;
+    always @(posedge clk)begin
+        if(rst)control_frame_age<=63;
+        else if(frame_pulse)control_frame_age<=0;
+        else if(control_frame_age<63)control_frame_age<=control_frame_age+1'b1;
+    end
+    // synthesis translate_off
+    reg [2:0] control_lock_delay;
+    always @(posedge clk)begin
+        if(rst)control_lock_delay<=0;
+        else begin
+            control_lock_delay<={control_lock_delay[1:0],stereo_control_locked};
+            if(mix_valid!==control_lock_delay[2])$fatal(1,"AUDIO_CONTROL_RESULT_ALIGNMENT");
+        end
+    end
+    // synthesis translate_on
     wire [3:0] completion_valid,completion_accept;
     wire [11:0] completion_slot;
     wire [71:0] completion_sample;
@@ -214,9 +239,10 @@ module instrument_core_stage7 #(
     wire buffered_local_valid,buffered_local_ready,score_event_valid,score_event_ready;
     wire [904:0] buffered_local_packet,score_event_packet;
     wire [3:0] local_buffer_occupancy;
-    performance_event_queue #(.WIDTH(905),.DEPTH(8)) u_local_elastic (
+    performance_local_packet_queue u_local_elastic (
         .clk(clk),.rst(rst),.s_valid(local_event_valid),.s_ready(local_event_ready),.s_data(local_event_packet),
         .m_valid(buffered_local_valid),.m_ready(buffered_local_ready),.m_data(buffered_local_packet),.occupancy(local_buffer_occupancy));
+    wire score_dispatch_active;
     reg allocator_inflight_score,allocator_was_busy,score_dispatch_done;
     always @(posedge clk)begin
         if(rst)begin allocator_inflight_score<=0;allocator_was_busy<=0;score_dispatch_done<=0;end
@@ -226,15 +252,15 @@ module instrument_core_stage7 #(
             if(event_valid&&event_ready)allocator_inflight_score<=event_packet[31:28]==1;
         end
     end
-    score_subsystem #(.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11)) u_score (
+    score_subsystem #(.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1)) u_score (
         .field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
-        .clk(clk),.rst(rst),.sample_tick(frame_pulse),.stereo_locked(mix_valid),
+        .clk(clk),.rst(rst),.sample_tick(frame_pulse),.stereo_locked(stereo_control_locked),
         .spi_sck(score_spi_sck),.fpga_cs_n(score_cs_n),.sd_cs_n(score_sd_cs_n),.spi_mosi(score_spi_mosi),
         .spi_miso(score_spi_miso),.spi_miso_oe(score_spi_miso_oe),.local_backlog(local_buffer_occupancy!=0),
         .event_valid(score_event_valid),.event_ready(score_event_ready),.event_packet(score_event_packet),
         .dispatch_done(score_dispatch_done),.local_notes(local_notes),
         .guide_cfg_valid(guide_cfg_valid),.guide_cfg_prefix(guide_cfg_prefix),.guide_cfg_order(guide_cfg_order),.guide_cfg_lead(guide_cfg_lead),
-        .led_dout(guide_led_dout),.score_state(score_state),.score_error(score_error),.score_time(score_time),.deadline_count(score_deadline_count),.observe_teach(observe_teach),.observe_loop(observe_loop),.observe_score_status(observe_score_status));
+        .led_dout(guide_led_dout),.score_state(score_state),.score_error(score_error),.score_time(score_time),.deadline_count(score_deadline_count),.observe_teach(observe_teach),.observe_loop(observe_loop),.observe_score_status(observe_score_status),.observe_dispatch_active(score_dispatch_active));
     performance_event_arbiter #(.WIDTH(905)) u_event_arbiter (
         .clk(clk), .rst(rst), .s0_valid(buffered_local_valid), .s0_data(buffered_local_packet),
         .s0_ready(buffered_local_ready), .s1_valid(score_event_valid), .s1_data(score_event_packet), .s1_ready(score_event_ready),
@@ -261,7 +287,7 @@ module instrument_core_stage7 #(
         end
     end
     generate if(ENABLE_REMOTE)begin: phone_arbitration
-        s9_event_arbiter u_remote_arbiter(.clk(clk),.rst(rst),
+        s9_event_arbiter #(.GUARDED_ADMISSION(1)) u_remote_arbiter(.legacy_urgent(score_dispatch_active),.clk(clk),.rst(rst),
             .legacy_valid(arb_valid),.legacy_packet(arb_packet),.legacy_ready(arb_ready),
             .phone_valid(remote_event_valid),.phone_packet(remote_event_packet),.phone_ready(remote_event_ready),
             .out_valid(queue_source_valid),.out_packet(queue_source_packet),.out_ready(queue_source_ready));
@@ -271,12 +297,16 @@ module instrument_core_stage7 #(
         assign arb_ready=queue_source_ready;
         assign remote_event_ready=1'b0;
     end endgenerate
-    performance_event_queue #(.WIDTH(905)) u_event_queue (
-        .clk(clk), .rst(rst), .s_valid(queue_source_valid), .s_ready(queue_source_ready), .s_data(queue_source_packet),
-        .m_valid(event_valid), .m_ready(event_ready), .m_data(event_packet),
-        .occupancy(event_queue_occupancy)
-    );
-    voice_allocator32 #(.ONE_RECLAIM_PER_LANE(1)) u_event_dispatch (
+    wire [3:0] allocator_item_index;
+    wire [95:0] allocator_item_data;
+    performance_indexed_event_queue u_event_queue (
+        .clk(clk),.rst(rst),.s_valid(queue_source_valid),.s_ready(queue_source_ready),.s_data(queue_source_packet),
+        .m_valid(event_valid),.m_ready(event_ready && !event_fault),.m_data(event_packet),
+        .retire(observe_allocator_publish || observe_batch_abort),
+        .item_index(allocator_item_index),.item_data(allocator_item_data),.occupancy(event_queue_occupancy));
+    voice_allocator32 #(.ONE_RECLAIM_PER_LANE(1),.INDEXED_INPUT(1),.VERSIONED_TOKENS(VERSIONED_TOKENS)) u_event_dispatch (
+        .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
+        .event_item(allocator_item_data),.event_item_index(allocator_item_index),
         .observe_working_public_equal(working_public_equal),
         .clk(clk), .rst(rst), .panic(event_fault),
         .event_valid(event_valid), .event_ready(event_ready), .event_packet(event_packet),
@@ -339,7 +369,7 @@ module instrument_core_stage7 #(
         .snapshot_pan(snapshot_pan),.snapshot_ids(snapshot_ids),.snapshot_generations(snapshot_generations),
         .observe_current_pan(observe_current_pan),
         .accepted_count(pan_accepted_count),.stale_count(pan_stale_count),.invalid_count(pan_invalid_count));
-    stereo_voice_mixer32 u_stereo (
+    stereo_voice_mixer32 #(.COMPLETION_LIMIT(28)) u_stereo (
         .clk(clk),.rst(rst),.sample_tick(frame_pulse),
         .completion_valid(completion_valid),.completion_accept(completion_accept),
         .completion_slot(completion_slot),.completion_sample(completion_sample),
@@ -453,4 +483,110 @@ poly_synth_mixer32_owner_directory #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) pol
 end else begin: baseline
 poly_synth_mixer32_stage3 #(.COMPACT_RECLAIM(1),.SHARED_BACKEND(1)) poly(.clk(clk),.rst(rst),.sample_tick(sample_tick),.slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),.slot_cancel(slot_cancel),.slot_notes(slot_notes),.slot_pressures(slot_pressures),.slot_ids(slot_ids),.slot_generations(slot_generations),.slot_timbres(slot_timbres),.vibrato_depth(vibrato_depth),.mix_sample(mix_sample),.mix_valid(mix_valid),.envelope_levels(envelope_levels),.envelope_states(envelope_states),.done_mask(done_mask),.done_ids(done_ids),.voice_samples(voice_samples),.completion_valid(completion_valid),.completion_accept(completion_accept),.completion_slot(completion_slot),.completion_sample(completion_sample),.completion_id(completion_id),.completion_generation(completion_generation),.lane_deadline_error(lane_deadline_error),.glide_code(4'd7));
 end endgenerate
+endmodule
+
+module allocator_indexed_probe (
+    input wire clk, rst, panic, sample_tick,
+    input wire event_valid,
+    output wire event_ready,
+    input wire [904:0] event_packet,
+    input wire [95:0] event_item,
+    output wire [3:0] event_item_index,
+    // Configuration is sampled only when a NOTE_ON actually allocates a slot.
+    input wire [2:0] timbre_id,
+    input wire [543:0] envelope_levels,
+    input wire [31:0] done_mask,
+    input wire [2047:0] done_ids,
+    output wire [31:0] slot_valid, slot_gate, slot_trigger,
+    output wire [31:0] slot_cancel,
+    output wire [223:0] slot_notes,
+    output wire [255:0] slot_pressures,
+    output wire [2047:0] slot_ids,
+    output wire [511:0] slot_generations,
+    output wire [95:0] slot_timbres,
+    output wire [7:0] vibrato_depth,
+    output wire protocol_error,
+    output wire [31:0] steal_count, stale_count, allocation_count,
+    output wire [31:0] reclaim_count, id_collision_skip_count, id_wrap_count,
+    // Read-only publication/identity export. No observer feeds allocator state.
+    output wire [31:0] observe_working_public_equal,
+    output wire observe_publish,
+    output wire [127:0] observe_sources,
+    output wire [255:0] observe_keys,
+    output wire [2047:0] observe_tokens,
+    // Stage11: passive decision taps, sampled on the ORIGINAL apply edge.
+    // outcome: 1 allocate, 2 off, 3 pitch/pressure, 4 vibrato, 5 stale,
+    // 6 invalid item. A working batch is durable only after publish_ok.
+    output wire observe_busy, observe_batch_begin, observe_publish_ok,
+    output wire observe_batch_abort, observe_apply_valid,
+    output wire [31:0] observe_batch_timestamp,
+    output wire [3:0] observe_apply_lane,
+    output wire [95:0] observe_apply_item,
+    output wire [7:0] observe_apply_outcome,
+    output wire [5:0] observe_apply_slot,
+    output wire [63:0] observe_apply_id,
+    output wire [15:0] observe_apply_generation,
+    output wire [2:0] observe_apply_timbre,
+    output wire observe_apply_steal,
+    output wire [63:0] observe_retired_id,
+    output wire [15:0] observe_retired_generation,
+    output wire [31:0] observe_reclaim_mask,
+    output wire [511:0] observe_reclaim_generations
+);
+voice_allocator32 #(.ID_WIDTH(64),.ONE_RECLAIM_PER_LANE(1),.INDEXED_INPUT(1)) dut(.clk(clk),.rst(rst),.panic(panic),.sample_tick(sample_tick),.event_valid(event_valid),.event_ready(event_ready),.event_packet(event_packet),.event_item(event_item),.event_item_index(event_item_index),.timbre_id(timbre_id),.envelope_levels(envelope_levels),.done_mask(done_mask),.done_ids(done_ids),.slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),.slot_cancel(slot_cancel),.slot_notes(slot_notes),.slot_pressures(slot_pressures),.slot_ids(slot_ids),.slot_generations(slot_generations),.slot_timbres(slot_timbres),.vibrato_depth(vibrato_depth),.protocol_error(protocol_error),.steal_count(steal_count),.stale_count(stale_count),.allocation_count(allocation_count),.reclaim_count(reclaim_count),.id_collision_skip_count(id_collision_skip_count),.id_wrap_count(id_wrap_count),.observe_working_public_equal(observe_working_public_equal),.observe_publish(observe_publish),.observe_sources(observe_sources),.observe_keys(observe_keys),.observe_tokens(observe_tokens),.observe_busy(observe_busy),.observe_batch_begin(observe_batch_begin),.observe_publish_ok(observe_publish_ok),.observe_batch_abort(observe_batch_abort),.observe_apply_valid(observe_apply_valid),.observe_batch_timestamp(observe_batch_timestamp),.observe_apply_lane(observe_apply_lane),.observe_apply_item(observe_apply_item),.observe_apply_outcome(observe_apply_outcome),.observe_apply_slot(observe_apply_slot),.observe_apply_id(observe_apply_id),.observe_apply_generation(observe_apply_generation),.observe_apply_timbre(observe_apply_timbre),.observe_apply_steal(observe_apply_steal),.observe_retired_id(observe_retired_id),.observe_retired_generation(observe_retired_generation),.observe_reclaim_mask(observe_reclaim_mask),.observe_reclaim_generations(observe_reclaim_generations));
+endmodule
+
+module allocator_event_queue_probe (
+    input wire clk, rst, panic, sample_tick,
+    input wire event_valid,
+    output wire event_ready,
+    input wire [904:0] event_packet,
+    input wire [95:0] event_item,
+    output wire [3:0] event_item_index,
+    // Configuration is sampled only when a NOTE_ON actually allocates a slot.
+    input wire [2:0] timbre_id,
+    input wire [543:0] envelope_levels,
+    input wire [31:0] done_mask,
+    input wire [2047:0] done_ids,
+    output wire [31:0] slot_valid, slot_gate, slot_trigger,
+    output wire [31:0] slot_cancel,
+    output wire [223:0] slot_notes,
+    output wire [255:0] slot_pressures,
+    output wire [2047:0] slot_ids,
+    output wire [511:0] slot_generations,
+    output wire [95:0] slot_timbres,
+    output wire [7:0] vibrato_depth,
+    output wire protocol_error,
+    output wire [31:0] steal_count, stale_count, allocation_count,
+    output wire [31:0] reclaim_count, id_collision_skip_count, id_wrap_count,
+    // Read-only publication/identity export. No observer feeds allocator state.
+    output wire [31:0] observe_working_public_equal,
+    output wire observe_publish,
+    output wire [127:0] observe_sources,
+    output wire [255:0] observe_keys,
+    output wire [2047:0] observe_tokens,
+    // Stage11: passive decision taps, sampled on the ORIGINAL apply edge.
+    // outcome: 1 allocate, 2 off, 3 pitch/pressure, 4 vibrato, 5 stale,
+    // 6 invalid item. A working batch is durable only after publish_ok.
+    output wire observe_busy, observe_batch_begin, observe_publish_ok,
+    output wire observe_batch_abort, observe_apply_valid,
+    output wire [31:0] observe_batch_timestamp,
+    output wire [3:0] observe_apply_lane,
+    output wire [95:0] observe_apply_item,
+    output wire [7:0] observe_apply_outcome,
+    output wire [5:0] observe_apply_slot,
+    output wire [63:0] observe_apply_id,
+    output wire [15:0] observe_apply_generation,
+    output wire [2:0] observe_apply_timbre,
+    output wire observe_apply_steal,
+    output wire [63:0] observe_retired_id,
+    output wire [15:0] observe_retired_generation,
+    output wire [31:0] observe_reclaim_mask,
+    output wire [511:0] observe_reclaim_generations
+);
+wire q_valid,a_ready;wire [904:0] q_header;wire [95:0] q_item;wire [2:0] q_count;
+performance_indexed_event_queue queue(.clk(clk),.rst(rst),.s_valid(event_valid),.s_ready(event_ready),.s_data(event_packet),
+ .m_valid(q_valid),.m_ready(a_ready && !panic),.m_data(q_header),
+ .retire(observe_publish_ok || observe_batch_abort),.item_index(event_item_index),.item_data(q_item),.occupancy(q_count));
+voice_allocator32 #(.ID_WIDTH(64),.ONE_RECLAIM_PER_LANE(1),.INDEXED_INPUT(1)) dut(.clk(clk),.rst(rst),.panic(panic),.sample_tick(sample_tick),.event_valid(q_valid),.event_ready(a_ready),.event_packet(q_header),.event_item(q_item),.event_item_index(event_item_index),.timbre_id(timbre_id),.envelope_levels(envelope_levels),.done_mask(done_mask),.done_ids(done_ids),.slot_valid(slot_valid),.slot_gate(slot_gate),.slot_trigger(slot_trigger),.slot_cancel(slot_cancel),.slot_notes(slot_notes),.slot_pressures(slot_pressures),.slot_ids(slot_ids),.slot_generations(slot_generations),.slot_timbres(slot_timbres),.vibrato_depth(vibrato_depth),.protocol_error(protocol_error),.steal_count(steal_count),.stale_count(stale_count),.allocation_count(allocation_count),.reclaim_count(reclaim_count),.id_collision_skip_count(id_collision_skip_count),.id_wrap_count(id_wrap_count),.observe_working_public_equal(observe_working_public_equal),.observe_publish(observe_publish),.observe_sources(observe_sources),.observe_keys(observe_keys),.observe_tokens(observe_tokens),.observe_busy(observe_busy),.observe_batch_begin(observe_batch_begin),.observe_publish_ok(observe_publish_ok),.observe_batch_abort(observe_batch_abort),.observe_apply_valid(observe_apply_valid),.observe_batch_timestamp(observe_batch_timestamp),.observe_apply_lane(observe_apply_lane),.observe_apply_item(observe_apply_item),.observe_apply_outcome(observe_apply_outcome),.observe_apply_slot(observe_apply_slot),.observe_apply_id(observe_apply_id),.observe_apply_generation(observe_apply_generation),.observe_apply_timbre(observe_apply_timbre),.observe_apply_steal(observe_apply_steal),.observe_retired_id(observe_retired_id),.observe_retired_generation(observe_retired_generation),.observe_reclaim_mask(observe_reclaim_mask),.observe_reclaim_generations(observe_reclaim_generations));
 endmodule

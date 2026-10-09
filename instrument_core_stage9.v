@@ -1,5 +1,6 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage9 #(
+    parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -14,6 +15,10 @@ module instrument_core_stage9 #(
     parameter integer ENABLE_S11 = 0,
     parameter integer MIX_SHIFT = 5
 ) (
+    input wire token_snapshot_capture,token_snapshot_read,
+    input wire [4:0] token_snapshot_slot,
+    output wire [63:0] token_snapshot_data,
+
     input wire spi_sck,score_cs_n,sd_cs_n,spi_mosi,
     output wire spi_miso,spi_miso_oe,guide_led_dout,
     input wire guide_cfg_valid,guide_cfg_prefix,
@@ -213,7 +218,7 @@ module instrument_core_stage9 #(
   .field_valid(field_cfg_valid),.field_start(field_cfg_start),.field_size(field_cfg_size),.field_ready(ENABLE_S11?field_ready:1'b1),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .result_valid(cfg_result_valid),.result_ready(cfg_result_ready),.result_slot(cfg_result_slot),.result_sequence(cfg_result_sequence),.result_bytes(cfg_result_bytes),.result_final(cfg_result_final));
- instrument_core_stage8 #(
+ instrument_core_stage8 #(.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -226,6 +231,7 @@ module instrument_core_stage9 #(
   .OCTAVE_MAX(OCTAVE_MAX),
   .MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),
   .ENABLE_REMOTE(1)) core(
+ .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
   .field_valid(merged_field_valid),.field_start(merged_field_start),.field_size(merged_field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
    .observe_allocator_busy(observe_allocator_busy),
   .observe_batch_begin(observe_batch_begin),

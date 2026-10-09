@@ -660,7 +660,7 @@ endmodule
 module shared_voice_lane_owner_directory #(
     parameter integer ATTACK_MS=10, DECAY_MS=50, SUSTAIN_LEVEL=180,
     parameter integer RELEASE_MS=100, VIBRATO_RATE_HZ=5,
-    parameter integer VIBRATO_MAX_PPM=10000, EXTERNAL_BACKEND=0, COMPACT_RECLAIM=0, DIRECT_BACKEND_SAMPLE=0
+    parameter integer VIBRATO_MAX_PPM=10000, EXTERNAL_BACKEND=0, COMPACT_RECLAIM=0, DIRECT_BACKEND_SAMPLE=0, COMPLETION_LAG=0
 ) (
     input wire clk,rst,sample_tick,
     input wire owner_allocate,owner_publish,
@@ -716,6 +716,7 @@ module shared_voice_lane_owner_directory #(
     // maintained at the same producer edges, including aborted work banks.
     reg [7:0] owner_initialized,owner_public_equal,owner_work_equal;
     wire context_write;
+    reg [7:0] context_initialized,phase_initialized;
     wire [79:0] owner_allocate_word;
     // The frame snapshot freezes all eight full identities on its original
     // edge. Track exact owner/snapshot equality at snapshot and context-write
@@ -821,13 +822,27 @@ module shared_voice_lane_owner_directory #(
     wire issue_current=slot_valid[sel] && !slot_cancel[sel] &&
         snap_ids[sel*64 +:64]==slot_ids[sel*64 +:64] &&
         snap_generations[sel*16 +:16]==slot_generations[sel*16 +:16];
-    wire [2:0] adsr_state=owner_matches?env_state[sel]:3'd0;
-    wire [16:0] adsr_level=owner_matches?env_level[sel]:17'd0;
-    wire [31:0] adsr_remaining=owner_matches?env_remaining:0;
-    wire [31:0] adsr_duration=owner_matches?env_duration:1;
-    wire [31:0] adsr_remainder=owner_matches?env_remainder:0;
-    wire [31:0] adsr_error=owner_matches?env_error:0;
-    wire [16:0] adsr_quotient=owner_matches?env_quotient:0;
+    // C0 prepares slot0 from the same pre-edge public snapshot. C1..C7
+    // prepare slots1..7 from the frozen frame; original issue remains C1..C8.
+    // A different slot's context write cannot change this preparation input.
+    wire adsr_prepare=sample_tick || (issue && issue_index<7);
+    wire [2:0] adsr_prepare_slot=sample_tick?3'd0:sel+3'd1;
+    wire adsr_prepare_owner=sample_tick?owner_public_equal[adsr_prepare_slot]:owner_snapshot_equal[adsr_prepare_slot];
+    wire adsr_prepare_gate=sample_tick?slot_gate[adsr_prepare_slot]:snap_gate[adsr_prepare_slot];
+    wire adsr_prepare_trigger=sample_tick?(slot_trigger[adsr_prepare_slot] && slot_valid[adsr_prepare_slot]):
+        (snap_trigger[adsr_prepare_slot] && snap_valid[adsr_prepare_slot]);
+    localparam integer ENV_CONTEXT_WIDTH=17+4*ENV_W;
+    wire [ENV_CONTEXT_WIDTH-1:0] env_context_stored;
+    assign {env_quotient,env_remaining,env_duration,env_remainder,env_error}=
+        context_initialized[adsr_prepare_slot]?env_context_stored:
+        {17'd0,ENV_W'(0),ENV_W'(1),ENV_W'(0),ENV_W'(0)};
+    wire [2:0] adsr_state=adsr_prepare_owner?env_state[adsr_prepare_slot]:3'd0;
+    wire [16:0] adsr_level=adsr_prepare_owner?env_level[adsr_prepare_slot]:17'd0;
+    wire [31:0] adsr_remaining=adsr_prepare_owner?env_remaining:0;
+    wire [31:0] adsr_duration=adsr_prepare_owner?env_duration:1;
+    wire [31:0] adsr_remainder=adsr_prepare_owner?env_remainder:0;
+    wire [31:0] adsr_error=adsr_prepare_owner?env_error:0;
+    wire [16:0] adsr_quotient=adsr_prepare_owner?env_quotient:0;
     wire [31:0] issue_phase=owner_matches?phase_acc:0;
     wire [31:0] issue_lfo=owner_matches?lfo_phase:0;
     wire [6:0] issue_held_note=owner_matches?held_note:0;
@@ -837,17 +852,49 @@ module shared_voice_lane_owner_directory #(
     wire [2:0] state_next;
     wire [16:0] level_next,quotient_next;
     wire [31:0] remaining_next,duration_next,remainder_next,error_next;
+    wire [2:0] prepared_state_next;
+    wire [16:0] prepared_level_next,prepared_quotient_next;
+    wire [31:0] prepared_remaining_next,prepared_duration_next,prepared_remainder_next,prepared_error_next;
     voice_adsr_step #(.ATTACK_MS(ATTACK_MS),.DECAY_MS(DECAY_MS),
-        .SUSTAIN_LEVEL(SUSTAIN_LEVEL),.RELEASE_MS(RELEASE_MS)) u_adsr_math (
+        .SUSTAIN_LEVEL(SUSTAIN_LEVEL),.RELEASE_MS(RELEASE_MS)) u_adsr_prepare_math (
         .state(adsr_state),.level(adsr_level),.remaining(adsr_remaining),
         .duration(adsr_duration),.remainder(adsr_remainder),
         .error_acc(adsr_error),.quotient(adsr_quotient),
-        .gate(snap_gate[sel]),.retrigger(snap_trigger[sel] && snap_valid[sel]),
-        .state_next(state_next),.level_next(level_next),
-        .remaining_next(remaining_next),.duration_next(duration_next),
-        .remainder_next(remainder_next),.error_next(error_next),
-        .quotient_next(quotient_next)
+        .gate(adsr_prepare_gate),.retrigger(adsr_prepare_trigger),
+        .state_next(prepared_state_next),.level_next(prepared_level_next),
+        .remaining_next(prepared_remaining_next),.duration_next(prepared_duration_next),
+        .remainder_next(prepared_remainder_next),.error_next(prepared_error_next),
+        .quotient_next(prepared_quotient_next)
     );
+
+    localparam integer ENV_RESULT_WIDTH=3+17+17+4*ENV_W;
+    reg env_result_bank,env_result_valid;reg [2:0] env_result_slot;
+    wire [ENV_RESULT_WIDTH-1:0] env_result_word;
+    wire [ENV_W-1:0] result_remaining,result_duration,result_remainder,result_error;
+    assign {state_next,level_next,quotient_next,result_remaining,result_duration,result_remainder,result_error}=env_result_word;
+    assign remaining_next={{(32-ENV_W){1'b0}},result_remaining};
+    assign duration_next={{(32-ENV_W){1'b0}},result_duration};
+    assign remainder_next={{(32-ENV_W){1'b0}},result_remainder};
+    assign error_next={{(32-ENV_W){1'b0}},result_error};
+    // Two alternating RAM words hold the one-cycle arithmetic boundary;
+    // this avoids adding four wide FF banks to the nearly-full device.
+    s3_private_context_store #(.WIDTH(ENV_RESULT_WIDTH)) envelope_results(
+        .clk(clk),.write_enable(!rst && adsr_prepare),.write_slot({2'd0,env_result_bank}),
+        .read_slot({2'd0,~env_result_bank}),
+        .write_value({prepared_state_next,prepared_level_next,prepared_quotient_next,
+            ENV_W'(prepared_remaining_next),ENV_W'(prepared_duration_next),ENV_W'(prepared_remainder_next),ENV_W'(prepared_error_next)}),
+        .read_value(env_result_word));
+    s3_private_context_store #(.WIDTH(ENV_CONTEXT_WIDTH)) envelope_context(
+        .clk(clk),.write_enable(context_write),.write_slot(sel),.read_slot(adsr_prepare_slot),
+        .write_value({quotient_next,ENV_W'(remaining_next),ENV_W'(duration_next),ENV_W'(remainder_next),ENV_W'(error_next)}),
+        .read_value(env_context_stored));
+    always @(posedge clk)begin
+        if(rst)begin env_result_bank<=0;env_result_valid<=0;env_result_slot<=0;end
+        else begin
+            env_result_valid<=adsr_prepare;
+            if(adsr_prepare)begin env_result_bank<=~env_result_bank;env_result_slot<=adsr_prepare_slot;end
+        end
+    end
     wire [6:0] effective_note=(state_next==4)?issue_held_note:
         snap_notes[sel*7 +:7];
     wire [22:0] next_pitch;
@@ -857,13 +904,27 @@ module shared_voice_lane_owner_directory #(
     wire next_glide_up;
     wire [3:0] next_glide_code;
     wire [31:0] note_step;
-    glide_pitch_step u_glide(
-        .new_owner(!owner_matches),.note_target(effective_note),
-        .glide_code(snap_glide),.current_pitch(pitch_q),
-        .stored_target(pitch_target),.remaining(glide_remaining),
-        .base_step(glide_base),.remainder(glide_remainder),
-        .error_acc(glide_error),.direction_up(glide_up),
-        .stored_code(glide_duration_code),
+    wire [6:0] prepared_held_note;
+    wire [108:0] pitch_context_stored;
+    assign {prepared_held_note,pitch_q,pitch_target,glide_remaining,glide_base,glide_error,glide_remainder,glide_up,glide_duration_code}=context_initialized[adsr_prepare_slot]?pitch_context_stored:109'd0;
+    wire [6:0] prepared_note=(prepared_state_next==4)?(adsr_prepare_owner?prepared_held_note:7'd0):
+        (sample_tick?slot_notes[adsr_prepare_slot*7+:7]:snap_notes[adsr_prepare_slot*7+:7]);
+    wire [124:0] glide_prepared_input,glide_prepared_result;
+    glide_pitch_prepare glide_prepare(
+        .new_owner(!adsr_prepare_owner),.note_target(prepared_note),
+        .glide_code(sample_tick?glide_code:snap_glide),.current_pitch(pitch_q),
+        .stored_target(pitch_target),.remaining(glide_remaining),.base_step(glide_base),
+        .remainder(glide_remainder),.error_acc(glide_error),.direction_up(glide_up),
+        .stored_code(glide_duration_code),.prepared(glide_prepared_input));
+    s3_private_context_store #(.WIDTH(132)) glide_results(
+        .clk(clk),.write_enable(!rst && adsr_prepare),.write_slot({2'd0,env_result_bank}),
+        .read_slot({2'd0,~env_result_bank}),.write_value({glide_prepared_input,prepared_held_note}),
+        .read_value({glide_prepared_result,held_note}));
+    s3_private_context_store #(.WIDTH(109)) pitch_context(
+        .clk(clk),.write_enable(context_write),.write_slot(sel),.read_slot(adsr_prepare_slot),
+        .write_value({7'((snap_trigger[sel]||snap_gate[sel])?snap_notes[sel*7+:7]:(state_next==0?7'd0:held_note)),23'(next_pitch),7'(next_target),17'(next_glide_remaining),17'(next_glide_base),17'(next_glide_error),16'(next_glide_remainder),1'(next_glide_up),4'(next_glide_code)}),.read_value(pitch_context_stored));
+    glide_pitch_advance u_glide(
+        .prepared(glide_prepared_result),
         .pitch_next(next_pitch),.target_next(next_target),
         .remaining_next(next_glide_remaining),.base_next(next_glide_base),
         .remainder_next(next_glide_remainder),.error_next(next_glide_error),
@@ -1036,51 +1097,87 @@ module shared_voice_lane_owner_directory #(
     wire [31:0] new_phase=p_restart[5]?32'd0:p_base_phase[5]+adjusted_step;
     wire signed [15:0] fm_source=(p_timbre[7]==1)?p_h2[7]:p_h1[7];
     wire signed [33:0] fm_product=fm_source*$signed({1'b0,p_fm_index[7]});
-    reg signed [17:0] backend_sample_hold;
-    always @(posedge clk)begin
-        if(rst)backend_sample_hold<=0;
-        else if(valid_pipe[10])backend_sample_hold<=backend_sample;
-    end
-    assign backend_take_sample=valid_pipe[10];
-    assign backend_issue=issue;
-    assign backend_write_slot=sel;
-    assign backend_sample_slot=p_slot[10];
-    assign backend_phase_slot=p_slot[11];
-    assign backend_job={issue_phase,snap_trigger[sel] && snap_valid[sel],next_pitch,lfo_sine,gain(snap_vibrato),level_next,next_pressure,next_transient,next_body,(EXTERNAL_BACKEND?17'd0:issue_fm_index),(EXTERNAL_BACKEND?17'd0:fm_taper),issue_timbre};
-    wire signed [17:0] final_sample=EXTERNAL_BACKEND?(DIRECT_BACKEND_SAMPLE?backend_sample:backend_sample_hold):round_audio(wave_pressure);
     wire final_current=(p_id[11]==slot_ids[p_slot[11]*64 +:64] &&
                         p_generation[11]==slot_generations[p_slot[11]*16 +:16] &&
                         slot_valid[p_slot[11]] && !slot_cancel[p_slot[11]]);
+    wire actual_valid,actual_accept,take_sample;
+    wire [2:0] actual_slot,take_slot;
+    generate if(COMPLETION_LAG==3)begin: delayed_completion
+        reg [2:0] valids,accepts,takes;
+        reg [2:0] slots[0:2],take_slots[0:2];
+        always @(posedge clk)begin
+            if(rst)begin valids<=0;accepts<=0;takes<=0;
+                for(integer d=0;d<3;d++)begin slots[d]<=0;take_slots[d]<=0;end
+            end else begin
+                valids<={valids[1:0],valid_pipe[11]};
+                accepts<={accepts[1:0],final_current};
+                takes<={takes[1:0],valid_pipe[10]};
+                slots[0]<=p_slot[11];take_slots[0]<=p_slot[10];
+                for(integer d=1;d<3;d++)begin slots[d]<=slots[d-1];take_slots[d]<=take_slots[d-1];end
+            end
+        end
+        assign actual_valid=valids[2];assign actual_accept=accepts[2];
+        assign actual_slot=slots[2];assign take_sample=takes[2];assign take_slot=take_slots[2];
+        // synthesis translate_off
+        always @(posedge clk)if(!rst && sample_tick && (|valids || |takes))$fatal(1,"AUDIO_DELAY_FRAME_OVERLAP");
+        // synthesis translate_on
+    end else begin: original_completion
+        assign actual_valid=valid_pipe[11];assign actual_accept=final_current;
+        assign actual_slot=p_slot[11];assign take_sample=valid_pipe[10];assign take_slot=p_slot[10];
+    end endgenerate
+    reg signed [17:0] backend_sample_hold;
+    always @(posedge clk)begin
+        if(rst)backend_sample_hold<=0;
+        else if(take_sample)backend_sample_hold<=backend_sample;
+    end
+    assign backend_take_sample=take_sample;
+    assign backend_issue=issue;
+    assign backend_write_slot=sel;
+    assign backend_sample_slot=take_slot;
+    assign backend_phase_slot=actual_slot;
+    assign backend_job={issue_phase,snap_trigger[sel] && snap_valid[sel],next_pitch,lfo_sine,gain(snap_vibrato),level_next,next_pressure,next_transient,next_body,(EXTERNAL_BACKEND?17'd0:issue_fm_index),(EXTERNAL_BACKEND?17'd0:fm_taper),issue_timbre};
+    wire signed [17:0] final_sample=EXTERNAL_BACKEND?(DIRECT_BACKEND_SAMPLE?backend_sample:backend_sample_hold):round_audio(wave_pressure);
+    wire [79:0] completed_identity;
+    generate if(COMPLETION_LAG==3)begin: completion_identity_store
+        // Store the original full completion identity, then consume it three
+        // cycles later. All8 entries have independent slots; a new frame
+        // cannot reuse them until every previous response has retired.
+        s3_private_context_store #(.WIDTH(80)) identities(
+            .clk(clk),.write_enable(!rst && valid_pipe[11]),.write_slot(p_slot[11]),
+            .read_slot(actual_slot),.write_value({p_generation[11],p_id[11]}),
+            .read_value(completed_identity));
+    end else begin: completion_identity_direct
+        assign completed_identity={p_generation[11],p_id[11]};
+    end endgenerate
     // Passive pre-edge view of the original writeback transaction. No new state.
-    assign completion_valid=valid_pipe[11];
-    assign completion_accept=final_current;
-    assign completion_slot=p_slot[11];
+    assign completion_valid=actual_valid;
+    assign completion_accept=actual_accept;
+    assign completion_slot=actual_slot;
     assign completion_sample=final_sample;
-    assign completion_id=p_id[11];
-    assign completion_generation=p_generation[11];
+    assign completion_id=completed_identity[63:0];
+    assign completion_generation=completed_identity[79:64];
 
     // Per-voice private context: exactly the original issue edge and read
     // value, with a small reset-valid bitmap instead of a resettable wide bank.
-    localparam integer CONTEXT_WIDTH=32+7+8+3+17+ENV_W+ENV_W+ENV_W+ENV_W+23+7+17+17+17+16+1+4+17+17+17;
+    localparam integer CONTEXT_WIDTH=32+8+3+17+17+17;
 
     wire [CONTEXT_WIDTH-1:0] context_stored;
     wire [31:0] phase_stored;
-    reg [7:0] context_initialized,phase_initialized;
     assign context_write=!rst && issue && issue_current;
-    wire phase_write=!rst && valid_pipe[11] && final_current;
-    assign {lfo_phase,held_note,held_pressure,timbre_state,env_quotient,env_remaining,env_duration,env_remainder,env_error,pitch_q,pitch_target,glide_remaining,glide_base,glide_error,glide_remainder,glide_up,glide_duration_code,pressure_gain,transient_gain,body_gain}=context_initialized[sel]?context_stored:{32'(0),7'(0),8'(0),3'(0),17'(0),ENV_W'(0),ENV_W'(1),ENV_W'(0),ENV_W'(0),23'(0),7'(0),17'(0),17'(0),17'(0),16'(0),1'(0),4'(0),17'(0),17'(0),17'(0)};
+    wire phase_write=!rst && actual_valid && actual_accept;
+    assign {lfo_phase,held_pressure,timbre_state,pressure_gain,transient_gain,body_gain}=context_initialized[sel]?context_stored:{32'(0),8'(0),3'(0),17'(0),17'(0),17'(0)};
     assign phase_acc=phase_initialized[sel]?phase_stored:32'd0;
     s3_private_context_store #(.WIDTH(CONTEXT_WIDTH)) context_memory(
         .clk(clk),.write_enable(context_write),.write_slot(sel),.read_slot(sel),
-        .write_value({32'(issue_lfo+LFO_STEP),7'((snap_trigger[sel]||snap_gate[sel])?snap_notes[sel*7+:7]:(state_next==0?7'd0:held_note)),8'((snap_trigger[sel]||snap_gate[sel])?snap_pressures[sel*8+:8]:(state_next==0?8'd0:held_pressure)),3'(issue_timbre),17'(quotient_next),ENV_W'(remaining_next),ENV_W'(duration_next),ENV_W'(remainder_next),ENV_W'(error_next),23'(next_pitch),7'(next_target),17'(next_glide_remaining),17'(next_glide_base),17'(next_glide_error),16'(next_glide_remainder),1'(next_glide_up),4'(next_glide_code),17'(next_pressure),17'(next_transient),17'(next_body)}),.read_value(context_stored));
+        .write_value({32'(issue_lfo+LFO_STEP),8'((snap_trigger[sel]||snap_gate[sel])?snap_pressures[sel*8+:8]:(state_next==0?8'd0:held_pressure)),3'(issue_timbre),17'(next_pressure),17'(next_transient),17'(next_body)}),.read_value(context_stored));
     s3_private_context_store #(.WIDTH(32)) phase_memory(
-        .clk(clk),.write_enable(phase_write),.write_slot(p_slot[11]),.read_slot(sel),
+        .clk(clk),.write_enable(phase_write),.write_slot(actual_slot),.read_slot(sel),
         .write_value(EXTERNAL_BACKEND?backend_phase:phase_value[11]),.read_value(phase_stored));
     always @(posedge clk)begin
         if(rst)begin context_initialized<=0;phase_initialized<=0;end
         else begin
             if(context_write)context_initialized[sel]<=1;
-            if(phase_write)phase_initialized[p_slot[11]]<=1;
+            if(phase_write)phase_initialized[actual_slot]<=1;
         end
     end
     genvar g;
@@ -1187,24 +1284,59 @@ module shared_voice_lane_owner_directory #(
                 wave_env<=$signed(p_wave[9])*$signed({1'b0,p_env[9]});
             if (valid_pipe[10])
                 wave_pressure<=wave_env*$signed({1'b0,p_pressure[10]});
-            if (valid_pipe[11]) begin
+            // An accepted idle envelope has level zero. Its wave*envelope
+            // product is exactly zero, regardless of timbre/pressure. Reclaim
+            // therefore retains the original decision edge and full identity.
+            if(valid_pipe[11] && final_current && !p_gate[11] && env_state[p_slot[11]]==0 &&
+               (COMPLETION_LAG==3 || final_sample==0))begin
+                done_mask[p_slot[11]]<=1;
+                if(COMPACT_RECLAIM)done_ids<={8{p_id[11]}};
+                else done_ids[p_slot[11]*64+:64]<=p_id[11];
+            end
+            if (actual_valid) begin
                 completed_count<=completed_count+1'b1;
-                if (final_current) begin
+                if (actual_accept) begin
                     
-                    voice_samples[p_slot[11]*18 +:18]<=final_sample;
+                    voice_samples[actual_slot*18 +:18]<=final_sample;
                     lane_sum<=lane_sum+{{6{final_sample[17]}},final_sample};
-                    if (!p_gate[11] && env_state[p_slot[11]]==0 &&
-                        final_sample==0) begin
-                        done_mask[p_slot[11]]<=1;
-                        if(COMPACT_RECLAIM)done_ids<={8{p_id[11]}};
-                        else done_ids[p_slot[11]*64 +:64]<=p_id[11];
-                    end
+
                 end
-                if (p_slot[11]==7) lane_sum_valid<=1;
+                if (actual_slot==7) lane_sum_valid<=1;
             end
         end
     end
     // synthesis translate_off
+    initial if(COMPLETION_LAG!=0 && COMPLETION_LAG!=3)$fatal(1,"AUDIO_COMPLETION_LAG_PARAMETER");
+    always @(posedge clk)if(!rst && valid_pipe[11] && final_current && !p_gate[11] && env_state[p_slot[11]]==0)
+        if(env_level[p_slot[11]]!=0 || p_env[11]!=0)$fatal(1,"AUDIO_EARLY_RECLAIM_ZERO_PROOF");
+    // Independent old-edge ADSR reference keeps its own history. Never
+    // substitute the prepared output for the old-edge arithmetic input.
+    reg [ENV_CONTEXT_WIDTH-1:0] oracle_env[0:7];
+    wire [16:0] oracle_q;wire [ENV_W-1:0] oracle_rem,oracle_dur,oracle_frac,oracle_err;
+    assign {oracle_q,oracle_rem,oracle_dur,oracle_frac,oracle_err}=oracle_env[sel];
+    wire [2:0] oracle_state;wire [16:0] oracle_level,oracle_quotient;
+    wire [31:0] oracle_remaining,oracle_duration,oracle_remainder,oracle_error;
+    voice_adsr_step #(.ATTACK_MS(ATTACK_MS),.DECAY_MS(DECAY_MS),.SUSTAIN_LEVEL(SUSTAIN_LEVEL),.RELEASE_MS(RELEASE_MS)) old_edge_adsr(
+        .state(owner_matches?env_state[sel]:3'd0),.level(owner_matches?env_level[sel]:17'd0),
+        .remaining(owner_matches?32'(oracle_rem):32'd0),.duration(owner_matches?32'(oracle_dur):32'd1),
+        .remainder(owner_matches?32'(oracle_frac):32'd0),.error_acc(owner_matches?32'(oracle_err):32'd0),
+        .quotient(owner_matches?oracle_q:17'd0),.gate(snap_gate[sel]),.retrigger(snap_trigger[sel] && snap_valid[sel]),
+        .state_next(oracle_state),.level_next(oracle_level),.quotient_next(oracle_quotient),
+        .remaining_next(oracle_remaining),.duration_next(oracle_duration),.remainder_next(oracle_remainder),.error_next(oracle_error));
+    always @(posedge clk)begin
+        if(rst)for(integer s=0;s<8;s++)oracle_env[s]<={17'd0,ENV_W'(0),ENV_W'(1),ENV_W'(0),ENV_W'(0)};
+        else begin
+            if(adsr_prepare && (prepared_remaining_next>ENV_MAX || prepared_duration_next>ENV_MAX || prepared_remainder_next>ENV_MAX || prepared_error_next>ENV_MAX))
+                $fatal(1,"AUDIO_ENV_PREPARED_BOUND");
+            if(issue)begin
+                if(!env_result_valid || env_result_slot!==sel)$fatal(1,"AUDIO_ENV_PREPARED_BINDING");
+                if({state_next,level_next,quotient_next,remaining_next,duration_next,remainder_next,error_next} !==
+                   {oracle_state,oracle_level,oracle_quotient,oracle_remaining,oracle_duration,oracle_remainder,oracle_error})
+                    $fatal(1,"AUDIO_ENV_OLD_EDGE_EQ slot=%0d",sel);
+            end
+            if(context_write)oracle_env[sel]<={oracle_quotient,ENV_W'(oracle_remaining),ENV_W'(oracle_duration),ENV_W'(oracle_remainder),ENV_W'(oracle_error)};
+        end
+    end
     always @(posedge clk)if(!rst && issue && issue_current)begin
         if(remaining_next>ENV_MAX || duration_next>ENV_MAX || remainder_next>ENV_MAX || error_next>ENV_MAX)
             $fatal(1,"S3_ENV_STORAGE_BOUND");
@@ -1216,4 +1348,159 @@ module shared_voice_lane_owner_directory #(
     always @(posedge clk) if (!rst && sample_tick && (running || valid_pipe!=0))
         $fatal(1,"shared_voice_lane_stage3: frame deadline missed");
     // synthesis translate_on
+endmodule
+
+module r8_voice_backend_six_stage #(parameter integer DERIVE_FM=0) (input wire clk,rst,in_valid,input wire [4:0] in_tag,
+ input wire [193:0] job_in,output wire out_valid,output wire [4:0] out_tag,
+ output wire signed [17:0] out_sample,output wire [31:0] out_phase);
+ localparam signed [17:0] MAX_MOD_Q16=(64'd65536*10000+500000)/1000000;
+ reg [5:0] valid;reg [4:0] tag[0:5];reg [193:0] job[0:5];reg [31:0] phase[0:5];
+ reg [31:0] base_step,base_step1,base_step2;
+ reg [31:0] carrier_phase2;reg signed [15:0] harmonic1,harmonic2,harmonic3;reg signed [17:0] modulation,wave;
+    function [16:0] scale_const;
+        input [16:0] value,coefficient;
+        reg [33:0] product;
+        begin product=value*coefficient;scale_const=product>>16;end
+    endfunction
+    function signed [17:0] round_mod;
+        input signed [51:0] value;
+        reg signed [52:0] wide;
+        begin
+            wide={value[51],value};
+            if (wide<0) round_mod=-(((-wide)+53'sd1073741824) >>> 31);
+            else round_mod=(wide+53'sd1073741824) >>> 31;
+        end
+    endfunction
+    function signed [34:0] round_delta;
+        input signed [50:0] value;
+        reg signed [51:0] wide;
+        begin
+            wide={value[50],value};
+            if (wide<0) round_delta=-(((-wide)+52'sd32768) >>> 16);
+            else round_delta=(wide+52'sd32768) >>> 16;
+        end
+    endfunction
+    function signed [17:0] round_audio;
+        input signed [53:0] value;
+        reg signed [54:0] wide;
+        reg signed [22:0] shifted;
+        begin
+            wide={value[53],value};
+            if (wide<0) shifted=-(((-wide)+55'sd2147483648) >>> 32);
+            else shifted=(wide+55'sd2147483648) >>> 32;
+            if (shifted>23'sd131071) round_audio=18'sh1ffff;
+            else if (shifted< -23'sd131072) round_audio=18'h20000;
+            else round_audio=shifted[17:0];
+        end
+    endfunction
+    function signed [17:0] timbre_wave;
+        input [2:0] timbre;
+        input signed [15:0] h1,h2,h3,carrier;
+        input [16:0] transient,body,shape_gain;
+        input [31:0] base_step;
+        reg signed [63:0] total;
+        reg signed [17:0] shaped;
+        reg [16:0] w1,w2,w3,amplitude;
+        begin
+            total=0;w1=0;w2=0;w3=0;amplitude=65536;shaped=0;
+            case (timbre)
+                3'd1: begin // Electric piano: decaying-index 2:1 FM.
+                    amplitude=17'd13107+scale_const(transient,17'd52429);
+                    total=$signed(carrier)*$signed({1'b0,amplitude});
+                    timbre_wave=total >>> 16;
+                end
+                3'd2,3'd3: begin // Select drawbar/decay coefficients before the shared harmonic MAC.
+                    if(timbre==2)begin
+                        w1=17'd18000;
+                        if(base_step<32'h40000000)w2=17'd10000;
+                        if(base_step<32'd715827882)w3=17'd4000;
+                    end else begin
+                        w1=17'd1000+scale_const(body,17'd24000);
+                        if(base_step<32'h40000000)w2=scale_const(transient,17'd5000);
+                        if(base_step<32'd715827882)w3=scale_const(transient,17'd2500);
+                    end
+                    total=$signed(h1)*$signed({1'b0,w1})+
+                          $signed(h2)*$signed({1'b0,w2})+
+                          $signed(h3)*$signed({1'b0,w3});
+                    timbre_wave=(total+64'sd16384) >>> 15;
+                end
+                3'd4: begin // Sustained FM; fade nonlinear shaping at high pitch.
+                    if (carrier>16'sd16384)
+                        shaped=18'sd16384+(($signed(carrier)-18'sd16384) >>> 1);
+                    else if (carrier< -16'sd16384)
+                        shaped=-18'sd16384+(($signed(carrier)+18'sd16384) >>> 1);
+                    else shaped=carrier;
+                    // FM=0 alone is insufficient: clipping also generates harmonics.
+                    // Blend to the unshaped carrier using the same pitch taper.
+                    total=($signed(shaped)-$signed(carrier))*
+                          $signed({1'b0,shape_gain});
+                    timbre_wave=$signed(carrier)+(total >>> 16);
+                end
+                default: timbre_wave=h1; // ID0 sine; same pressure semantics.
+            endcase
+        end
+    endfunction
+ wire [6:0] lower_note=job_in[138+:23]>>16;
+ wire [6:0] upper_note=lower_note==127?7'd127:lower_note+1'b1;
+ wire [31:0] lower_step,upper_step;
+ phase_step_rom lo(.note_code(lower_note),.phase_step(lower_step));
+ phase_step_rom hi(.note_code(upper_note),.phase_step(upper_step));
+ wire [31:0] step_delta=upper_step-lower_step;
+ wire [47:0] fraction_product=step_delta*job_in[138+:16];
+ wire [48:0] interpolated={17'd0,lower_step}+(({1'b0,fraction_product}+49'd32768)>>16);
+ wire signed [33:0] lfo_depth=$signed(job_in[122+:16])*$signed({1'b0,job_in[105+:17]});
+ wire signed [51:0] lfo_max=lfo_depth*MAX_MOD_Q16;
+ wire signed [50:0] frequency_product=$signed({1'b0,base_step})*modulation;
+ wire signed [35:0] adjusted_wide=$signed({4'b0,base_step})+$signed(round_delta(frequency_product));
+ wire [31:0] adjusted_step=adjusted_wide[31:0];
+ wire signed [15:0] sine1,sine2,sine3,carrier;
+ wire [31:0] phase2=phase[1]<<1,phase3=phase[1]+(phase[1]<<1);
+ sine_rom s1(.address(phase[1][31:24]),.sample(sine1));
+ sine_rom s2(.address(phase2[31:24]),.sample(sine2));
+ sine_rom s3(.address(phase3[31:24]),.sample(sine3));
+ wire signed [15:0] fm_source=job[1][0+:3]==1?sine2:sine1;
+ wire signed [33:0] fm_product=fm_source*$signed({1'b0,job[1][20+:17]});
+ wire [31:0] fm_offset=fm_product[31:0]<<1;
+ wire [31:0] carrier_phase=phase[1]+fm_offset;
+ sine_rom sc(.address(carrier_phase2[31:24]),.sample(carrier));
+ reg signed [35:0] wave_env;
+ reg signed [53:0] wave_pressure;
+ assign out_valid=valid[5];assign out_tag=tag[5];
+ assign out_sample=round_audio(wave_pressure);assign out_phase=phase[5];
+ // FM shaping is derived in the existing first two engine stages.
+ // The four Lane frontends and their delayed-job memories carry operands
+ // already needed elsewhere; no additional issue or completion cycle.
+ wire [22:0] fm_pitch=job_in[138+:23];
+ wire [16:0] engine_taper=(fm_pitch<=23'd7077888)?17'd65536:
+     (fm_pitch>=23'd7864320)?17'd0:((23'd7864320-fm_pitch)/12);
+ wire [31:0] engine_ep_product=job[0][54+:17]*15'd20000;
+ wire [16:0] engine_raw_index=job[0][0+:3]==1?engine_ep_product[31:16]:
+     job[0][0+:3]==4?17'd10000:17'd0;
+ wire [33:0] engine_index_product=engine_raw_index*job[0][3+:17];
+ integer q;
+ always @(posedge clk)begin
+  if(rst)begin
+   valid<=0;wave_env<=0;wave_pressure<=0;modulation<=0;wave<=0;base_step<=0;base_step1<=0;base_step2<=0;carrier_phase2<=0;harmonic1<=0;harmonic2<=0;harmonic3<=0;
+   for(q=0;q<6;q=q+1)begin tag[q]<=0;job[q]<=0;phase[q]<=0;end
+  end else begin
+   valid<={valid[4:0],in_valid};
+   for(q=1;q<6;q=q+1)begin tag[q]<=tag[q-1];job[q]<=job[q-1];phase[q]<=phase[q-1];end
+   if(in_valid)begin tag[0]<=in_tag;job[0]<=job_in;base_step<=interpolated[31:0];modulation<=round_mod(lfo_max);end
+   if(DERIVE_FM)begin
+    if(in_valid)job[0][3+:17]<=engine_taper;
+    job[1][20+:17]<=engine_index_product>>16;
+   end
+   if(valid[0])base_step1<=base_step;
+   if(valid[0])phase[1]<=job[0][161+:1]?32'd0:job[0][162+:32]+adjusted_step;
+   // Separate phase/FM address generation from carrier lookup and timbre MAC.
+   if(valid[1])begin
+    base_step2<=base_step1;carrier_phase2<=carrier_phase;
+    harmonic1<=sine1;harmonic2<=sine2;harmonic3<=sine3;
+   end
+   if(valid[3])wave_env<=$signed(wave)*$signed({1'b0,job[3][88+:17]});
+   if(valid[4])wave_pressure<=wave_env*$signed({1'b0,job[4][71+:17]});
+   if(valid[2])wave<=timbre_wave(job[2][0+:3],harmonic1,harmonic2,harmonic3,carrier,
+     job[2][54+:17],job[2][37+:17],job[2][3+:17],base_step2);
+  end
+ end
 endmodule

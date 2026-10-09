@@ -1,6 +1,9 @@
 // Stage11 passive recording control and shared outbound-prefix ownership.
 // Recorder commands never feed performance source cleanup or audio ready.
-module s11_recording_subsystem(
+module s11_recording_subsystem #(parameter integer SNAPSHOT_TOKEN_DIRECTORY=0)(
+ output wire token_snapshot_capture,token_snapshot_read,output wire [4:0] token_snapshot_slot,
+ input wire [63:0] token_snapshot_data,
+
  input wire clk,rst,audio_reset,
  input wire record_cmd_valid,
  output wire record_cmd_ready,
@@ -213,7 +216,7 @@ module s11_recording_subsystem(
   .peek_byte_address(peek_byte_address),.peek_byte_data(pcm_peek),.ack_valid(pcm_ack),
   .ack_record_id(command_record_id),.ack_block_sequence(ack_block_sequence),
   .stale_ack_count(pcm_stale_ack),.rejected_start_count(pcm_rejected_start));
- s11_execution_observer #(.INDEXED_OVERLAY(1)) u_exec(.clk(clk),.rst(rst),.audio_reset(audio_reset),
+ s11_execution_observer #(.INDEXED_OVERLAY(1),.SNAPSHOT_TOKEN_DIRECTORY(SNAPSHOT_TOKEN_DIRECTORY)) u_exec(.token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),.clk(clk),.rst(rst),.audio_reset(audio_reset),
   .capture_fault((event_incomplete || cfg_fault_valid) && !new_start),
   .capture_fault_code(cfg_fault_valid?cfg_fault_code:event_error),
   .stop_delivery_idle(cfg_idle && tx_owner!=2),

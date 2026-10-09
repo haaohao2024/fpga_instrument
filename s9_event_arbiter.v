@@ -1,6 +1,7 @@
 // Legacy two-source output has priority at each free boundary. A stalled
 // choice is immutable. Disabled phone input is an exact combinational bypass.
-module s9_event_arbiter (
+module s9_event_arbiter #(parameter integer GUARDED_ADMISSION=0) (
+    input wire legacy_urgent,
     input wire clk,rst,
     input wire legacy_valid,phone_valid,
     input wire [904:0] legacy_packet,phone_packet,
@@ -10,7 +11,7 @@ module s9_event_arbiter (
     input wire out_ready
 );
     reg locked,locked_phone;
-    wire phone=locked?locked_phone:(!legacy_valid&&phone_valid);
+    wire phone=locked?locked_phone:(!legacy_valid&&phone_valid&&!(GUARDED_ADMISSION&&legacy_urgent));
     assign out_valid=!rst&&(phone?phone_valid:legacy_valid);
     assign out_packet=phone?phone_packet:legacy_packet;
     assign legacy_ready=!rst&&!phone&&out_ready;
@@ -20,6 +21,8 @@ module s9_event_arbiter (
         else if(out_valid&&out_ready)locked<=0;
         else if(out_valid)begin locked<=1;locked_phone<=phone;end
     end
+    // A locked packet cannot be revoked when urgency changes. Admission
+    // changes only at an unowned boundary; producer backpressure is legal.
     // synthesis translate_off
     always @(posedge clk)if(!rst)begin
         if((^{legacy_valid,phone_valid,out_ready})===1'bx)$fatal(1,"S9_ARBITER_CONTROL_XZ");

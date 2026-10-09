@@ -1,6 +1,6 @@
 // 50MHz oversampled Mode0 shared-SPI slave. RAM content is never reset.
 // A page is visible only after both complete transaction and CRC validation.
-module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0)(
+module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0, STREAM_STATUS_CRC=0)(
  input wire clk,rst,spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
  output wire [255:0] observe_status_bytes,
@@ -48,14 +48,29 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
   status_tmp[63:56]=player_state;status_tmp[127:64]=active_epoch;
   status_tmp[159:128]=last_sequence;status_tmp[191:160]=accepted_pages;
   status_tmp[223:192]=rejected_transactions;
-  status_crc=32'hffffffff;for(k=0;k<28;k=k+1)status_crc=crcbyte(status_crc,status_tmp[k*8+:8]);
+  status_crc=32'hffffffff;if(!STREAM_STATUS_CRC)for(k=0;k<28;k=k+1)status_crc=crcbyte(status_crc,status_tmp[k*8+:8]);
   status_tmp[255:224]=~status_crc;
  end
+ // The first28 transmitted bytes freeze on the original CS edge. Compute
+ // their CRC in idle receive-byte slots; the earliest CRC bit is >=448
+ // system clocks later (28bytes*8bits*2 edges), versus <=30 prepare clocks.
+ // In streamed mode the internal exported CRC field is unprepared. Its
+ // sole formal consumer, media transport, computes its own frozen copy.
+ reg response_crc_busy;reg [4:0] response_crc_index;
+ reg [31:0] response_crc_value;
+ wire receive_crc_step=!select_start && in_transaction && !cs[2] && rise && bit_count==7 &&
+     (byte_count<32 || (!transaction_s10 && byte_count<expected_bytes-4));
+ wire [7:0] frozen_crc_byte=response[255-response_crc_index*8-:8];
+ wire [31:0] scheduled_crc_next=crcbyte(receive_crc_step?rx_crc:response_crc_value,
+     receive_crc_step?next_byte:frozen_crc_byte);
+ wire [31:0] received_crc_next=STREAM_STATUS_CRC?scheduled_crc_next:crcbyte(rx_crc,next_byte);
+ wire [31:0] completed_response_crc=~scheduled_crc_next;
  integer j;
  always @(posedge clk)begin
   ss<={ss[1:0],spi_sck};cs<={cs[1:0],fpga_cs_n};ms<={ms[0],spi_mosi};ds<={ds[0],sd_cs_n};
   page_data<=memory[page_addr];
   if(rst)begin
+   response_crc_busy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
    ss<=0;cs<=7;ds<=3;ms<=0;ctrl_valid<=0;page_valid<=0;page_busy<=0;
    transaction_s10<=0;header<=0;response<=0;rx_crc<=32'hffffffff;footer<=0;last_sequence<=32'hffffffff;
    byte_count<=0;bit_count<=0;tx_index<=0;expected_bytes<=36;in_transaction<=0;bad<=0;
@@ -63,6 +78,13 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
    watchdog<=0;link_timeout<=0;pending_epoch<=0;pending_sequence<=0;
    ctrl_cmd<=0;ctrl_epoch<=0;ctrl_arg<=0;page_sequence<=0;ram_available<=0;rx_shift<=0;
   end else begin
+   if(STREAM_STATUS_CRC && response_crc_busy && !receive_crc_step && !select_start)begin
+    response_crc_value<=scheduled_crc_next;
+    if(response_crc_index==27)begin
+     for(integer b=0;b<4;b++)response[31-b*8-:8]<=completed_response_crc[b*8+:8];
+     response_crc_busy<=0;
+    end else response_crc_index<=response_crc_index+1'b1;
+   end
    if(active_epoch!=0&&player_state!=0&&!(ENABLE_FIELD&&field_busy))begin
     if(watchdog<WATCHDOG_CLOCKS)watchdog<=watchdog+1;
     else if(!ctrl_valid)begin ctrl_valid<=1;ctrl_cmd<=7;ctrl_epoch<=active_epoch;ctrl_arg<=0;link_timeout<=1;end
@@ -78,6 +100,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
     else rejected_transactions<=rejected_transactions+1;
    end
    if(select_start)begin
+    if(STREAM_STATUS_CRC)begin response_crc_busy<=1;response_crc_index<=0;response_crc_value<=32'hffffffff;end
     in_transaction<=1;transaction_s10<=0;header<=0;footer<=0;byte_count<=0;bit_count<=0;rx_shift<=0;tx_index<=0;
     expected_bytes<=36;rx_crc<=32'hffffffff;bad<=!ds[1];ram_available<=!page_busy&&page_ready;
     // Reverse byte order for wire MSB-first, without reversing bits within a byte.
@@ -90,7 +113,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
     if(bit_count==7)begin
      if(byte_count<32)begin
       header[byte_count*8+:8]<=next_byte;
-      rx_crc<=crcbyte(rx_crc,next_byte);
+      rx_crc<=received_crc_next;
       if(ENABLE_S10_ROUTE && byte_count==3 && ({next_byte,header[23:0]}==32'h50303153||{next_byte,header[23:0]}==32'h50313153))transaction_s10<=1;
       if(byte_count==31 && !transaction_s10)begin
        if(header[175:160]>512)bad<=1;
@@ -99,7 +122,7 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
      end else if(transaction_s10)begin
       // S10 owns this transaction. Never write the score RAM or commit a score command.
      end else if(byte_count<expected_bytes-4)begin
-      rx_crc<=crcbyte(rx_crc,next_byte);
+      rx_crc<=received_crc_next;
       if(ram_available&&byte_count<544)memory[byte_count-32]<=next_byte;
      end else if(byte_count<expected_bytes)footer[(byte_count-(expected_bytes-4))*8+:8]<=next_byte;
      else bad<=1;
@@ -129,4 +152,9 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
    end
   end
  end
+ // synthesis translate_off
+ always @(posedge clk)if(!rst && STREAM_STATUS_CRC && in_transaction &&
+     tx_index>=224 && tx_index<256 && response_crc_busy)
+  $fatal(1,"SCORE_STATUS_CRC_DEADLINE");
+ // synthesis translate_on
 endmodule

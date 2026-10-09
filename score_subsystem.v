@@ -1,4 +1,4 @@
-module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_S11=0)(
+module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_S11=0, STREAM_STATUS_CRC=0)(
  input wire clk,rst,sample_tick,stereo_locked,
  input wire spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,output wire spi_miso,spi_miso_oe,
  input wire local_backlog,output wire event_valid,input wire event_ready,output wire [904:0] event_packet,
@@ -7,6 +7,7 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
  output wire led_dout,output wire [7:0] score_state,score_error,
  output wire [63:0] score_time,output wire [31:0] deadline_count,
  output wire [255:0] observe_score_status,
+ output wire observe_dispatch_active,
  output wire observe_teach,observe_loop,
  input wire field_valid,field_start,input wire [1:0] field_size,
  output wire field_ready,field_active,field_rejected,field_committed,field_running
@@ -49,7 +50,7 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
   assign field_rv=0;assign field_record=0;assign field_visible=0;assign field_voices=0;
  end endgenerate
  wire clear=pc||(cv&&cr&&(cmd==3||cmd==6||cmd==7));
- score_spi_transport #(.WATCHDOG_CLOCKS(WATCHDOG_CLOCKS),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_FIELD(ENABLE_S11)) transport(
+ score_spi_transport #(.WATCHDOG_CLOCKS(WATCHDOG_CLOCKS),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_FIELD(ENABLE_S11),.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) transport(
   .clk(clk),.rst(rst),.spi_sck(spi_sck),.fpga_cs_n(fpga_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.observe_status_bytes(observe_score_status),.ctrl_valid(cv),.ctrl_ready(cr),.ctrl_cmd(cmd),.ctrl_epoch(ep),.ctrl_arg(arg),
   .page_valid(pv),.page_ready(pr),.page_sequence(seq),.page_done(pdone),.page_ok(pok),.page_addr(addr),.page_data(data),
@@ -72,11 +73,28 @@ module score_subsystem #(parameter integer TOKEN_WIDTH=64, WATCHDOG_CLOCKS=50000
   .state(score_state),.error_code(score_error),.music_time(score_time),.epoch(player_epoch),
   .logical_held(logical_held),.logical_notes(logical_notes),.logical_pressures(logical_pressures),.guide_held(guide_held),.guide_notes(guide_notes),.reload_request(reload_request),
   .records_consumed(records_consumed),.events_offered(events_offered),.events_accepted(events_accepted),.events_completed(events_completed),
-  .deadline_count(deadline_count),.token_exhaustions(token_exhaustions),.stops(stops),.last_group_cycles(last_group_cycles),.observe_teach(observe_teach),.observe_loop(observe_loop));
+  .deadline_count(deadline_count),.token_exhaustions(token_exhaustions),.stops(stops),.last_group_cycles(last_group_cycles),.observe_dispatch_active(observe_dispatch_active),.observe_teach(observe_teach),.observe_loop(observe_loop));
  wire prefix,led_busy;wire [215:0] colors;wire [5:0] unmapped;wire [31:0] invalid_guide,led_frames;
  score_guide guide(
   .clk(clk),.rst(rst),.cfg_valid(guide_cfg_valid),.cfg_prefix(guide_cfg_prefix),.cfg_order(guide_cfg_order),.cfg_lead(guide_cfg_lead),
   .local_notes(local_notes),.held(guide_held),.notes(guide_notes),.preview_valid(preview_valid),.preview_time(preview_time),.music_time(score_time),
   .preview_notes(preview_notes),.player_state(score_state),.error_code(score_error),.prefix(prefix),.colors(colors),.unmapped_count(unmapped),.invalid_config_count(invalid_guide));
  ws2812_guide_serializer leds(.clk(clk),.rst(rst),.prefix(prefix),.colors(colors),.led_dout(led_dout),.busy(led_busy),.completed_frames(led_frames));
+endmodule
+
+module scheduled_score_probe (
+ input wire clk,rst,sample_tick,stereo_locked,
+ input wire spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,output wire spi_miso,spi_miso_oe,
+ input wire local_backlog,output wire event_valid,input wire event_ready,output wire [904:0] event_packet,
+ input wire dispatch_done,input wire [55:0] local_notes,
+ input wire guide_cfg_valid,guide_cfg_prefix,input wire [23:0] guide_cfg_order,input wire [13:0] guide_cfg_lead,
+ output wire led_dout,output wire [7:0] score_state,score_error,
+ output wire [63:0] score_time,output wire [31:0] deadline_count,
+ output wire [255:0] observe_score_status,
+ output wire observe_dispatch_active,
+ output wire observe_teach,observe_loop,
+ input wire field_valid,field_start,input wire [1:0] field_size,
+ output wire field_ready,field_active,field_rejected,field_committed,field_running
+);
+score_subsystem #(.STREAM_STATUS_CRC(1),.ENABLE_S10_ROUTE(1),.ENABLE_S11(1)) dut(.clk(clk),.rst(rst),.sample_tick(sample_tick),.stereo_locked(stereo_locked),.spi_sck(spi_sck),.fpga_cs_n(fpga_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),.spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.local_backlog(local_backlog),.event_valid(event_valid),.event_ready(event_ready),.event_packet(event_packet),.dispatch_done(dispatch_done),.local_notes(local_notes),.guide_cfg_valid(guide_cfg_valid),.guide_cfg_prefix(guide_cfg_prefix),.guide_cfg_order(guide_cfg_order),.guide_cfg_lead(guide_cfg_lead),.led_dout(led_dout),.score_state(score_state),.score_error(score_error),.score_time(score_time),.deadline_count(deadline_count),.observe_score_status(observe_score_status),.observe_dispatch_active(observe_dispatch_active),.observe_teach(observe_teach),.observe_loop(observe_loop),.field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running));
 endmodule

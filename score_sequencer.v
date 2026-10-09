@@ -16,6 +16,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  output reg reload_request,output reg [31:0] records_consumed,events_offered,events_accepted,events_completed,
  output reg [31:0] deadline_count,token_exhaustions,stops,
  output reg [15:0] last_group_cycles,
+ output wire observe_dispatch_active,
  output wire observe_teach,observe_loop
 );
  localparam [63:0] TOKEN_MAX=(TOKEN_WIDTH==64)?64'hffffffffffffffff:((64'd1<<TOKEN_WIDTH)-1);
@@ -39,12 +40,23 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
   assign event_packet[s*96+:96]=offered_header[s]?build_items[s*96+:96]:96'd0;
  end endgenerate
 
+ // At the fixed 50 MHz / 48 kHz interface, the next sample edge is
+ // at least1041 clocks away. Permit the banked event engine to use960
+ // clocks, leaving at least81 clocks before that immutable sample edge.
+ // The sample_tick unfinished-group guard below is retained unchanged.
+ // This changes only the internal early-abort budget, not sample cadence.
  reg [15:0] frame_age;
  reg [31:0] system_sample;
  wire [31:0] outstanding=events_accepted-events_completed;
  wire [63:0] rec_time=record_data[63:0];
  wire [7:0] op=record_data[71:64],key=record_data[79:72],note=record_data[87:80],value=record_data[95:88];
  wire closed=record_data[96];
+ // Reserve dispatch for the due same-time score group, including gaps while
+ // its next packet is built. Already accepted phone packets still finish.
+ // No reservation for future-time records or an idle music frame.
+ assign observe_dispatch_active=!rst && state==2 && window_open &&
+    (group_active || build_count!=0 || event_valid || outstanding!=0 ||
+     (record_valid && rec_time==music_time));
  wire destructive_control=ctrl_valid&&ctrl_ready&&(ctrl_cmd==3||ctrl_cmd==6||ctrl_cmd==7);
  assign ctrl_ready=!rst;
  assign parser_enable=state==1||state==2||state==3;
@@ -132,7 +144,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
    if(state==2&&stereo_locked)begin window_open<=1;window_used<=0;end
    if(state==2&&window_open&&record_valid&&rec_time<music_time)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
    if(state==2&&window_open&&!record_valid&&visible_records==0&&!eof_seen&&last_verified_time<music_time)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
-   if(state==2&&window_open&&frame_age>=800&&(group_active||event_valid||outstanding!=0)&&window_used)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
+   if(state==2&&window_open&&frame_age>=960&&(group_active||event_valid||outstanding!=0)&&window_used)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
    if(state==2&&record_ready&&record_valid)begin
     records_consumed<=records_consumed+1;window_used<=1;group_active<=!closed;
     if(closed)begin

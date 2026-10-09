@@ -1,6 +1,7 @@
 // Stage10 SPI PCM composition only; no change to the frozen audio/video algorithms.
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage11 #(
+    parameter integer VERSIONED_TOKENS=1,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -165,7 +166,9 @@ module instrument_core_stage11 #(
   else if(observe_load)begin dac_load_count<=dac_load_count+1'b1;since_load<=0;end
   else if(since_load!=65535)since_load<=since_load+1'b1;
  end
- instrument_core_stage10 #(
+ wire token_snapshot_capture,token_snapshot_read;
+ wire [4:0] token_snapshot_slot;wire [63:0] token_snapshot_data;
+ instrument_core_stage10 #(.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -178,6 +181,7 @@ module instrument_core_stage11 #(
   .OCTAVE_MAX(OCTAVE_MAX),
   .MIX_SHIFT(MIX_SHIFT),
   .ENABLE_S11(1)) base(
+ .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
   .spi_sck(spi_sck),
   .score_cs_n(score_cs_n),
   .sd_cs_n(sd_cs_n),
@@ -346,7 +350,7 @@ module instrument_core_stage11 #(
   .record_block_items(record_block_items),
   .record_peek_address(record_peek_address),
   .observe_media_epoch(observe_media_epoch),.record_peek_data(record_peek_data));
- s11_recording_subsystem recorder(.clk(clk),.rst(rst),.audio_reset(rst),
+ s11_recording_subsystem #(.SNAPSHOT_TOKEN_DIRECTORY(VERSIONED_TOKENS)) recorder(.token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),.clk(clk),.rst(rst),.audio_reset(rst),
   .record_cmd_valid(record_cmd_valid),.record_cmd_ready(record_cmd_ready),.record_cmd({6'd0,record_cmd}),
   .command_record_id(record_cmd_id),.command_mask(record_cmd_mask[1:0]),.ack_kind(record_ack_kind[1:0]),
   .command_sequence(record_cmd_sequence),.ack_block_sequence(record_ack_sequence),

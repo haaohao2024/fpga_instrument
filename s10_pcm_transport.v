@@ -2,7 +2,7 @@
 // verification contract; this module does not qualify physical IO timing.
 // Two 512-byte synchronous byte RAMs own each accepted packet until its
 // stereo pairs handshake or an explicit stream barrier discards them.
-module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0)(
+module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
  input wire clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
  input wire [255:0] legacy_status_bytes,
  input wire [11:0] stream_buffered,input wire [31:0] stream_generation,
@@ -100,11 +100,12 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
  // RX first, then the frozen status and telemetry prefixes in 56 free clocks.
  // No transmit/receive edge or packet admission is delayed. The selector
  // arrives at byte 28, much later than this bounded preparation interval.
- reg response_crc_busy,response_crc_telemetry;
+ reg response_crc_busy,response_crc_telemetry,response_crc_legacy;
  reg [4:0] response_crc_index;reg [31:0] response_crc_value;
  wire receive_crc_step=!select_start&&transaction&&!cs[2]&&rise&&bit_count==7&&
   (byte_count<32||(route_s11&&byte_count<64)||byte_count<expected_bytes-4);
- wire [7:0] frozen_crc_byte=response_crc_telemetry?
+ wire [7:0] frozen_crc_byte=response_crc_legacy?
+  response[511-response_crc_index*8-:8]:response_crc_telemetry?
   telemetry_snapshot[255-response_crc_index*8-:8]:response[255-response_crc_index*8-:8];
  wire [31:0] scheduled_crc_next=crcbyte(receive_crc_step?rx_crc:response_crc_value,
   receive_crc_step?next_byte:frozen_crc_byte);
@@ -128,7 +129,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
    route_s10<=0;route_s11<=0;record_cmd_valid<=0;record_cmd<=0;record_cmd_id<=0;
    record_cmd_mask<=0;record_ack_kind<=0;record_cmd_sequence<=0;record_ack_sequence<=0;request_header_crc<=0;
    transaction<=0;bad<=0;capacity<=0;receive_bank<=0;
-   response_crc_busy<=0;response_crc_telemetry<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
+   response_crc_busy<=0;response_crc_telemetry<=0;response_crc_legacy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
    header<=0;response<=0;telemetry_snapshot<=0;rx_crc<=32'hffffffff;footer<=0;watchdog<=0;
    byte_count<=0;expected_bytes<=36;wire_length<=64;bit_count<=0;rx_shift<=0;tx_index<=0;barrier<=0;
   end else begin
@@ -136,7 +137,10 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
    if(STREAM_STATUS_CRC&&response_crc_busy&&!receive_crc_step&&!select_start)begin
     response_crc_value<=scheduled_crc_next;
     if(response_crc_index==27)begin
-     if(response_crc_telemetry)begin
+     if(response_crc_legacy)begin
+      for(integer b=0;b<4;b=b+1)response[287-b*8-:8]<=completed_response_crc[b*8+:8];
+      response_crc_legacy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
+     end else if(response_crc_telemetry)begin
       for(integer b=0;b<4;b=b+1)telemetry_snapshot[31-b*8-:8]<=completed_response_crc[b*8+:8];
       response_crc_busy<=0;
      end else begin
@@ -178,7 +182,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
    end
    if(stop_pending&&!ctrl_valid)begin ctrl_valid<=1;ctrl_cmd<=1;ctrl_epoch<=stream_epoch;state<=CLOSING;stop_pending<=0;end
    if(select_start)begin
-    if(STREAM_STATUS_CRC)begin response_crc_busy<=1;response_crc_telemetry<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;end
+    if(STREAM_STATUS_CRC)begin response_crc_busy<=1;response_crc_telemetry<=0;response_crc_legacy<=DEFER_LEGACY_CRC;response_crc_index<=0;response_crc_value<=32'hffffffff;end
     transaction<=1;route_s10<=0;route_s11<=0;bad<=!sd_sync[1]||!control_sync[1];
     capacity<=!bank_used[0]||!bank_used[1];receive_bank<=bank_used[0];
     header<=0;footer<=0;rx_crc<=32'hffffffff;watchdog<=0;byte_count<=0;expected_bytes<=36;wire_length<=64;
@@ -290,7 +294,10 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
   end
  end
  // synthesis translate_off
+ initial if(DEFER_LEGACY_CRC && !STREAM_STATUS_CRC)$fatal(1,"LEGACY_CRC_REQUIRES_SCHEDULED_ENGINE");
  always @(posedge clk)if(!rst&&STREAM_STATUS_CRC)begin
+  if(DEFER_LEGACY_CRC && transaction && tx_index>=224 && tx_index<256 && response_crc_legacy)
+   $fatal(1,"MEDIA_LEGACY_CRC_DEADLINE");
   if(transaction&&tx_index>=480&&tx_index<512&&response_crc_busy)$fatal(1,"MEDIA_STATUS_CRC_DEADLINE");
   if(transaction&&!select_start&&!cs[2]&&rise&&bit_count==7&&byte_count==28&&route_s10&&!route_s11&&operation==OP_STATUS&&next_byte[0]&&response_crc_busy)
    $fatal(1,"MEDIA_TELEMETRY_CRC_DEADLINE");

@@ -221,7 +221,7 @@ module poly_synth_mixer32_owner_directory #(parameter integer SHARED_BACKEND=0, 
     wire signed [17:0] backend_sample[0:3];wire [31:0] backend_phase[0:3];
     genvar i;
     generate for (i=0;i<4;i=i+1) begin : lanes
-        shared_voice_lane_owner_directory #(.EXTERNAL_BACKEND(SHARED_BACKEND),.COMPACT_RECLAIM(COMPACT_RECLAIM),.DIRECT_BACKEND_SAMPLE(i%2)) u_lane (
+        shared_voice_lane_owner_directory #(.EXTERNAL_BACKEND(SHARED_BACKEND),.COMPACT_RECLAIM(COMPACT_RECLAIM),.DIRECT_BACKEND_SAMPLE(i%2),.COMPLETION_LAG(SHARED_BACKEND?3:0)) u_lane (
             .clk(clk),.rst(rst),.sample_tick(sample_tick),
             .owner_allocate(owner_allocate&&owner_allocate_slot[4:3]==i),.owner_publish(owner_publish),
             .owner_allocate_slot(owner_allocate_slot[2:0]),.owner_allocate_id(owner_allocate_id),
@@ -280,7 +280,7 @@ module poly_synth_mixer32_owner_directory #(parameter integer SHARED_BACKEND=0, 
                 .write_enable(!rst&&backend_issue[ODD]),.write_slot(backend_write_slot[ODD]),
                 .read_slot(cursor[2:0]),.write_value(backend_job[ODD]),.read_value(delayed_job));
             wire [4:0] index={cursor[2:0],1'(e),cursor[3]};
-            r8_voice_backend #(.DERIVE_FM(1)) engine(.clk(clk),.rst(rst),.in_valid(active&&!wait_issue),.in_tag(index),
+            r8_voice_backend_six_stage #(.DERIVE_FM(1)) engine(.clk(clk),.rst(rst),.in_valid(active&&!wait_issue),.in_tag(index),
                 .job_in(cursor[3]?delayed_job:first_lane_job),
                 .out_valid(result_valid[e]),.out_tag(result_tag[e]),
                 .out_sample(result_sample[e]),.out_phase(result_phase[e]));

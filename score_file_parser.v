@@ -13,6 +13,10 @@ module score_file_parser(
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
  reg [7:0] memory[0:511];
+ // Every accepted nonfinal page contains exactly30 records. Track the
+ // validated page frontier instead of recomputing a32-bit divide on the
+ // validation edge. Full32-bit incoming sequence comparison is retained.
+ reg [31:0] expected_data_page;
  reg [7:0] state;reg [8:0] copy_index;reg [31:0] crc,footer,seq;
  reg [223:0] head;reg reserved_bad;
  reg [5:0] page_count,record_index;reg [3:0] record_byte;
@@ -34,7 +38,7 @@ module score_file_parser(
   read_data<=memory[read_addr];
   page_done<=0;
   if(rst||clear)begin
-   state<=0;page_addr<=0;copy_index<=0;crc<=32'hffffffff;footer<=0;head<=0;reserved_bad<=0;seq<=0;
+   expected_data_page<=1;state<=0;page_addr<=0;copy_index<=0;crc<=32'hffffffff;footer<=0;head<=0;reserved_bad<=0;seq<=0;
    page_done<=0;page_ok<=0;record_valid<=0;record_data<=0;header_valid<=0;eof_seen<=0;
    end_time<=0;total_records<=0;parsed_records<=0;error_code<=0;last_verified_time<=0;
    logical_held<=0;last_time<=0;group_closed<=1;group_count<=0;recent_ptr<=0;seen<=0;
@@ -64,7 +68,7 @@ module score_file_parser(
        head[127:96]==0||head[127:96]>1000000||head[223:192]>1)begin error_code<=2;state<=8;end
       else begin header_valid<=1;total_records<=head[127:96];end_time<=head[191:128];page_ok<=1;page_done<=1;state<=0;end
      end else if(!header_valid||head[31:0]!=seq||head[47:32]==0||head[47:32]>30||
-       seq!=(parsed_records/30)+1||head[47:32]!=((total_records-parsed_records>=30)?30:total_records-parsed_records))begin error_code<=3;state<=8;end
+       seq!=expected_data_page||head[47:32]!=((total_records-parsed_records>=30)?30:total_records-parsed_records))begin error_code<=3;state<=8;end
      else begin page_count<=head[47:32];record_index<=0;record_byte<=0;candidate<=0;read_addr<=16;state<=4;end
     end
     4: state<=5;
@@ -84,7 +88,7 @@ module score_file_parser(
      if(op==1)logical_held[key[4:0]]<=1;else if(op==2)logical_held[key[4:0]]<=0;
      if(op==4)eof_seen<=1;
      if(parsed_records+1==total_records&&op!=4)begin error_code<=5;state<=8;end
-     else if(record_index+1==page_count)begin page_ok<=1;page_done<=1;state<=0;end
+     else if(record_index+1==page_count)begin if(page_count==30)expected_data_page<=expected_data_page+1;page_ok<=1;page_done<=1;state<=0;end
      else begin record_index<=record_index+1;record_byte<=0;read_addr<=16+(record_index+1)*16;state<=4;end
     end
     8:begin page_ok<=0;page_done<=1;record_valid<=0;state<=9;end
@@ -92,4 +96,10 @@ module score_file_parser(
    endcase
   end
  end
+ // synthesis translate_off
+ always @(posedge clk)if(!rst && !clear && (state==0 || state==3))begin
+  if(expected_data_page!==(parsed_records/30)+1)
+   $fatal(1,"PARSER_PAGE_FRONTIER_ORACLE");
+ end
+ // synthesis translate_on
 endmodule

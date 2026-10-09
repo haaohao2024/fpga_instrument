@@ -1,5 +1,6 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage8 #(
+    parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -15,6 +16,10 @@ module instrument_core_stage8 #(
     parameter integer MIX_SHIFT = 5,
     parameter integer ENABLE_REMOTE = 0
 ) (
+    input wire token_snapshot_capture,token_snapshot_read,
+    input wire [4:0] token_snapshot_slot,
+    output wire [63:0] token_snapshot_data,
+
     input wire score_spi_sck,score_cs_n,score_sd_cs_n,score_spi_mosi,
     output wire score_spi_miso,score_spi_miso_oe,guide_led_dout,
     input wire guide_cfg_valid,guide_cfg_prefix,
@@ -125,9 +130,10 @@ module instrument_core_stage8 #(
     output wire [287:0] observe_current_pan,
     output wire [103:0] observe_gain_state
 );
- instrument_core_stage7 #(
+ instrument_core_stage7 #(.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),.ADC_ZERO(ADC_ZERO),.ADC_FULL(ADC_FULL),.DEADZONE(DEADZONE),.PRESS_THRESHOLD(PRESS_THRESHOLD),.RELEASE_THRESHOLD(RELEASE_THRESHOLD),.VIBRATO_STEP(VIBRATO_STEP),.OCTAVE_MIN(OCTAVE_MIN),.OCTAVE_MAX(OCTAVE_MAX),.MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.ENABLE_REMOTE(ENABLE_REMOTE)) u_audio (
+ .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
   .field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
     .observe_allocator_busy(observe_allocator_busy),
   .observe_batch_begin(observe_batch_begin),

@@ -2,7 +2,10 @@
 // Applied working-bank items are held until successful publication. Aborted
 // batches become diagnostics; their speculative instances never update the
 // persistent identity map. Snapshot values are latched together at ARM.
-module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0)(
+module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0, SNAPSHOT_TOKEN_DIRECTORY=0)(
+ output wire token_snapshot_capture,token_snapshot_read,output wire [4:0] token_snapshot_slot,
+ input wire [63:0] token_snapshot_data,
+
  input wire clk,rst,audio_reset,start_valid,stop_valid,
  input wire capture_fault,
  input wire [7:0] capture_fault_code,
@@ -268,7 +271,7 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
       cell_sequence_counter+1,snapshot_frame,{58'd0,snapshot_index},snapshot_runtime[snapshot_read_slot]);
      2:capture_tx_cell=make_cell(BIND_TOKEN,8'd3,
       snapshot_source_key[snapshot_read_slot][15:8],snapshot_source_key[snapshot_read_slot][7:0],
-      cell_sequence_counter+2,snapshot_frame,{58'd0,snapshot_index},snapshot_token[snapshot_read_slot]);
+      cell_sequence_counter+2,snapshot_frame,{58'd0,snapshot_index},SNAPSHOT_TOKEN_DIRECTORY?64'd0:snapshot_token[snapshot_read_slot]);
     endcase
    end
   end else if((tx_inflight && tx_kind==2) || (!tx_inflight && pending))begin
@@ -288,7 +291,7 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
  // Wide apply records have ONE write and ONE synchronous read port.
  reg [479:0] response_raw;
  reg [255:0] response_meta;
- reg response_stage,response_reclaim;
+ reg response_stage,response_reclaim,response_snapshot_token;
  reg [2:0] response_record_kind;
  reg response_diagnostic;
  reg [1:0] response_reclaim_lane;
@@ -312,12 +315,12 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
  end endgenerate
  always @(posedge clk)begin
   if(rst)begin tx_response_valid<=0;tx_response_index<=0;tx_response_epoch<=0;
-   response_stage<=0;response_reclaim<=0;response_record_kind<=0;response_diagnostic<=0;response_reclaim_lane<=0;end
+   response_stage<=0;response_reclaim<=0;response_snapshot_token<=0;response_record_kind<=0;response_diagnostic<=0;response_reclaim_lane<=0;end
   else begin
    tx_response_valid<=SYNC_READ&&tx_read_valid;
    if(SYNC_READ&&tx_read_valid)begin
     tx_response_index<=tx_index;tx_response_epoch<=tx_read_epoch;
-    response_meta<=capture_tx_cell;response_stage<=read_is_stage;response_reclaim<=read_is_reclaim;
+    response_meta<=capture_tx_cell;response_stage<=read_is_stage;response_reclaim<=read_is_reclaim;response_snapshot_token<=token_snapshot_read;
     response_record_kind<=stage_record_kind[tx_index];response_diagnostic<=stage_record_diagnostic[tx_index];
     response_reclaim_lane<=reclaim_read_slot[4:3];
    end
@@ -329,7 +332,8 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
   {response_meta[255:64],response_meta[31:0]});
  assign tx_cell=!SYNC_READ?capture_tx_cell:response_stage?
   {decoded_response[223:32],response_meta[63:32],decoded_response[31:0]}:response_reclaim?
-  {response_meta[255:192],response_pid_lane[response_reclaim_lane],response_meta[127:0]}:response_meta;
+  {response_meta[255:192],response_pid_lane[response_reclaim_lane],response_meta[127:0]}:response_snapshot_token?
+  {token_snapshot_data,response_meta[191:0]}:response_meta;
  // synthesis translate_off
  always @(posedge clk)if(SYNC_READ&&!rst)begin
   if($isunknown(tx_read_valid))$fatal(1,"EXEC_READ_CONTROL_XZ");
@@ -361,6 +365,15 @@ module s11_execution_observer #(parameter integer SYNC_READ=1, INDEXED_OVERLAY=0
 
  wire map_publish=(active || stop_pending) && batch_tracking && publish_ok && staged_count<37;
  wire map_start=start_valid && !active && !arming && !pending && !tx_inflight && !allocator_busy && start_record_id!=0;
+ assign token_snapshot_capture=SNAPSHOT_TOKEN_DIRECTORY && map_start;
+ assign token_snapshot_slot=snapshot_read_slot;
+ // This RAM response is synchronous with the EXISTING metadata response.
+ // A valid bit binds the original snapshot/index/epoch; no extra writer cycle.
+ assign token_snapshot_read=SNAPSHOT_TOKEN_DIRECTORY && SYNC_READ && !rst && tx_read_valid &&
+  ((tx_inflight&&tx_kind==1)||(!tx_inflight&&arming)) && snapshot_index>0 && snapshot_index<=32 && tx_index==2;
+ // synthesis translate_off
+ initial if(SNAPSHOT_TOKEN_DIRECTORY && !SYNC_READ)$fatal(1,"TOKEN_REQUIRES_SYNC_PREFETCH");
+ // synthesis translate_on
  always @(posedge clk)begin
   if(rst)snapshot_initialized<=0;
   else if(map_start)snapshot_initialized<=1;
