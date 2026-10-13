@@ -107,3 +107,14 @@ enum {S11_CELL_START=1,S11_CELL_BIND_ID=2,S11_CELL_BIND_TOKEN=3,
  * valid_cells16,page_sequence32,record_id64,flags32,reserved32.
  * Final page has END cell and carries complete/incomplete state. */
 #endif
+
+/* EVR2 (header magic EVR2, version 2) keeps 32-byte cells and E11P pages.
+ * Musical identity = bit21 | generation16<<5 | slot5; not runtime/token/PID.
+ * NOTE_ON flag bit5 means replacement/steal. No BIND/RECLAIM/STALE/REJECT/
+ * ABORT audit cells. PUBLISH flags=1. CONTINUATION is one snapshot cell.
+ * Normal GAIN payload: zero16,target_local16,target_external16,subcycle16;
+ * targets are effective (mute applied), hardware ramp is still 64 samples.
+ * PAN is one cell (slot/generation/value/subcycle); identity above identifies
+ * the actual instance. Initial 16 configuration cells retain the EVR1 layout.
+ * Overflow ends event recording; missing_frame may be UINT64_MAX.
+ */

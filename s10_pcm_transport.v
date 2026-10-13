@@ -2,8 +2,8 @@
 // verification contract; this module does not qualify physical IO timing.
 // Two 512-byte synchronous byte RAMs own each accepted packet until its
 // stereo pairs handshake or an explicit stream barrier discards them.
-module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
- input wire clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
+module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
+ input wire comm_clk,clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
  input wire [255:0] legacy_status_bytes,
  input wire [11:0] stream_buffered,input wire [31:0] stream_generation,
  input wire [2:0] stream_state,input wire cancel,
@@ -42,15 +42,25 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
  reg [9:0] read_index;reg read_pending,read_bank;reg [1:0] read_phase;
  reg [31:0] generation,read_generation;reg [63:0] read_epoch;
  reg [7:0] ram_q,part0,part1,part2;reg stop_pending;
- reg [2:0] ss,cs;reg [1:0] ms,sd_sync,control_sync;
- wire rise=ss[2:1]==2'b01,fall=ss[2:1]==2'b10;
- wire select_start=cs[2:1]==2'b10,select_end=cs[2:1]==2'b01;
+ reg [1:0] sd_sync,control_sync;
+ wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall;
+ wire serial_clk=COMM_SEPARATE?comm_clk:clk;
+ r24_spi_edges #(.COMM_SEPARATE(COMM_SEPARATE)) phy(.clk(clk),.comm_clk(comm_clk),.rst(rst),
+ .sck(spi_sck),.cs_n(score_cs_n),.mosi(spi_mosi),.rise(rise),.fall(fall),.start(select_start),.finish(select_end),
+ .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall));
+
  reg transaction,bad,capacity,receive_bank;
- reg [511:0] header;reg [511:0] response;reg [255:0] telemetry_snapshot;
+ reg [511:0] header;
+ // Three frozen views retain one owner each. Selecting telemetry changes only
+ // the view selector, never copies a complete response over another version.
+ reg [255:0] legacy_snapshot,status_snapshot,telemetry_snapshot;
+ reg extension_telemetry;
+ wire [511:0] response={legacy_snapshot,extension_telemetry?telemetry_snapshot:status_snapshot};
  reg [31:0] rx_crc,footer,watchdog,request_header_crc;
  reg [9:0] byte_count,expected_bytes,wire_length;
  reg [2:0] bit_count;reg [7:0] rx_shift;reg [12:0] tx_index;
- wire [7:0] next_byte={rx_shift[6:0],ms[1]};
+ wire [1:0] footer_lane=byte_count[1:0]-expected_bytes[1:0];
+ wire [7:0] next_byte={rx_shift[6:0],phy_bit};
  wire [7:0] operation=header[47:40];wire [15:0] request_pairs=header[63:48];
  wire [63:0] request_epoch=header[127:64];wire [31:0] request_sequence=header[159:128];
  wire [63:0] source_start=header[223:160];wire [31:0] flags=header[255:224];
@@ -70,7 +80,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
  wire s11_serial_bit;wire [511:0] s11_snapshot;wire s11_payload_ready;
  wire short_s11=route_s11&&header[431:416]==0;
  generate if(ENABLE_S11)begin: s11_response_enabled
-  s11_spi_response #(.STREAM_HEADER_CRC(1)) response_encoder(.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
+  s11_spi_response #(.COMM_SEPARATE(COMM_SEPARATE),.STREAM_HEADER_CRC(1)) response_encoder(.comm_clk(comm_clk),.fast_fall(fast_fall),.fast_start(fast_start),.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
    .media_state(state),.media_epoch(stream_epoch),.media_last_sequence(last_sequence),.media_credit(free_pair_credit),
    .recorder_state(record_state),.recorder_incomplete(record_incomplete),.recorder_mask(record_mask),.recorder_id(record_id),
    .recorder_command_sequence(record_last_command),.recorder_error(record_error),.captured_pcm_pairs(record_captured_pcm),.first_missing_frame(record_first_missing_frame),
@@ -82,7 +92,24 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
  end endgenerate
  assign spi_miso_oe=!rst&&!score_cs_n&&control_cs_n&&sd_cs_n&&transaction&&!bad
                      &&(tx_index<256||(route_s10&&tx_index<512)||(route_s11&&tx_index<(short_s11?544:4640)));
- assign spi_miso=route_s11?s11_serial_bit:(tx_index<512?response[511-tx_index]:1'b0);
+ // First byte keeps the original CS snapshot edge. Subsequent bytes are
+ // loaded on their preceding byte's final falling edge; only 8 bits shift.
+ reg[7:0] media_tx_byte;
+ wire[5:0] media_next_index=tx_index[8:3]+6'd1;
+ wire[7:0] media_next_byte=response[{~media_next_index,3'b111}-:8];
+ assign spi_miso=route_s11?s11_serial_bit:(tx_index<8?
+  legacy_snapshot[{5'b11111,~tx_index[2:0]}]:(tx_index<512?media_tx_byte[7]:1'b0));
+ always @(posedge serial_clk)begin
+  if(rst||fast_start)media_tx_byte<=0;
+  else if(phy_selected&&fast_fall&&tx_index<512)begin
+   if(tx_index[2:0]==7)media_tx_byte<=media_next_byte;
+   else media_tx_byte<={media_tx_byte[6:0],1'b0};
+  end
+ end
+ always @(posedge serial_clk)begin
+  if(rst||fast_start)tx_index<=0;
+  else if(phy_selected&&fast_fall&&tx_index<4640)tx_index<=tx_index+1'b1;
+ end
  always @(*)begin
   status_tmp=0;status_tmp[31:0]=32'h53303153;status_tmp[39:32]=1;
   status_tmp[47:40]={6'd0,state};status_tmp[63:48]={7'd0,free_pair_credit};
@@ -102,21 +129,21 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
  // arrives at byte 28, much later than this bounded preparation interval.
  reg response_crc_busy,response_crc_telemetry,response_crc_legacy;
  reg [4:0] response_crc_index;reg [31:0] response_crc_value;
- wire receive_crc_step=!select_start&&transaction&&!cs[2]&&rise&&bit_count==7&&
+ wire receive_crc_step=!select_start&&transaction&&phy_selected&&rise&&bit_count==7&&
   (byte_count<32||(route_s11&&byte_count<64)||byte_count<expected_bytes-4);
  wire [7:0] frozen_crc_byte=response_crc_legacy?
-  response[511-response_crc_index*8-:8]:response_crc_telemetry?
-  telemetry_snapshot[255-response_crc_index*8-:8]:response[255-response_crc_index*8-:8];
+  response[{1'b1,~response_crc_index,3'b111}-:8]:response_crc_telemetry?
+  telemetry_snapshot[{~response_crc_index,3'b111}-:8]:status_snapshot[{~response_crc_index,3'b111}-:8];
  wire [31:0] scheduled_crc_next=crcbyte(receive_crc_step?rx_crc:response_crc_value,
   receive_crc_step?next_byte:frozen_crc_byte);
  wire [31:0] received_crc_next=STREAM_STATUS_CRC?scheduled_crc_next:crcbyte(rx_crc,next_byte);
  wire [31:0] completed_response_crc=~scheduled_crc_next;
  reg barrier;
  always @(posedge clk)begin
-  ss<={ss[1:0],spi_sck};cs<={cs[1:0],score_cs_n};ms<={ms[0],spi_mosi};
+  
   sd_sync<={sd_sync[0],sd_cs_n};control_sync<={control_sync[0],control_cs_n};
   if(rst)begin
-   ss<=0;cs<=7;ms<=0;sd_sync<=3;control_sync<=3;
+   sd_sync<=3;control_sync<=3;
    state<=STOPPED;bank_used<=0;bank_pairs[0]<=0;bank_pairs[1]<=0;
    bank_remaining[0]<=0;bank_remaining[1]<=0;head_bank<=0;
    read_index<=0;read_pending<=0;read_bank<=0;read_phase<=0;read_generation<=0;
@@ -130,21 +157,21 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
    record_cmd_mask<=0;record_ack_kind<=0;record_cmd_sequence<=0;record_ack_sequence<=0;request_header_crc<=0;
    transaction<=0;bad<=0;capacity<=0;receive_bank<=0;
    response_crc_busy<=0;response_crc_telemetry<=0;response_crc_legacy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
-   header<=0;response<=0;telemetry_snapshot<=0;rx_crc<=32'hffffffff;footer<=0;watchdog<=0;
-   byte_count<=0;expected_bytes<=36;wire_length<=64;bit_count<=0;rx_shift<=0;tx_index<=0;barrier<=0;
+   header<=0;legacy_snapshot<=0;status_snapshot<=0;telemetry_snapshot<=0;extension_telemetry<=0;rx_crc<=32'hffffffff;footer<=0;watchdog<=0;
+   byte_count<=0;expected_bytes<=36;wire_length<=64;bit_count<=0;rx_shift<=0;barrier<=0;
   end else begin
    barrier<=0;
    if(STREAM_STATUS_CRC&&response_crc_busy&&!receive_crc_step&&!select_start)begin
     response_crc_value<=scheduled_crc_next;
     if(response_crc_index==27)begin
      if(response_crc_legacy)begin
-      for(integer b=0;b<4;b=b+1)response[287-b*8-:8]<=completed_response_crc[b*8+:8];
+      for(integer b=0;b<4;b=b+1)legacy_snapshot[31-b*8-:8]<=completed_response_crc[b*8+:8];
       response_crc_legacy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
      end else if(response_crc_telemetry)begin
       for(integer b=0;b<4;b=b+1)telemetry_snapshot[31-b*8-:8]<=completed_response_crc[b*8+:8];
       response_crc_busy<=0;
      end else begin
-      for(integer b=0;b<4;b=b+1)response[31-b*8-:8]<=completed_response_crc[b*8+:8];
+      for(integer b=0;b<4;b=b+1)status_snapshot[31-b*8-:8]<=completed_response_crc[b*8+:8];
       response_crc_telemetry<=1;response_crc_index<=0;response_crc_value<=32'hffffffff;
      end
     end else response_crc_index<=response_crc_index+1'b1;
@@ -186,18 +213,19 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
     transaction<=1;route_s10<=0;route_s11<=0;bad<=!sd_sync[1]||!control_sync[1];
     capacity<=!bank_used[0]||!bank_used[1];receive_bank<=bank_used[0];
     header<=0;footer<=0;rx_crc<=32'hffffffff;watchdog<=0;byte_count<=0;expected_bytes<=36;wire_length<=64;
-    bit_count<=0;rx_shift<=0;tx_index<=0;
-    for(j=0;j<32;j=j+1)begin response[511-j*8-:8]<=legacy_status_bytes[j*8+:8];response[255-j*8-:8]<=status_tmp[j*8+:8];telemetry_snapshot[255-j*8-:8]<=telemetry_tmp[j*8+:8];end
+    bit_count<=0;rx_shift<=0;
+    extension_telemetry<=0;
+    for(j=0;j<32;j=j+1)begin legacy_snapshot[255-j*8-:8]<=legacy_status_bytes[j*8+:8];status_snapshot[255-j*8-:8]<=status_tmp[j*8+:8];telemetry_snapshot[255-j*8-:8]<=telemetry_tmp[j*8+:8];end
     if(!sd_sync[1]||!control_sync[1])cs_conflicts<=cs_conflicts+1;
    end else if(transaction)begin
     if(watchdog<WATCHDOG_CLOCKS)watchdog<=watchdog+1;
     else if(!bad)begin bad<=1;timeout_count<=timeout_count+1;end
     if((!sd_sync[1]||!control_sync[1])&&!bad)begin bad<=1;cs_conflicts<=cs_conflicts+1;end
-    if(!cs[2]&&rise)begin
+    if(phy_selected&&rise)begin
      rx_shift<=next_byte;bit_count<=bit_count+1'b1;
      if(bit_count==7)begin
       if(byte_count<32||(route_s11&&byte_count<64))begin
-       header[byte_count*8+:8]<=next_byte;rx_crc<=received_crc_next;
+       for(integer hb=0;hb<64;hb=hb+1)if(byte_count==hb)header[hb*8+:8]<=next_byte;rx_crc<=received_crc_next;
        if(byte_count==3)begin
         route_s11<=ENABLE_S11&&{next_byte,header[23:0]}==32'h50313153;
         route_s10<=({next_byte,header[23:0]}==32'h50303153)||(ENABLE_S11&&{next_byte,header[23:0]}==32'h50313153);
@@ -210,7 +238,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
        if(route_s11&&byte_count==63&&{next_byte,header[503:480]}!=request_header_crc)bad<=1;
        // The selector is byte28, leaving three complete bytes before the
        // response extension begins. Other flag bytes are checked at commit.
-       if(byte_count==28&&route_s10&&!route_s11&&operation==OP_STATUS&&next_byte[0])response[255:0]<=telemetry_snapshot;
+       if(byte_count==28&&route_s10&&!route_s11&&operation==OP_STATUS&&next_byte[0])extension_telemetry<=1'b1;
        if(byte_count==31)begin
         if(header[63:48]>128)bad<=1;
         else if(route_s11)begin expected_bytes<=580;wire_length<=580;end
@@ -223,12 +251,14 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
         if(route_s11)begin if(receive_bank)memory1[byte_count-64]<=next_byte;else memory0[byte_count-64]<=next_byte;end
         else begin if(receive_bank)memory1[byte_count-32]<=next_byte;else memory0[byte_count-32]<=next_byte;end
        end
-      end else if(byte_count<expected_bytes)footer[(byte_count-expected_bytes+4)*8+:8]<=next_byte;
+      end else if(byte_count<expected_bytes)case(footer_lane)
+       0:footer[7:0]<=next_byte;1:footer[15:8]<=next_byte;2:footer[23:16]<=next_byte;3:footer[31:24]<=next_byte;
+      endcase
       else if(next_byte!=0||byte_count>=wire_length)bad<=1;
       if(byte_count<1023)byte_count<=byte_count+1;else bad<=1;
      end
     end
-    if(fall&&tx_index<(route_s11?(short_s11?544:4640):512))tx_index<=tx_index+1;
+
     if(select_end)begin
      transaction<=0;
      if(route_s10)begin
@@ -299,7 +329,7 @@ module s10_pcm_transport #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S11=
   if(DEFER_LEGACY_CRC && transaction && tx_index>=224 && tx_index<256 && response_crc_legacy)
    $fatal(1,"MEDIA_LEGACY_CRC_DEADLINE");
   if(transaction&&tx_index>=480&&tx_index<512&&response_crc_busy)$fatal(1,"MEDIA_STATUS_CRC_DEADLINE");
-  if(transaction&&!select_start&&!cs[2]&&rise&&bit_count==7&&byte_count==28&&route_s10&&!route_s11&&operation==OP_STATUS&&next_byte[0]&&response_crc_busy)
+  if(transaction&&!select_start&&phy_selected&&rise&&bit_count==7&&byte_count==28&&route_s10&&!route_s11&&operation==OP_STATUS&&next_byte[0]&&response_crc_busy)
    $fatal(1,"MEDIA_TELEMETRY_CRC_DEADLINE");
  end
  // synthesis translate_on

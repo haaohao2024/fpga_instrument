@@ -4,7 +4,7 @@ module score_record_fifo(
  input wire clk,rst,clear,input wire s_valid,output wire s_ready,input wire [127:0] s_record,
  output reg m_valid,input wire m_ready,output reg [127:0] m_record,
  output wire [8:0] occupancy,visible_records,output reg [31:0] inserted,consumed,
- output reg preview_valid,output reg [63:0] preview_time,output reg [127:0] preview_notes
+ output reg preview_valid,output wire [63:0] preview_time,output wire [127:0] preview_notes
 );
  reg [31:0] memory[0:1023];
  reg [31:0] committed;reg [8:0] open_count;
@@ -12,6 +12,11 @@ module score_record_fifo(
  reg [2:0] read_state;reg [1:0] ri;reg [31:0] ram_read_data;
   reg [3:0] peek_state;reg [7:0] peek_slot;reg [8:0] peek_count;
   reg [127:0] peek_notes;reg [63:0] peek_time;reg peek_group_first;
+ // Preview construction stops while valid. The builder itself is the
+ // published snapshot until consumption/clear releases it. Consumers mask
+ // data by preview_valid, so no second 192-bit copy is needed.
+ assign preview_time=peek_time;
+ assign preview_notes=peek_notes;
  // One physical synchronous read port, multiplexed before RAM. Preview is
  // only eligible while the normal front record is already held (read_state=0).
   wire peek_read=m_valid&&!m_ready&&!preview_valid&&
@@ -26,7 +31,7 @@ module score_record_fifo(
   if(rst||clear)begin
    wr_slot<=0;rd_slot<=0;writing<=0;wi<=0;read_state<=0;ri<=0;
    m_valid<=0;inserted<=0;consumed<=0;committed<=0;open_count<=0;m_record<=0;write_record<=0;
-    preview_valid<=0;preview_time<=0;preview_notes<=0;peek_state<=0;peek_notes<=0;peek_slot<=0;peek_count<=0;peek_time<=0;peek_group_first<=1;
+    preview_valid<=0;peek_state<=0;peek_notes<=0;peek_slot<=0;peek_count<=0;peek_time<=0;peek_group_first<=1;
   end else begin
    if(s_valid&&s_ready)begin writing<=1;wi<=0;write_record<=s_record;end
    if(writing)begin
@@ -52,7 +57,7 @@ module score_record_fifo(
      8:begin
       peek_group_first<=ram_read_data[0];
       if(ram_read_data[0]&&peek_notes!=0)begin
-       preview_valid<=1;preview_notes<=peek_notes;preview_time<=peek_time;peek_state<=0;
+       preview_valid<=1;peek_state<=0;
       end else if(peek_count+9'd1<visible_records)begin
        peek_slot<=peek_slot+1'b1;peek_count<=peek_count+1'b1;peek_state<=1;
       end else peek_state<=9;

@@ -19,18 +19,34 @@ module visual_fft4096 #(parameter ROM_FILE="src/visual_cos_q16.mem")(
  reg signed [15:0] captured_l,captured_r;
  reg [12:0] span,halfspan,group_base,j;
  reg [3:0] fft_stage;
- reg signed [17:0] work_real[0:4095],work_imag[0:4095];
- reg signed [17:0] a_r0,a_i0,b_r0,b_i0,a_r,a_i,b_r,b_i;
+
+ wire signed [17:0] a_r0,a_i0,b_r0,b_i0;
+ reg signed [17:0] a_r,a_i,b_r,b_i;
  reg write_a,write_b;
  reg signed [17:0] wa_r,wa_i,wb_r,wb_i;
- reg [17:0] cosine_rom[0:1023];
+
  reg [9:0] cos_address,sin_address;
- reg [17:0] cos_data,sin_data;
+ wire [17:0] cos_data,sin_data;
  reg signed [17:0] ma0,ma1,mb0,mb1;
  reg signed [35:0] m0_stage,m1_stage,m0,m1,first0,first1;
  reg signed [18:0] sum_r,sum_i;
  reg [11:0] post_bin;
- initial $readmemh(ROM_FILE,cosine_rom);
+ generate if(ROM_FILE=="src/visual_cos_q16.mem")begin: packed_cosine
+  DPX9B #(.READ_MODE0(1'b0),.READ_MODE1(1'b0),
+   .WRITE_MODE0(2'b00),.WRITE_MODE1(2'b00),.BIT_WIDTH_0(18),.BIT_WIDTH_1(18),
+   .BLK_SEL_0(3'b000),.BLK_SEL_1(3'b000),.RESET_MODE("SYNC"),
+`include "r30_cosine_init.vh"
+  ) rom(.CLKA(clk),.CLKB(clk),.CEA(1'b1),.CEB(1'b1),.OCEA(1'b1),.OCEB(1'b1),
+   .RESETA(1'b0),.RESETB(1'b0),.WREA(1'b0),.WREB(1'b0),
+   .BLKSELA(3'b000),.BLKSELB(3'b000),.ADA({cos_address,4'b0000}),.ADB({sin_address,4'b0000}),
+   .DIA(18'd0),.DIB(18'd0),.DOA(cos_data),.DOB(sin_data));
+ end else begin: custom_cosine
+  // Preserve the configurable-ROM interface for non-default tables.
+  reg [17:0] memory[0:1023];reg [17:0] c,s;
+  initial $readmemh(ROM_FILE,memory);
+ always @(posedge clk)begin c<=memory[cos_address];s<=memory[sin_address];end
+  assign cos_data=c;assign sin_data=s;
+ end endgenerate
  function [9:0] quarter_address(input [11:0] phase);
   begin quarter_address=phase[10] ? (10'd0-phase[9:0]) : phase[9:0];end
  endfunction
@@ -66,13 +82,16 @@ module visual_fft4096 #(parameter ROM_FILE="src/visual_cos_q16.mem")(
  assign busy=state!=IDLE;
  assign sample_ready=state==CWAIT;
  assign capturing=state>=CWAIT&&state<=C7;
+  r32_ram18_dp work_real(.clk(clk),.ea(1'b1),.eb(1'b1),.wea(write_a),.web(write_b),
+  .aa(a_address),.ab(b_address),.da(wa_r),.db(wb_r),.qa(a_r0),.qb(b_r0));
+ r32_ram18_dp work_imag(.clk(clk),.ea(1'b1),.eb(1'b1),.wea(write_a),.web(write_b),
+  .aa(a_address),.ab(b_address),.da(wa_i),.db(wb_i),.qa(a_i0),.qb(b_i0));
  always @(posedge clk)begin
-  if(write_a)begin work_real[a_address]<=wa_r;work_imag[a_address]<=wa_i;end
-  if(write_b)begin work_real[b_address]<=wb_r;work_imag[b_address]<=wb_i;end
-  a_r0<=work_real[a_address];a_i0<=work_imag[a_address];
-  b_r0<=work_real[b_address];b_i0<=work_imag[b_address];
+  // GW5AT-60B DPB supports normal/write-through, not read-before-write.
+  // A port holds its read output during its own write. F0..F2 and P0..P2
+  // refill both read pipeline stages before F3/F4/P3 consume them.
   a_r<=a_r0;a_i<=a_i0;b_r<=b_r0;b_i<=b_i0;
-  cos_data<=cosine_rom[cos_address];sin_data<=cosine_rom[sin_address];
+
   m0_stage<=ma0*mb0;m1_stage<=ma1*mb1;m0<=m0_stage;m1<=m1_stage;
  end
  always @(posedge clk)begin

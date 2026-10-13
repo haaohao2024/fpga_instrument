@@ -2,7 +2,8 @@
 // Packet: timestamp[904:873], mask[872:864], nine 96-bit records.
 // Record: press_token[95:32], stage-1 payload[31:0]. Token zero is invalid.
 // Tokens belong to press gestures, not pitches or audio frames.
-module local_performance_event_adapter (
+module local_performance_event_adapter #(parameter integer RECOVER_OVERFLOW=0)(
+    input wire overflow_recover,
     input wire clk, rst,
     input wire [31:0] sample_time,
     input wire [7:0] note_gate, note_trigger, vibrato_depth,
@@ -73,6 +74,7 @@ module local_performance_event_adapter (
                     if (event_packet[864+i] && event_packet[i*96+24 +: 4]==1)
                         key_token[i]<=event_packet[i*96+32 +: 64];
             end
+            if(RECOVER_OVERFLOW && overflow && overflow_recover && note_gate==0)overflow<=0;
             if (event_valid && !event_ready) overflow<=1;
         end
     end

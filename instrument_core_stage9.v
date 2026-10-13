@@ -1,6 +1,7 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage9 #(
-    parameter integer VERSIONED_TOKENS=0,
+    parameter integer COMM_SEPARATE=0,
+ parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -15,9 +16,30 @@ module instrument_core_stage9 #(
     parameter integer ENABLE_S11 = 0,
     parameter integer MIX_SHIFT = 5
 ) (
-    input wire token_snapshot_capture,token_snapshot_read,
-    input wire [4:0] token_snapshot_slot,
-    output wire [63:0] token_snapshot_data,
+ input wire  r18_snapshot_valid,
+ output wire  r18_snapshot_ready,
+ input wire  r18_query_valid,
+ input wire [4:0] r18_query_slot,
+ output wire  r18_query_ready,
+ output wire  r18_response_valid,
+ output wire [4:0] r18_response_slot,
+ output wire [314:0] r18_response_word,
+ input wire [63:0] r18_allocated_pid,
+ input wire [63:0] r18_clock_frame,
+ input wire [15:0] r18_clock_subcycle,
+ output wire  r18_fact_valid,
+ output wire [314:0] r18_fact_before,
+ output wire [314:0] r18_fact_after,
+ output wire [63:0] r18_fact_frame,
+ output wire [15:0] r18_fact_subcycle,
+ output wire  r18_reclaim_busy,
+ output wire  r18_pan_ready,
+ output wire  r18_pan_response_valid,
+ output wire [1:0] r18_pan_result,
+ output wire [4:0] r18_pan_response_slot,
+ output wire [314:0] r18_pan_before,
+ output wire [314:0] r18_pan_after,
+
 
     input wire spi_sck,score_cs_n,sd_cs_n,spi_mosi,
     output wire spi_miso,spi_miso_oe,guide_led_dout,
@@ -50,7 +72,7 @@ module instrument_core_stage9 #(
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
-    input wire clk,
+    input wire comm_clk, input wire clk,
     input wire rst,
     input wire [79:0] pressure_raw,
     input wire pressure_valid,
@@ -105,8 +127,6 @@ module instrument_core_stage9 #(
     output wire [63:0] observe_retired_id,
     output wire [15:0] observe_retired_generation,
     output wire [31:0] observe_reclaim_mask,
-    output wire [511:0] observe_reclaim_generations,
-    output wire [2047:0] observe_reclaim_ids,
     output wire [223:0] observe_slot_notes,
     output wire [255:0] observe_slot_pressures,
     output wire [287:0] observe_current_pan,
@@ -114,18 +134,10 @@ module instrument_core_stage9 #(
     output wire  observe_local_pending,
     output wire [55:0] observe_local_notes,
     output wire  observe_allocator_publish,
-    output wire [127:0] observe_slot_sources,
-    output wire [255:0] observe_slot_keys,
-    output wire [2047:0] observe_slot_tokens,
-    output wire [2047:0] observe_slot_ids,
-    output wire [511:0] observe_slot_generations,
     output wire [31:0] observe_slot_cancel,
     output wire [31:0] observe_sample_time,
     output wire [31:0] observe_fx_accepted,
     output wire [31:0] observe_pan_accepted,
-    output wire [287:0] observe_snapshot_pan,
-    output wire [2047:0] observe_snapshot_ids,
-    output wire [511:0] observe_snapshot_generations,
     output wire  observe_gain_sample,
     output wire [31:0] observe_gain_frame,
     output wire [31:0] observe_gain_version,
@@ -137,6 +149,22 @@ module instrument_core_stage9 #(
     output wire [31:0] observe_keymap_version,
     output wire [103:0] observe_gain_state
 );
+ wire  phone_session_flush;
+ wire  phone_session_ready;
+ wire [575:0] phone_presses;
+ wire  phone_lookup_valid;
+ wire  phone_lookup_pan;
+ wire [7:0] phone_lookup_key;
+ wire [63:0] phone_lookup_identity;
+ wire [15:0] phone_lookup_generation;
+ wire [15:0] phone_lookup_tag;
+ wire  phone_lookup_ready;
+ wire  phone_response_valid;
+ wire  phone_found;
+ wire [4:0] phone_response_slot;
+ wire [314:0] phone_response_word;
+ wire [15:0] phone_response_tag;
+
  wire remote_event_valid,remote_event_ready,remote_dispatch_done;
  wire [904:0] remote_event_packet;wire [575:0] remote_press_ids;
  wire field_cfg_valid,field_cfg_start;wire [1:0] field_cfg_size;
@@ -155,10 +183,18 @@ module instrument_core_stage9 #(
   else if(millisecond_divider==CLK_FREQ_HZ/1000-1)begin millisecond_divider<=0;now_ms<=now_ms+1'b1;end
   else millisecond_divider<=millisecond_divider+1'b1;
  end
+ wire [31:0] session_now_ms_next=now_ms+32'(millisecond_divider==CLK_FREQ_HZ/1000-1);
+ wire [4:0] pan_commit_slot;wire pan_commit_slot_live;
+ wire pan_lookup_ready,config_payload_changed,pan_query_changed;
  wire phone_open,phone_close,phone_open_ready,phone_active,phone_close_done,session_flush,session_ready;
  wire [127:0] session_id;
  wire identity_query_prepare;wire [63:0] identity_prepare_press;wire identity_query_prepared;
- wire command_valid,command_ready;wire [2:0] command_slot;wire [1535:0] command_bytes;wire [7:0] command_length;
+ wire cleanup_write_valid,cleanup_write_ready;wire[95:0] cleanup_write_data;
+ wire shared_write_ready,phone_write_ready;
+ assign phone_write_ready=shared_write_ready&&!cleanup_write_valid;
+ assign cleanup_write_ready=shared_write_ready;
+ wire phone_write_valid,phone_write_abort;wire[3:0] phone_write_index;wire[95:0] phone_write_data;
+ wire command_valid,command_ready,command_event,command_buffer_busy,phone_token_exhausted;wire[63:0] phone_next_token;wire [2:0] command_slot;wire [1535:0] command_bytes;wire [7:0] command_length;
  wire config_valid,config_ready;wire [2:0] config_slot;wire [1535:0] config_bytes;
  wire rt_result_valid,rt_result_ready,cfg_result_valid,cfg_result_ready,cfg_result_final;
  wire [2:0] rt_result_slot,cfg_result_slot;wire [31:0] rt_result_sequence,cfg_result_sequence;
@@ -181,44 +217,50 @@ module instrument_core_stage9 #(
  end
  wire lookup_valid,lookup_ready,lookup_channel,lookup_echo,lookup_done;
  wire [31:0] lookup_sequence;wire signed[15:0] lookup_error;wire [511:0] lookup_result;
- s9_control_link #(.REBUILD_RESULT_CRC(1),.STREAM_STATUS_CRC(1),.SHARED_FRAGMENT_POOL(1)) control(.clk(clk),.rst(rst),.now_ms(now_ms),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
+ wire[3:0] phone_map_address;wire[95:0] phone_map_data;wire[8:0] phone_map_mask;wire phone_maps_release;
+ r22_control_link #(.COMM_SEPARATE(COMM_SEPARATE),.CLK_FREQ_HZ(CLK_FREQ_HZ)) control(.event_write_valid(phone_write_valid),.event_write_ready(phone_write_ready),.event_write_abort(phone_write_abort),.event_write_index(phone_write_index),.event_write_data(phone_write_data),.comm_clk(comm_clk),.map_address(phone_map_address),.map_data(phone_map_data),.map_mask(phone_map_mask),.maps_release(phone_maps_release),.command_buffer_busy(command_buffer_busy),.phone_next_token(phone_next_token),.phone_token_exhausted(phone_token_exhausted),.config_payload_changed(config_payload_changed),.now_ms_next(session_now_ms_next),.clk(clk),.rst(rst),.now_ms(now_ms),.spi_sck(spi_sck),.control_cs_n(control_cs_n),.score_cs_n(score_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .spi_miso(control_miso),.spi_miso_oe(control_oe),.phone_open_ready(phone_open_ready),.phone_active(phone_active),.phone_close_done(phone_close_done),
   .phone_open(phone_open),.phone_close(phone_close),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),.link_state(phone_link_state),
   .identity_query_prepare(identity_query_prepare),.identity_prepare_press(identity_prepare_press),
-  .command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
+  .command_event(command_event),.command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
   .result_valid(result_valid),.result_ready(result_ready),.result_slot(result_slot),.result_channel(result_channel),.result_sequence(result_sequence),.result_bytes(result_bytes),.result_final(result_final),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .rejected_transactions(phone_rejected_transactions),.cs_conflicts(phone_cs_conflicts),.lease_expirations(phone_lease_expirations),.stale_result_updates());
- s9_event_endpoint #(.DEFER_RESULT_CRC(1)) events(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
+ r22_event_endpoint #(.SHARED_STORE(1),.STREAM_CLEAN(1)) events(
+  .cleanup_write_valid(cleanup_write_valid),.cleanup_write_ready(cleanup_write_ready),.cleanup_write_data(cleanup_write_data),
+  .map_address(phone_map_address),.map_data(phone_map_data),.map_mask(phone_map_mask),.maps_release(phone_maps_release),
+  .fact_valid(r18_fact_valid),.fact_index(observe_apply_lane),.fact_item(observe_apply_item),
+  .fact_outcome(observe_apply_outcome),.fact_slot(observe_apply_slot),.fact_after(r18_fact_after),.buffer_busy(command_buffer_busy),.next_token(phone_next_token),.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
   .phone_open(phone_open),.phone_close(phone_close),.phone_open_ready(phone_open_ready),.phone_active(phone_active),.phone_close_done(phone_close_done),
-  .command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
+  .command_event(command_event),.command_valid(command_valid),.command_ready(command_ready),.command_slot(command_slot),.command_bytes(command_bytes),.command_length(command_length),
   .config_valid(config_valid),.config_ready(config_ready),.config_slot(config_slot),.config_bytes(config_bytes),
   .result_valid(rt_result_valid),.result_ready(rt_result_ready),.result_slot(rt_result_slot),.result_sequence(rt_result_sequence),.result_bytes(rt_result_bytes),
   .sample_time(observe_sample_time),.event_valid(remote_event_valid),.event_ready(remote_event_ready),.event_packet(remote_event_packet),.event_press_ids(remote_press_ids),.dispatch_done(remote_dispatch_done),
-  .held_keys(phone_held_keys),.accepted_commands(),.committed_commands(),.rejected_commands(),.cancelled_commands(),.cleanup_offs(phone_cleanup_offs),.token_exhausted());
- wire identity_stable,query_found,pan_found;wire [4:0] query_slot,pan_found_slot;
- wire [7:0] query_key;wire [63:0] query_press,query_id,identity_pan_id;wire [15:0] query_generation,identity_pan_generation;
- s9_instance_observer_prepared identity(.query_prepare(identity_query_prepare),.prepare_press(identity_prepare_press),.query_prepared(identity_query_prepared),.query_consume(config_valid&&config_ready&&config_bytes[55:48]==39),.clk(clk),.rst(rst), .apply_batch_begin(observe_batch_begin),.apply_valid(observe_apply_valid),
-  .apply_outcome(observe_apply_outcome),.apply_item(observe_apply_item),.apply_lane(observe_apply_lane),.apply_slot(observe_apply_slot),.session_flush(session_flush),.session_ready(session_ready),
-  .allocator_publish(observe_allocator_publish),.remote_dispatch_done(remote_dispatch_done),.slot_valid(observe_slot_valid),.slot_cancel(observe_slot_cancel),
-  .slot_sources(observe_slot_sources),.slot_keys(observe_slot_keys),.slot_tokens(observe_slot_tokens),.slot_ids(observe_slot_ids),.slot_generations(observe_slot_generations),
-  .event_packet(remote_event_packet),.event_press_ids(remote_press_ids),.query_key(query_key),.query_press_id(query_press),.stable(identity_stable),.found(query_found),.query_slot(query_slot),.query_instance_id(query_id),.query_generation(query_generation),
-  .pan_instance_id(identity_pan_id),.pan_generation(identity_pan_generation),.pan_found(pan_found),.pan_slot(pan_found_slot),.owned_slots());
- s9_config_bridge #(.ENABLE_FIELD(ENABLE_S11),.DEFER_RESULT_CRC(1)) parameters(.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
+  .held_keys(phone_held_keys),.cleanup_offs(phone_cleanup_offs),.token_exhausted(phone_token_exhausted));
+ assign phone_session_flush=session_flush;assign phone_session_ready=session_ready;assign phone_presses=remote_press_ids;
+ wire identity_stable=!observe_allocator_busy;
+ r22_config_bridge #(.ENABLE_FIELD(ENABLE_S11),.DEFER_RESULT_CRC(1)) parameters(
+  .id_req_valid(phone_lookup_valid),.id_req_pan(phone_lookup_pan),.id_req_ready(phone_lookup_ready),.id_req_key(phone_lookup_key),
+  .id_req_identity(phone_lookup_identity),.id_req_generation(phone_lookup_generation),.id_req_tag(phone_lookup_tag),
+  .id_response_valid(phone_response_valid),.id_response_found(phone_found),.id_response_slot(phone_response_slot),.id_response_word(phone_response_word),.id_response_tag(phone_response_tag),
+  .pan_ready(r18_pan_ready),.pan_response_valid(r18_pan_response_valid),.pan_result(r18_pan_result),.pan_response_slot(r18_pan_response_slot),
+  .pan_response_before(r18_pan_before),.pan_response_after(r18_pan_after),
+  .fact_valid(r18_fact_valid),.fact_outcome(observe_apply_outcome),.fact_slot(observe_apply_slot),
+.config_payload_changed(config_payload_changed),.clk(clk),.rst(rst),.session_flush(session_flush),.session_ready(session_ready),.session_id(session_id),
   .config_valid(config_valid),.config_ready(config_ready),.config_slot(config_slot),.config_bytes(config_bytes),
   .sample_tick(frame_pulse),.sample_time(observe_sample_time),.now_ms(now_ms),.local_glide_code(local_glide_code),.glide_code(glide_code),.timbre_id(timbre_id),
   .fx_cfg_valid(fx_cfg_valid),.fx_cfg_data(fx_cfg_data),.fx_accepted(observe_fx_accepted),.fx_frame_version(observe_fx_version),
   .gain_cfg_valid(gain_cfg_valid),.gain_local(gain_cfg_local),.gain_external(gain_cfg_external),.gain_local_mute(gain_cfg_local_mute),.gain_external_mute(gain_cfg_external_mute),
   .gain_sample(observe_gain_sample),.gain_frame(observe_gain_frame),.gain_frame_version(observe_gain_version),.gain_accepted(observe_gain_accepted),.gain_l(observe_gain_l),.gain_e(observe_gain_e),.gain_remaining(observe_gain_remaining),
   .pan_valid(pan_valid),.pan_slot(pan_slot),.pan_id(pan_id),.pan_generation(pan_generation),.pan_value(pan_value),
-  .identity_stable(identity_stable),.query_found(query_found),.query_id(query_id),.query_generation(query_generation),.query_key(query_key),.query_press(query_press),
-  .pan_found(pan_found),.pan_found_slot(pan_found_slot),.identity_pan_id(identity_pan_id),.identity_pan_generation(identity_pan_generation),
-  .snapshot_pan(observe_snapshot_pan),.snapshot_ids(observe_snapshot_ids),.snapshot_generations(observe_snapshot_generations),
+  .identity_stable(identity_stable),
+  
+  
   .local_gate(observe_local_gate),.local_pending(observe_local_pending),.keymap(remote_keymap),.keymap_version(observe_keymap_version),
   .field_valid(field_cfg_valid),.field_start(field_cfg_start),.field_size(field_cfg_size),.field_ready(ENABLE_S11?field_ready:1'b1),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .result_valid(cfg_result_valid),.result_ready(cfg_result_ready),.result_slot(cfg_result_slot),.result_sequence(cfg_result_sequence),.result_bytes(cfg_result_bytes),.result_final(cfg_result_final));
- instrument_core_stage8 #(.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage8 #(.STREAM_PHONE(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -231,7 +273,46 @@ module instrument_core_stage9 #(
   .OCTAVE_MAX(OCTAVE_MAX),
   .MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),
   .ENABLE_REMOTE(1)) core(
- .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
+  .r18_snapshot_valid(r18_snapshot_valid),
+  .r18_snapshot_ready(r18_snapshot_ready),
+  .r18_query_valid(r18_query_valid),
+  .r18_query_slot(r18_query_slot),
+  .r18_query_ready(r18_query_ready),
+  .r18_response_valid(r18_response_valid),
+  .r18_response_slot(r18_response_slot),
+  .r18_response_word(r18_response_word),
+  .r18_allocated_pid(r18_allocated_pid),
+  .r18_clock_frame(r18_clock_frame),
+  .r18_clock_subcycle(r18_clock_subcycle),
+  .r18_fact_valid(r18_fact_valid),
+  .r18_fact_before(r18_fact_before),
+  .r18_fact_after(r18_fact_after),
+  .r18_fact_frame(r18_fact_frame),
+  .r18_fact_subcycle(r18_fact_subcycle),
+  .r18_reclaim_busy(r18_reclaim_busy),
+  .r18_pan_ready(r18_pan_ready),
+  .r18_pan_response_valid(r18_pan_response_valid),
+  .r18_pan_result(r18_pan_result),
+  .r18_pan_response_slot(r18_pan_response_slot),
+  .r18_pan_before(r18_pan_before),
+  .r18_pan_after(r18_pan_after),
+  .phone_session_flush(phone_session_flush),
+  .phone_session_ready(phone_session_ready),
+  .phone_presses(phone_presses),
+  .phone_lookup_valid(phone_lookup_valid),
+  .phone_lookup_pan(phone_lookup_pan),
+  .phone_lookup_key(phone_lookup_key),
+  .phone_lookup_identity(phone_lookup_identity),
+  .phone_lookup_generation(phone_lookup_generation),
+  .phone_lookup_tag(phone_lookup_tag),
+  .phone_lookup_ready(phone_lookup_ready),
+  .phone_response_valid(phone_response_valid),
+  .phone_found(phone_found),
+  .phone_response_slot(phone_response_slot),
+  .phone_response_word(phone_response_word),
+  .phone_response_tag(phone_response_tag),
+
+ 
   .field_valid(merged_field_valid),.field_start(merged_field_start),.field_size(merged_field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
    .observe_allocator_busy(observe_allocator_busy),
   .observe_batch_begin(observe_batch_begin),
@@ -250,7 +331,7 @@ module instrument_core_stage9 #(
   .observe_retired_id(observe_retired_id),
   .observe_retired_generation(observe_retired_generation),
   .observe_reclaim_mask(observe_reclaim_mask),
-  .observe_reclaim_ids(observe_reclaim_ids),.observe_reclaim_generations(observe_reclaim_generations),
+  
   .observe_slot_notes(observe_slot_notes),
   .observe_slot_pressures(observe_slot_pressures),
   .observe_current_pan(observe_current_pan),
@@ -295,7 +376,7 @@ module instrument_core_stage9 #(
   .pan_id(pan_id),
   .pan_generation(pan_generation),
   .pan_value(pan_value),
-  .clk(clk),
+  .comm_clk(comm_clk),.clk(clk),
   .rst(rst),
   .pressure_raw(pressure_raw),
   .pressure_valid(pressure_valid),
@@ -335,6 +416,7 @@ module instrument_core_stage9 #(
   .display_published(display_published),
   .display_presented(display_presented),
   .display_processing_cycles(display_processing_cycles),
+  .remote_write_valid(cleanup_write_valid||phone_write_valid),.remote_write_index(cleanup_write_valid?4'd0:phone_write_index),.remote_write_data(cleanup_write_valid?cleanup_write_data:phone_write_data),.remote_write_ready(shared_write_ready),.remote_write_abort(phone_write_abort),
   .remote_event_valid(remote_event_valid),
   .remote_event_packet(remote_event_packet),
   .remote_event_ready(remote_event_ready),
@@ -344,18 +426,18 @@ module instrument_core_stage9 #(
   .observe_local_pending(observe_local_pending),
   .observe_local_notes(observe_local_notes),
   .observe_allocator_publish(observe_allocator_publish),
-  .observe_slot_sources(observe_slot_sources),
-  .observe_slot_keys(observe_slot_keys),
-  .observe_slot_tokens(observe_slot_tokens),
-  .observe_slot_ids(observe_slot_ids),
-  .observe_slot_generations(observe_slot_generations),
+  
+  
+  
+  
+  
   .observe_slot_cancel(observe_slot_cancel),
   .observe_sample_time(observe_sample_time),
   .observe_fx_accepted(observe_fx_accepted),
   .observe_pan_accepted(observe_pan_accepted),
-  .observe_snapshot_pan(observe_snapshot_pan),
-  .observe_snapshot_ids(observe_snapshot_ids),
-  .observe_snapshot_generations(observe_snapshot_generations),
+  
+  
+  
   .observe_gain_sample(observe_gain_sample),
   .observe_gain_frame(observe_gain_frame),
   .observe_gain_version(observe_gain_version),

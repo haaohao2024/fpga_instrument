@@ -22,14 +22,14 @@ module fx_frame_control_scheduled(
  output wire [319:0] values,output reg [2:0] clear_pulse,
  output wire effective_bypass
 );
- reg signed [31:0] current[0:9],prepared_current[0:9];
+ reg signed [19:0] current[0:9],prepared_current[0:9];
  reg [9:0] context_valid;
  reg [3:0] prep_slot;
  reg prep_busy,prepared;
  reg [2:0] clearing;
- wire [99:0] context_word;
- reg [99:0] next_context;
- reg signed [31:0] next_current;
+ wire [63:0] context_word;
+ reg [63:0] next_context;
+ reg signed [19:0] next_current;
  function [31:0] reset_current(input [3:0] s);
   begin case(s)
    6:reset_current=12288;7:reset_current=24576;
@@ -37,16 +37,18 @@ module fx_frame_control_scheduled(
    default:reset_current=0;
   endcase end
  endfunction
- wire signed [31:0] target=context_valid[prep_slot]?context_word[31:0]:reset_current(prep_slot);
- wire signed [31:0] increment=context_valid[prep_slot]?context_word[63:32]:32'd0;
- wire [10:0] residue=context_valid[prep_slot]?context_word[74:64]:11'd0;
- wire [10:0] error_acc=context_valid[prep_slot]?context_word[85:75]:11'd0;
- wire [10:0] remaining=context_valid[prep_slot]?context_word[96:86]:11'd0;
- wire sign_down=context_valid[prep_slot]?context_word[97]:1'b0;
- wire [31:0] old_current=current[prep_slot];
- reg signed [31:0] desired,delta,step_v,next_v;
- reg [31:0] magnitude;
- reg [11:0] err_v;
+ wire signed [19:0] target=context_valid[prep_slot]?context_word[19:0]:reset_current(prep_slot);
+ wire signed [10:0] increment=context_valid[prep_slot]?context_word[30:20]:32'd0;
+ wire [9:0] residue=context_valid[prep_slot]?context_word[40:31]:11'd0;
+ wire [9:0] error_acc=context_valid[prep_slot]?context_word[50:41]:11'd0;
+ wire [9:0] remaining=context_valid[prep_slot]?context_word[60:51]:11'd0;
+ wire sign_down=context_valid[prep_slot]?context_word[61]:1'b0;
+ wire signed [19:0] old_current=current[prep_slot];
+ reg signed [31:0] desired;
+ reg signed [19:0] delta,next_v;
+ reg signed [10:0] step_v;
+ reg [19:0] magnitude;
+ reg [10:0] err_v;
  reg down_v;
  wire [10:0] ramp_length=prep_slot==9?11'd1024:11'd64;
  wire [31:0] ramp_mask=prep_slot==9?32'd1023:32'd63;
@@ -67,15 +69,15 @@ module fx_frame_control_scheduled(
   if(err_v>=ramp_length)begin next_v=next_v+(sign_down?-1:1);err_v=err_v-ramp_length;end
   if(desired!=target)begin
    next_current=old_current+step_v;
-   next_context[31:0]=desired;next_context[63:32]=step_v;
-   next_context[74:64]=magnitude&ramp_mask;next_context[85:75]=magnitude&ramp_mask;
-   next_context[96:86]=ramp_length-1'b1;next_context[97]=down_v;
+   next_context[19:0]=desired;next_context[30:20]=step_v;
+   next_context[40:31]=magnitude&ramp_mask;next_context[50:41]=magnitude&ramp_mask;
+   next_context[60:51]=ramp_length-1'b1;next_context[61]=down_v;
   end else if(remaining!=0)begin
    next_current=remaining==1?target:next_v;
-   next_context[96:86]=remaining-1'b1;next_context[85:75]=err_v;
+   next_context[60:51]=remaining-1'b1;next_context[50:41]=err_v;
   end
  end
- for(genvar n=0;n<25;n=n+1)begin: context_memory
+ for(genvar n=0;n<16;n=n+1)begin: context_memory
   RAM16SDP4 memory(.CLK(clk),.WRE(!rst&&prep_busy),.WAD(prep_slot),.RAD(prep_slot),
    .DI(next_context[n*4+:4]),.DO(context_word[n*4+:4]));
  end
@@ -87,6 +89,13 @@ module fx_frame_control_scheduled(
    if(!rst&&prep_busy&&prep_slot==s)prepared_current[s]<=next_current;
   end
  end
+ // synthesis translate_off
+ always @(posedge clk)if(!rst&&prep_busy)begin
+  if(desired<0 || desired>447392)$fatal(1,"FX_CONTROL_TARGET_RANGE");
+  if($signed(current[prep_slot])<0 || $signed(next_current)<0)$fatal(1,"FX_CONTROL_CURRENT_RANGE");
+  if($signed(step_v)!=(down_v?-$signed(prep_slot==9?(magnitude>>10):(magnitude>>6)):$signed(prep_slot==9?(magnitude>>10):(magnitude>>6))))$fatal(1,"FX_CONTROL_STEP_RANGE");
+ end
+ // synthesis translate_on
  assign effective_bypass=current[3]==0&&current[4]==0&&current[5]==0;
  always @(posedge clk)begin
   clear_pulse<=0;

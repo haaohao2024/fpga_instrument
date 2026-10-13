@@ -1,12 +1,10 @@
-// Tang Mega 60K NEO Dock 31004, REV7 board binding.
-// Top: instrument_board_stage11_rev7. Source: user REV7 report (2026-10-06).
-// E1 rotation=Vibrato; E2 rotation=Glide; E1/E2 press=octave up/down.
-// Reset is Dock EX_KEY.2 at 1.5 V; other single-ended pins below are 3.3 V.
-// Encoder pull-ups and SD/SPI resistors already exist on the respective boards.
-// BL616 is the only shared-SPI master. FPGA never drives SD CS/SCK/MOSI.
-// AA15 output enable/tri-state and J16 inversion are implemented in the RTL.
-// Keep CPU-as-regular-IO enabled for AA19/AB20 dual-purpose pins.
-// This is a static binding, not physical timing/electrical/board validation.
+// REV7 physical constraints: Tang Mega NEO Dock 31004 / GW5AT-60B PG484A.
+// Reconciled with user REV7 BL616 shared-SPI pin report on 2026-10-12.
+// Source DOCX SHA256: b825dcb9ec5977368fb3503f4152dda648affd0057b340e84ecfc1392e4fde83
+// Top: instrument_board_stage11_rev7. BL616 is the sole shared-SPI master.
+// External encoder/SPI pull-ups: NONE here. EX_KEY.2: LVCMOS15 + pull-up.
+// Enable CPU pins as GPIO in the project for AA19/AB20.
+// MISO tri-state and WS2812 inversion are RTL functions, not CST options.
 
 IO_LOC "adc_cs_n" R18;
 IO_PORT "adc_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
@@ -72,3 +70,9 @@ IO_PORT "video_p[3]" PULL_MODE=NONE DRIVE=3.5 BANK_VCCIO=3.3;
 // Do not independently place the negative legs or add LVCMOS IO_TYPE to them.
 // No Dock KEY0/KEY1 octave constraints: REV7 uses EC11 press inputs.
 // No power/GND/analog FSR/unused NC/HDMI DDC/CEC/HPD constraints.
+
+// Inactive alternative only; current top uses EC11 switches for octave keys.
+// IO_LOC "octave_up_n" AA13;
+// IO_PORT "octave_up_n" IO_TYPE=LVCMOS15 PULL_MODE=UP BANK_VCCIO=1.5;
+// IO_LOC "octave_down_n" AB13;
+// IO_PORT "octave_down_n" IO_TYPE=LVCMOS15 PULL_MODE=UP BANK_VCCIO=1.5;

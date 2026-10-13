@@ -1,7 +1,11 @@
 // Stage9 parameter adapter. Frozen parameter engines retain their arithmetic.
 // COMMITTED follows the real configuration edge; EFFECTIVE names an observed
 // snapshot frame. It never asserts that a muted/cancelled sound was audible.
-module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
+module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, PREPARE_PAN=0, PIPE_PAN_COMMIT=0)(
+ input wire pan_commit_slot_live,output wire [4:0] pan_commit_slot,
+ input wire config_payload_changed,
+ output wire pan_query_changed,
+ input wire pan_lookup_ready,
  input wire clk,rst,session_flush,session_ready,input wire[127:0] session_id,
  input wire config_valid,output wire config_ready,input wire[2:0] config_slot,input wire[1535:0] config_bytes,
  input wire sample_tick,input wire[31:0] sample_time,now_ms,
@@ -53,8 +57,22 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
  wire replace_map=index==5&&valid[5]&&phase[5]==3&&map_pending&&!local_idle;
  wire replaceable=config_valid&&(replace_gain||replace_map)&&!result_valid;
  wire identity_needed=opcode==34||opcode==39;
- assign config_ready=!rst&&!session_flush&&session_ready&&(!valid[index]||replaceable)&&
-                     (!identity_needed||identity_stable)&&(opcode!=86||!ENABLE_FIELD||field_ready);
+ wire raw_config_ready=!rst&&!session_flush&&session_ready&&(!valid[index]||replaceable)&&
+                     (!identity_needed||identity_stable)&&(opcode!=34||!PREPARE_PAN||pan_lookup_ready)&&(opcode!=86||!ENABLE_FIELD||field_ready);
+ // The cache retains the complete command until actual COMMIT. Only
+ // the validated destination/found bit need cross this preparation edge.
+ reg pan_prepared_valid,pan_prepared_found;reg [4:0] pan_prepared_slot;
+ wire pan_prepare=config_valid&&opcode==34&&raw_config_ready&&!pan_prepared_valid;
+ assign pan_commit_slot=pan_prepared_slot;
+ assign config_ready=raw_config_ready&&(!PIPE_PAN_COMMIT||opcode!=34||pan_prepared_valid);
+ wire commit_pan_found=PIPE_PAN_COMMIT?(pan_prepared_found&&pan_commit_slot_live):pan_found;
+ always @(posedge clk)begin
+  if(rst||session_flush)begin pan_prepared_valid<=0;pan_prepared_found<=0;pan_prepared_slot<=0;end
+  else if(PIPE_PAN_COMMIT)begin
+   if(pan_prepare)begin pan_prepared_valid<=1;pan_prepared_found<=pan_found;pan_prepared_slot<=pan_found_slot;end
+   if(!config_valid||!identity_stable||(config_valid&&config_ready))pan_prepared_valid<=0;
+  end
+ end
  wire accept=config_valid&&config_ready;
  assign field_valid=accept&&opcode==86&&ENABLE_FIELD;
  assign field_start=config_bytes[263:256]==1;
@@ -63,10 +81,15 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
  assign gain_cfg_valid=accept&&opcode==36;
  assign gain_local=config_bytes[271:256];assign gain_external=config_bytes[287:272];
  assign gain_local_mute=config_bytes[288];assign gain_external_mute=config_bytes[289];
+ // The query source changes only when the upstream cache replaces its
+ // frozen packet while no Pan is outstanding, or the held Pan is released.
+ // Accepting Pan freezes the SAME input identity, so that edge is not a change.
+ assign pan_query_changed=(!valid[2]&&config_payload_changed)||
+  (result_valid&&result_ready&&result_final&&result_index==2&&seq[2]==result_sequence);
  assign identity_pan_id=(valid[2])?held_pan_id:config_bytes[319:256];
  assign identity_pan_generation=(valid[2])?held_pan_generation:config_bytes[335:320];
- assign pan_valid=accept&&opcode==34&&pan_found;
- assign pan_slot=pan_found_slot;assign pan_id=config_bytes[319:256];
+ assign pan_valid=accept&&opcode==34&&commit_pan_found;
+ assign pan_slot=PIPE_PAN_COMMIT?pan_prepared_slot:pan_found_slot;assign pan_id=config_bytes[319:256];
  assign pan_generation=config_bytes[335:320];assign pan_value=config_bytes[344:336];
  assign query_key=config_bytes[263:256];assign query_press=config_bytes[327:264];
  s9_keymap_config u_map(.clk(clk),.rst(rst),.disconnect(session_flush),
@@ -144,7 +167,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
     if(pan_defer_snapshot)pan_defer_snapshot<=0;
     else if(snapshot_ids[held_pan_slot*64+:64]==held_pan_id&&snapshot_generations[held_pan_slot*16+:16]==held_pan_generation&&
        snapshot_pan[held_pan_slot*9+:9]==held_pan_value)begin phase[2]<=4;frame[2]<=tick_frame;dirty[2]<=1;end
-    else if(identity_stable&&!pan_found)begin phase[2]<=7;error[2]<=-11;dirty[2]<=1;end
+    else if(identity_stable&&(!PREPARE_PAN||pan_lookup_ready)&&!pan_found)begin phase[2]<=7;error[2]<=-11;dirty[2]<=1;end
    end
    if(valid[3]&&phase[3]==3&&tick_d&&fx_frame_version==version[3])begin phase[3]<=4;frame[3]<=tick_frame;dirty[3]<=1;end
    if(valid[4]&&phase[4]>=3&&phase[4]<5&&gain_sample&&gain_frame_version==version[4])begin
@@ -178,7 +201,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
      end
      34:begin
       pan_defer_snapshot<=sample_tick;
-      if(!pan_found)begin phase[2]<=7;error[2]<=-11;end
+      if(!commit_pan_found)begin phase[2]<=7;error[2]<=-11;end
       held_pan_id<=pan_id;held_pan_generation<=pan_generation;held_pan_slot<=pan_slot;held_pan_value<=pan_value;
      end
      35:version[3]<=fx_accepted+1'b1;
@@ -198,6 +221,18 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)(
    if(session_flush)begin field_pending<=0;valid<=0;dirty<=0;result_valid<=0;lookup_busy<=0;end
   end
  end
+ // synthesis translate_off
+ reg [1538:0] prepared_command_reference;
+ always @(posedge clk)if(PIPE_PAN_COMMIT&&!rst&&!session_flush)begin
+  if(pan_prepare)prepared_command_reference<={config_slot,config_bytes};
+  if(pan_prepared_valid&&config_valid&&{config_slot,config_bytes}!==prepared_command_reference)
+   $fatal(1,"CFG_PAN_COMMIT_COMMAND_CHANGED");
+  if(accept&&opcode==34)begin
+   if(commit_pan_found!==pan_found||(commit_pan_found&&pan_prepared_slot!==pan_found_slot))
+    $fatal(1,"CFG_PAN_COMMIT_FULL_REFERENCE");
+  end
+ end
+ // synthesis translate_on
  // synthesis translate_off
  always @(posedge clk)if(!rst)begin
   if((^{session_flush,session_ready,config_valid,sample_tick,gain_sample,identity_stable,local_pending,result_ready,lookup_ready,lookup_done,local_glide_code})===1'bx)$fatal(1,"S9_CONFIG_CONTROL_XZ");

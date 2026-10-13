@@ -38,7 +38,7 @@ static void wav_header(uint8_t b[512],uint32_t pairs){
  memset(b,0,512);memcpy(b,"RIFF",4);s9_put32(b+4,504u+4u*pairs);memcpy(b+8,"WAVEfmt ",8);s9_put32(b+16,16);s9_put16(b+20,1);s9_put16(b+22,2);s9_put32(b+24,48000);s9_put32(b+28,192000);s9_put16(b+32,4);s9_put16(b+34,16);memcpy(b+36,"JUNK",4);s9_put32(b+40,460);memcpy(b+504,"data",4);s9_put32(b+508,4u*pairs);
 }
 static void evr_header(uint8_t b[512]){
- memset(b,0,512);memcpy(b,"EVR1",4);s9_put32(b+4,1);s9_put64(b+8,stats.recording_id);s9_put32(b+16,48000);s9_put32(b+20,50000000);s9_put32(b+24,stats.event_units);s9_put32(b+28,stats.event_pages);s9_put64(b+32,stats.first_frame);s9_put64(b+40,stats.last_frame);s9_put64(b+48,stats.missing_frame);b[56]=stats.state; b[57]=stats.kinds;s9_put16(b+58,(uint16_t)stats.error);s9_put32(b+508,s9_crc32(b,508));
+ memset(b,0,512);memcpy(b,"EVR2",4);s9_put32(b+4,2);s9_put64(b+8,stats.recording_id);s9_put32(b+16,48000);s9_put32(b+20,25000000);s9_put32(b+24,stats.event_units);s9_put32(b+28,stats.event_pages);s9_put64(b+32,stats.first_frame);s9_put64(b+40,stats.last_frame);s9_put64(b+48,stats.missing_frame);b[56]=stats.state; b[57]=stats.kinds;s9_put16(b+58,(uint16_t)stats.error);s9_put32(b+508,s9_crc32(b,508));
 }
 static int written(FIL *f,const uint8_t *b,unsigned bytes){UINT n=0;write_scope=1;FRESULT r=f_write(f,b,bytes,&n);write_scope=0;return r==FR_OK&&n==bytes?0:S9_E_IO;}
 /* FatFs may flush a dirty partial sector while seeking back to a header.
@@ -118,7 +118,7 @@ static int verify_file(const char *name,unsigned kind){
  int r=0;if(f_size(&f)!=(FSIZE_t)512+bytes)r=S9_E_LENGTH;
  if(!r&&(f_read(&f,page,512,&n)!=FR_OK||n!=512))r=S9_E_IO;
  if(!r&&kind==S11_KIND_PCM){uint8_t expected_header[512];wav_header(expected_header,stats.captured_pairs);if(memcmp(page,expected_header,512))r=S9_E_FORMAT;}
- if(!r&&kind==S11_KIND_EVENT){if(memcmp(page,"EVR1",4)||s9_get64(page+8)!=stats.recording_id||s9_crc32(page,508)!=s9_get32(page+508))r=S9_E_CRC;}
+ if(!r&&kind==S11_KIND_EVENT){if((memcmp(page,"EVR1",4)&&memcmp(page,"EVR2",4))||s9_get64(page+8)!=stats.recording_id||s9_crc32(page,508)!=s9_get32(page+508))r=S9_E_CRC;}
  uint32_t c=~0u,full=update_crc(~0u,page,512),offset=0;
  while(!r&&offset<bytes){unsigned want=bytes-offset;if(want>512)want=512;if(f_read(&f,page,want,&n)!=FR_OK||n!=want){r=S9_E_IO;break;}if(kind==S11_KIND_EVENT&&(memcmp(page,"E11P",4)||s9_get16(page+4)!=1||s9_get16(page+6)>15||s9_get32(page+8)!=offset/512+1||s9_get64(page+12)!=stats.recording_id||s9_crc32(page,508)!=s9_get32(page+508))){r=S9_E_CRC;break;}c=update_crc(c,page,want);full=update_crc(full,page,want);offset+=want;}
  if(!r&&~c!=expected)r=S9_E_CRC;
@@ -244,7 +244,9 @@ static int export_pass(int writing,uint32_t expected_records,uint64_t end){
  /* First pass counts only; second/third use the fixed counted header. */
  memcpy(export_page,"S7EV",4);s9_put32(export_page+4,1);s9_put32(export_page+8,48000);s9_put32(export_page+12,expected_records);s9_put64(export_page+16,end);
  int r=export_emit_page();if(r){f_close(&f);return r;}
- if(f_lseek(&f,512)!=FR_OK){f_close(&f);return S9_E_IO;}
+ if(f_read(&f,page,512,&n)!=FR_OK||n!=512){f_close(&f);return S9_E_IO;}
+ unsigned v2=!memcmp(page,"EVR2",4)&&s9_get32(page+4)==2;
+ if(!v2&&(memcmp(page,"EVR1",4)||s9_get32(page+4)!=1)){f_close(&f);return S9_E_FORMAT;}
  uint32_t cell_sequence=0;unsigned initial_index=0,batch_pending=0;uint16_t initial_subcycle=0;
  for(uint32_t page_index=0;!r&&page_index<stats.event_pages;page_index++){
   if(f_read(&f,page,512,&n)!=FR_OK||n!=512){r=S9_E_IO;break;}
@@ -259,13 +261,19 @@ static int export_pass(int writing,uint32_t expected_records,uint64_t end){
     if(frame!=export_origin||id||c[2]!=255||c[3]!=255||!export_initial(initial_index,type,payload,initial_subcycle)){r=S9_E_FORMAT;break;}initial_index++;continue;
    }
    if(initial_index!=16){r=S9_E_FORMAT;break;}
-   if(type==S11_CELL_PUBLISH){if(flags!=5||id||c[2]!=255||c[3]!=255||payload>>48){r=S9_E_FORMAT;break;}batch_pending=0;continue;}
+   if(type==S11_CELL_PUBLISH){if(flags!=(v2?1:5)||id||c[2]!=255||c[3]!=255||payload>>48){r=S9_E_FORMAT;break;}batch_pending=0;continue;}
    if(type==S11_CELL_BIND_ID||type==S11_CELL_BIND_TOKEN||type==S11_CELL_RECLAIM)continue;
-   if(type==S11_CELL_END){if(batch_pending||flags!=1||id){r=S9_E_FORMAT;break;}continue;}
+   if(type==S11_CELL_END){if(batch_pending||flags!=1||id){r=S9_E_FORMAT;break;}
+    if(v2)for(unsigned k=0;k<32;k++)if(export_notes[k].id){r=export_record(time,2,k,0,0);export_notes[k].id=0;if(r)break;}
+    continue;}
    if(type!=S11_CELL_NOTE_ON&&type!=S11_CELL_NOTE_OFF&&type!=S11_CELL_EXPRESSION){r=S9_E_FORMAT;break;}
    unsigned note=(unsigned)((payload>>16)&127),pressure=(unsigned)((payload>>23)&255);int slot=-1;batch_pending=1;
    if(((payload>>31)&7u)!=0||((payload>>34)&511u)!=128){r=S9_E_FORMAT;break;}
    for(unsigned k=0;k<32;k++)if(export_notes[k].id==id&&id){slot=(int)k;break;}
+   if(v2&&type==S11_CELL_NOTE_ON)for(unsigned k=0;k<32;k++)if(export_notes[k].id&&((export_notes[k].id&31)==(id&31))){
+    r=export_record(time,2,k,0,0);export_notes[k].id=0;if((int)k==slot)slot=-1;if(r)break;
+   }
+   if(r)break;
    if(type==S11_CELL_NOTE_ON){if(slot>=0||!pressure){r=S9_E_FORMAT;break;}for(unsigned k=0;k<32;k++)if(!export_notes[k].id){slot=(int)k;break;}if(slot<0){r=S9_E_RANGE;break;}export_notes[slot].id=id;export_notes[slot].note=(uint8_t)note;export_notes[slot].pressure=(uint8_t)pressure;r=export_record(time,1,(unsigned)slot,note,pressure);}
    else {if(slot<0){r=S9_E_STALE;break;}r=export_record(time,type==S11_CELL_NOTE_OFF?2:3,(unsigned)slot,type==S11_CELL_NOTE_OFF?0:note,type==S11_CELL_NOTE_OFF?0:pressure);if(type==S11_CELL_NOTE_OFF)export_notes[slot].id=0;}
   }

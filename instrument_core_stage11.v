@@ -1,7 +1,8 @@
 // Stage10 SPI PCM composition only; no change to the frozen audio/video algorithms.
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage11 #(
-    parameter integer VERSIONED_TOKENS=1,
+    parameter integer COMM_SEPARATE=0,
+ parameter integer VERSIONED_TOKENS=1,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
     parameter integer ADC_ZERO = 0,
@@ -36,7 +37,7 @@ module instrument_core_stage11 #(
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
-    input wire clk,
+    input wire comm_clk, input wire clk,
     input wire rst,
     input wire [79:0] pressure_raw,
     input wire pressure_valid,
@@ -93,8 +94,6 @@ module instrument_core_stage11 #(
     output wire [63:0] observe_retired_id,
     output wire [15:0] observe_retired_generation,
     output wire [31:0] observe_reclaim_mask,
-    output wire [511:0] observe_reclaim_generations,
-    output wire [2047:0] observe_reclaim_ids,
     output wire [223:0] observe_slot_notes,
     output wire [255:0] observe_slot_pressures,
     output wire [287:0] observe_current_pan,
@@ -102,18 +101,10 @@ module instrument_core_stage11 #(
     output wire  observe_local_pending,
     output wire [55:0] observe_local_notes,
     output wire  observe_allocator_publish,
-    output wire [127:0] observe_slot_sources,
-    output wire [255:0] observe_slot_keys,
-    output wire [2047:0] observe_slot_tokens,
-    output wire [2047:0] observe_slot_ids,
-    output wire [511:0] observe_slot_generations,
     output wire [31:0] observe_slot_cancel,
     output wire [31:0] observe_sample_time,
     output wire [31:0] observe_fx_accepted,
     output wire [31:0] observe_pan_accepted,
-    output wire [287:0] observe_snapshot_pan,
-    output wire [2047:0] observe_snapshot_ids,
-    output wire [511:0] observe_snapshot_generations,
     output wire  observe_gain_sample,
     output wire [31:0] observe_gain_frame,
     output wire [31:0] observe_gain_version,
@@ -140,6 +131,31 @@ module instrument_core_stage11 #(
     output wire [103:0] observe_gain_state,
     output wire [63:0] observe_media_epoch
 );
+ wire  r18_snapshot_valid;
+ wire  r18_snapshot_ready;
+ wire  r18_query_valid;
+ wire [4:0] r18_query_slot;
+ wire  r18_query_ready;
+ wire  r18_response_valid;
+ wire [4:0] r18_response_slot;
+ wire [314:0] r18_response_word;
+ wire [63:0] r18_allocated_pid;
+ wire [63:0] r18_clock_frame;
+ wire [15:0] r18_clock_subcycle;
+ wire  r18_fact_valid;
+ wire [314:0] r18_fact_before;
+ wire [314:0] r18_fact_after;
+ wire [63:0] r18_fact_frame;
+ wire [15:0] r18_fact_subcycle;
+ wire  r18_reclaim_busy;
+ wire  r18_pan_ready;
+ wire  r18_pan_response_valid;
+ wire [1:0] r18_pan_result;
+ wire [4:0] r18_pan_response_slot;
+ wire [314:0] r18_pan_before;
+ wire [314:0] r18_pan_after;
+
+ assign r18_clock_frame=observe_event_frame_id;assign r18_clock_subcycle=observe_event_subcycle;
  wire record_cmd_valid,record_cmd_ready;
  wire [1:0] record_cmd;wire [63:0] record_cmd_id;
  wire [7:0] record_cmd_mask,record_ack_kind;
@@ -152,8 +168,6 @@ module instrument_core_stage11 #(
  wire [63:0] cfg_first_missing_frame;
  wire cfg_tx_read_valid,cfg_tx_response_valid;wire [15:0] cfg_tx_read_epoch,cfg_tx_response_epoch;wire [5:0] cfg_tx_response_index;
  wire [5:0] cfg_tx_count;wire [255:0] cfg_tx_cell;wire [5:0] cfg_tx_index;wire [7:0] cfg_fault_code;
- wire [63:0] map_query_runtime,map_query_persistent;
- wire [15:0] map_query_generation;
  wire [63:0] recorder_first_missing=record_mask[0]&&record_first_missing_frame!=64'hffffffffffffffff ? record_first_missing_frame:record_first_missing_event_frame;
  wire [2:0] wire_record_state;
  wire wire_record_incomplete,record_drained;
@@ -166,9 +180,7 @@ module instrument_core_stage11 #(
   else if(observe_load)begin dac_load_count<=dac_load_count+1'b1;since_load<=0;end
   else if(since_load!=65535)since_load<=since_load+1'b1;
  end
- wire token_snapshot_capture,token_snapshot_read;
- wire [4:0] token_snapshot_slot;wire [63:0] token_snapshot_data;
- instrument_core_stage10 #(.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage10 #(.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -181,7 +193,31 @@ module instrument_core_stage11 #(
   .OCTAVE_MAX(OCTAVE_MAX),
   .MIX_SHIFT(MIX_SHIFT),
   .ENABLE_S11(1)) base(
- .token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),
+  .r18_snapshot_valid(r18_snapshot_valid),
+  .r18_snapshot_ready(r18_snapshot_ready),
+  .r18_query_valid(r18_query_valid),
+  .r18_query_slot(r18_query_slot),
+  .r18_query_ready(r18_query_ready),
+  .r18_response_valid(r18_response_valid),
+  .r18_response_slot(r18_response_slot),
+  .r18_response_word(r18_response_word),
+  .r18_allocated_pid(r18_allocated_pid),
+  .r18_clock_frame(r18_clock_frame),
+  .r18_clock_subcycle(r18_clock_subcycle),
+  .r18_fact_valid(r18_fact_valid),
+  .r18_fact_before(r18_fact_before),
+  .r18_fact_after(r18_fact_after),
+  .r18_fact_frame(r18_fact_frame),
+  .r18_fact_subcycle(r18_fact_subcycle),
+  .r18_reclaim_busy(r18_reclaim_busy),
+  .r18_pan_ready(r18_pan_ready),
+  .r18_pan_response_valid(r18_pan_response_valid),
+  .r18_pan_result(r18_pan_result),
+  .r18_pan_response_slot(r18_pan_response_slot),
+  .r18_pan_before(r18_pan_before),
+  .r18_pan_after(r18_pan_after),
+
+ 
   .spi_sck(spi_sck),
   .score_cs_n(score_cs_n),
   .sd_cs_n(sd_cs_n),
@@ -212,7 +248,7 @@ module instrument_core_stage11 #(
   .pan_id(pan_id),
   .pan_generation(pan_generation),
   .pan_value(pan_value),
-  .clk(clk),
+  .comm_clk(comm_clk),.clk(clk),
   .rst(rst),
   .pressure_raw(pressure_raw),
   .pressure_valid(pressure_valid),
@@ -296,8 +332,8 @@ module instrument_core_stage11 #(
   .observe_retired_id(observe_retired_id),
   .observe_retired_generation(observe_retired_generation),
   .observe_reclaim_mask(observe_reclaim_mask),
-  .observe_reclaim_generations(observe_reclaim_generations),
-  .observe_reclaim_ids(observe_reclaim_ids),
+  
+  
   .observe_slot_notes(observe_slot_notes),
   .observe_slot_pressures(observe_slot_pressures),
   .observe_current_pan(observe_current_pan),
@@ -305,18 +341,18 @@ module instrument_core_stage11 #(
   .observe_local_pending(observe_local_pending),
   .observe_local_notes(observe_local_notes),
   .observe_allocator_publish(observe_allocator_publish),
-  .observe_slot_sources(observe_slot_sources),
-  .observe_slot_keys(observe_slot_keys),
-  .observe_slot_tokens(observe_slot_tokens),
-  .observe_slot_ids(observe_slot_ids),
-  .observe_slot_generations(observe_slot_generations),
+  
+  
+  
+  
+  
   .observe_slot_cancel(observe_slot_cancel),
   .observe_sample_time(observe_sample_time),
   .observe_fx_accepted(observe_fx_accepted),
   .observe_pan_accepted(observe_pan_accepted),
-  .observe_snapshot_pan(observe_snapshot_pan),
-  .observe_snapshot_ids(observe_snapshot_ids),
-  .observe_snapshot_generations(observe_snapshot_generations),
+  
+  
+  
   .observe_gain_sample(observe_gain_sample),
   .observe_gain_frame(observe_gain_frame),
   .observe_gain_version(observe_gain_version),
@@ -350,7 +386,14 @@ module instrument_core_stage11 #(
   .record_block_items(record_block_items),
   .record_peek_address(record_peek_address),
   .observe_media_epoch(observe_media_epoch),.record_peek_data(record_peek_data));
- s11_recording_subsystem #(.SNAPSHOT_TOKEN_DIRECTORY(VERSIONED_TOKENS)) recorder(.token_snapshot_capture(token_snapshot_capture),.token_snapshot_read(token_snapshot_read),.token_snapshot_slot(token_snapshot_slot),.token_snapshot_data(token_snapshot_data),.clk(clk),.rst(rst),.audio_reset(rst),
+ r18_recording_subsystem #(.SERIAL_EVENTS(1)) recorder(
+ .pan_applied(r18_pan_response_valid&&r18_pan_result==0),.pan_applied_slot(r18_pan_response_slot),.pan_applied_word(r18_pan_after),
+  .snapshot_valid(r18_snapshot_valid),.snapshot_ready(r18_snapshot_ready),.allocated_persistent_id(r18_allocated_pid),
+  .snapshot_query_valid(r18_query_valid),.snapshot_query_ready(r18_query_ready),.snapshot_query_slot(r18_query_slot),
+  .snapshot_response_valid(r18_response_valid),.snapshot_response_slot(r18_response_slot),.snapshot_response_word(r18_response_word),
+  .fact_valid(r18_fact_valid),.fact_item(observe_apply_item),.fact_outcome(observe_apply_outcome),.fact_slot(observe_apply_slot),.fact_steal(observe_apply_steal),
+  .fact_before(r18_fact_before),.fact_after(r18_fact_after),.fact_frame(r18_fact_frame),.fact_subcycle(r18_fact_subcycle),.reclaim_batch_busy(r18_reclaim_busy),
+.clk(clk),.rst(rst),.audio_reset(rst),
   .record_cmd_valid(record_cmd_valid),.record_cmd_ready(record_cmd_ready),.record_cmd({6'd0,record_cmd}),
   .command_record_id(record_cmd_id),.command_mask(record_cmd_mask[1:0]),.ack_kind(record_ack_kind[1:0]),
   .command_sequence(record_cmd_sequence),.ack_block_sequence(record_ack_sequence),
@@ -361,15 +404,15 @@ module instrument_core_stage11 #(
   .observe_load(observe_load),.observe_l(observe_l),.observe_r(observe_r),.observe_frame_id(observe_frame_id),
   .event_frame_id(observe_event_frame_id),.event_subcycle(observe_event_subcycle),
   .allocator_busy(observe_allocator_busy),.batch_begin(observe_batch_begin),.publish_ok(observe_publish_ok),
-  .batch_abort(observe_batch_abort),.apply_valid(observe_apply_valid),.batch_timestamp(observe_batch_timestamp),
-  .apply_lane(observe_apply_lane),.apply_item(observe_apply_item),.apply_outcome(observe_apply_outcome),
-  .apply_slot(observe_apply_slot),.apply_id(observe_apply_id),.apply_generation(observe_apply_generation),
-  .apply_timbre(observe_apply_timbre),.apply_steal(observe_apply_steal),.retired_id(observe_retired_id),
-  .retired_generation(observe_retired_generation),.reclaim_mask(observe_reclaim_mask),.reclaim_ids(observe_reclaim_ids),
-  .reclaim_generations(observe_reclaim_generations),.slot_valid(observe_slot_valid),.slot_gate(observe_slot_gate),
-  .slot_notes(observe_slot_notes),.slot_pressures(observe_slot_pressures),.slot_keys(observe_slot_keys),
-  .slot_sources(observe_slot_sources),.slot_ids(observe_slot_ids),.slot_tokens(observe_slot_tokens),
-  .slot_generations(observe_slot_generations),.slot_timbres(observe_slot_timbres),.slot_pans(observe_current_pan),
+  .batch_abort(observe_batch_abort),.batch_timestamp(observe_batch_timestamp),
+  
+  
+  
+  
+  .slot_valid(observe_slot_valid),.slot_gate(observe_slot_gate),
+  
+  
+  
   .cfg_tx_read_valid(cfg_tx_read_valid),.cfg_tx_read_epoch(cfg_tx_read_epoch),
   .cfg_tx_response_valid(cfg_tx_response_valid),.cfg_tx_response_index(cfg_tx_response_index),.cfg_tx_response_epoch(cfg_tx_response_epoch),
   .cfg_tx_valid(cfg_tx_valid),.cfg_tx_count(cfg_tx_count),.cfg_tx_cell(cfg_tx_cell),.cfg_tx_index(cfg_tx_index),.cfg_tx_ready(cfg_tx_ready),.cfg_tx_done(cfg_tx_done),
@@ -383,9 +426,10 @@ module instrument_core_stage11 #(
   .buffered_pcm_pairs(record_buffered_pairs),.captured_event_cells(record_captured_cells),.retired_event_cells(record_retired_cells),.first_missing_event_frame(record_first_missing_event_frame),
   .discarded_event_cells(record_discarded_cells),.buffered_event_cells(record_buffered_cells),
   .published_batches(record_published_batches),.aborted_batches(record_aborted_batches),.applied_items(record_applied_items),
-  .initial_instances(record_initial_instances),.map_query_slot(pan_slot),.map_query_runtime(map_query_runtime),
-  .map_query_persistent(map_query_persistent),.map_query_generation(map_query_generation));
- s11_config_observer configs(.clk(clk),.rst(rst),.capture_fault(cfg_capture_fault),.start(record_start_pulse&&record_cmd_mask[1]),
+  .initial_instances(record_initial_instances));
+ r18_config_observer configs(
+  .pan_valid(1'b0),.pan_slot(r18_pan_response_slot),.pan_before(r18_pan_before),.pan_after(r18_pan_after),
+.clk(clk),.rst(rst),.capture_fault(cfg_capture_fault),.start(record_start_pulse&&record_cmd_mask[1]),
   .stop(record_stop_pulse),.recording(record_mask[1]&&(record_state==1||record_state==2)),
   .frame_id(observe_event_frame_id),.subcycle(observe_event_subcycle),
   .timbre_id(timbre_id),.glide_code(glide_code),.keymap(observe_keymap),.keymap_version(observe_keymap_version),
@@ -394,10 +438,10 @@ module instrument_core_stage11 #(
   .gain_local_mute(gain_cfg_local_mute),.gain_external_mute(gain_cfg_external_mute),
   .gain_accepted(observe_gain_accepted),.gain_sample(observe_gain_sample),.gain_frame(observe_gain_frame),
   .gain_version(observe_gain_version),.gain_current_l(observe_gain_l),.gain_current_e(observe_gain_e),
-  .gain_state(observe_gain_state),.gain_remaining(observe_gain_remaining),.pan_valid(pan_valid),.pan_slot(pan_slot),.pan_id(pan_id),
-  .pan_generation(pan_generation),.pan_value(pan_value),.slot_valid(observe_slot_valid),.slot_cancel(observe_slot_cancel),
-  .slot_ids(observe_slot_ids),.slot_generations(observe_slot_generations),
-  .map_query_runtime(map_query_runtime),.map_query_persistent(map_query_persistent),.map_query_generation(map_query_generation),
+  .gain_state(observe_gain_state),.gain_remaining(observe_gain_remaining),
+  
+  
+  
   .stream_state(observe_stream_state),.stream_generation(observe_stream_generation),.media_epoch(observe_media_epoch),
   .tx_read_valid(cfg_tx_read_valid),.tx_read_epoch(cfg_tx_read_epoch),
   .tx_response_valid(cfg_tx_response_valid),.tx_response_index(cfg_tx_response_index),.tx_response_epoch(cfg_tx_response_epoch),

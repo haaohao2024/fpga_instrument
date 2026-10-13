@@ -2,7 +2,7 @@
 // records describe real parameter state changes and actual engine edges.
 // Fourteen cells include the immutable in-flight prefix: appending does not
 // change a transaction already reserved by the EVR RAM writer.
-module s11_config_observer #(parameter integer SYNC_READ=1)(
+module s11_config_observer #(parameter integer SYNC_READ=1, PAN_PREVALIDATED=0)(
  input wire clk,rst,start,stop,recording,capture_fault,
  input wire [63:0] frame_id,input wire [15:0] subcycle,
  input wire [2:0] timbre_id,input wire [3:0] glide_code,
@@ -133,8 +133,16 @@ module s11_config_observer #(parameter integer SYNC_READ=1)(
   assign slot_id_words[p]=slot_ids[p*64+:64];
   assign slot_generation_words[p]=slot_generations[p*16+:16];
  end endgenerate
- wire add_pan=(recording||start)&&!stop&&(!fault_valid||start)&&(!capture_fault||start)&&pan_valid&&pan_value<=256&&slot_valid[pan_slot]&&
-  !slot_cancel[pan_slot]&&slot_id_words[pan_slot]==pan_id&&slot_generation_words[pan_slot]==pan_generation;
+ wire add_pan=(recording||start)&&!stop&&(!fault_valid||start)&&(!capture_fault||start)&&pan_valid&&pan_value<=256&&
+  (PAN_PREVALIDATED||(slot_valid[pan_slot]&&!slot_cancel[pan_slot]&&slot_id_words[pan_slot]==pan_id&&slot_generation_words[pan_slot]==pan_generation));
+ // The sole formal producer issues pan_valid only after registered full
+ // identity validation and live cancellation/reclaim checks at COMMIT.
+ // Generic inputs keep validation; the full contract stays asserted here.
+ // synthesis translate_off
+ always @(posedge clk)if(PAN_PREVALIDATED&&!rst&&pan_valid)
+  if(!slot_valid[pan_slot]||slot_cancel[pan_slot]||slot_id_words[pan_slot]!==pan_id||slot_generation_words[pan_slot]!==pan_generation)
+   $fatal(1,"CFG_PAN_PRODUCER_VALIDATION");
+ // synthesis translate_on
  wire [63:0] pan_pid=start?pan_slot+64'd1:
   (map_query_runtime==pan_id&&map_query_generation==pan_generation)?map_query_persistent:64'd0;
  wire [3:0] gain_phase=gain_accepted!=previous_gain_accepted?4'd1:gain_version!=previous_gain_version?4'd2:4'd3;

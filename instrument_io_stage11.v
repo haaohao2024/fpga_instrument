@@ -1,7 +1,9 @@
 // Stage9 board-independent I/O composition. No new physical pin bindings.
 // Existing ADC/EC11 and official video PLL logic are unchanged.
 module instrument_io_stage11 #(
+ parameter integer COMM_SEPARATE=0,
  parameter integer CLK_FREQ_HZ=50_000_000, SPI_CLK_HZ=1_000_000,
+ parameter integer EXTERNAL_VIDEO_REFERENCE=0,
  parameter integer EC11_DEBOUNCE_US=500,GLIDE_EC11_DEBOUNCE_US=1000,
  parameter integer EC11_TRANSITIONS_PER_STEP=4,EC11_DIR_INVERT=0
 ) (
@@ -26,7 +28,7 @@ module instrument_io_stage11 #(
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
-    input wire clk,
+    input wire comm_clk, input wire clk, input wire video_ref_clk,
     input wire rst,
     input wire adc_dout,
     output wire adc_cs_n,adc_sclk,adc_din,
@@ -94,9 +96,9 @@ module instrument_io_stage11 #(
         .step_dir(glide_step_dir),.glide_code(local_glide_code)
     );
  wire video_pixel_clk,video_serial_clk,video_pll_locked;
- video_pll_800x600 video_pll(.clkin(clk),.reset(rst),.lock(video_pll_locked),
+ video_pll_800x600 video_pll(.clkin(EXTERNAL_VIDEO_REFERENCE ? video_ref_clk : clk),.reset(rst),.lock(video_pll_locked),
  .clkout0(video_serial_clk),.clkout1(video_pixel_clk));
- instrument_core_stage11 #(.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1)) u_core(
+ instrument_core_stage11 #(.COMM_SEPARATE(COMM_SEPARATE),.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1)) u_core(
  .spi_sck(spi_sck),
  .score_cs_n(score_cs_n),
  .sd_cs_n(sd_cs_n),
@@ -127,7 +129,7 @@ module instrument_io_stage11 #(
  .pan_id(pan_id),
  .pan_generation(pan_generation),
  .pan_value(pan_value),
- .clk(clk),
+ .comm_clk(comm_clk),.clk(clk),
  .rst(rst),
  .pressure_raw(calibrated_frame),
  .pressure_valid(pressure_valid),

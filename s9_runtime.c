@@ -247,13 +247,7 @@ static int dispatch(void){
  if(m.channel==1&&m.opcode==S9_OP_DISCONNECT){
   s9_router_sent(&router,slot);s9_tasks_bus_close();s9_gatt_disconnect();return 1;
  }
- if(m.channel==1&&m.opcode==S9_OP_QUERY_RESULT&&m.payload[0]==2){
-  int found=-1;uint32_t seq=s9_get32(m.payload+1);
-  for(unsigned i=0;i<S9_ROUTER_SLOTS;i++)if(router.entry[i].used&&router.entry[i].request[5]==2&&s9_get32(router.entry[i].request+24)==seq)found=(int)i;
-  s9_router_sent(&router,slot);
-  if(found>=0){router.entry[found].dirty=1;local_result(&m,3,0);}else local_result(&m,7,S9_E_EXPIRED);
-  return 1;
- }
+ if(s9_router_control_dispatch(&router,slot))return 1;
  if(m.channel==2||m.opcode==S9_OP_PLAY){
   if(m.opcode==S9_OP_UPLOAD_DATA){
    uint32_t cost=(m.length-12)*1000u;
@@ -325,6 +319,7 @@ static void protocol_task(void *unused){
   if(active&&router.ready&&(uint32_t)(now-last_peer)>5000){s9_tasks_bus_close();s9_gatt_disconnect();}
   file_result fr;
   while(xQueueReceive(file_results,&fr,0)==pdTRUE)(void)s9_router_result(&router,fr.generation,fr.session,fr.result);
+  s9_router_control_step(&router);
   for(unsigned i=0;i<3;i++)dispatch();
   if(!notice_size){int n=s9_router_notice(&router,notice,sizeof notice);if(n>0){notice_size=(unsigned)n;notice_offset=0;}else{record_notice rn;if(xQueueReceive(record_notices,&rn,0)==pdTRUE&&rn.generation==active&&router.notification_sequence){memcpy(notice,rn.bytes,rn.length);s9_put32(notice+24,router.notification_sequence++);s9_put32(notice+rn.length-4,s9_crc32(notice,rn.length-4));notice_size=rn.length;notice_offset=0;}}}
   if(notice_size&&active){

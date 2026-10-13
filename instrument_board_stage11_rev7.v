@@ -4,6 +4,7 @@
 // The complete, frozen Stage11 system remains the sole instrument instance.
 module instrument_board_stage11_rev7 #(
     parameter integer CLK_FREQ_HZ = 50_000_000,
+    parameter integer SYSTEM_DIVIDE = 2,
     parameter integer ADC_SPI_CLK_HZ = 1_000_000,
     parameter integer BUTTON_DEBOUNCE_US = 2_000,
     parameter integer BUTTON_RELEASE_DEBOUNCE_US = 20_000
@@ -22,10 +23,16 @@ module instrument_board_stage11_rev7 #(
     output wire pa_disable,
     output wire [3:0] video_p, video_n
 );
+    // Free-running divide-by-two: reset must not truncate clock pulses.
+    // Physical global-clock routing still requires target-device P&R verification.
+    (* syn_keep = 1 *) reg system_clk_div2 = 1'b0;
+    always @(posedge sys_clk) system_clk_div2 <= ~system_clk_div2;
+    wire system_clk = SYSTEM_DIVIDE == 2 ? system_clk_div2 : sys_clk;
+    localparam integer SYSTEM_CLK_HZ = CLK_FREQ_HZ / SYSTEM_DIVIDE;
     // Reuse the existing board reset contract: asynchronous assertion,
     // two-clock release, and an initialized power-on reset request.
     reg [1:0] reset_release = 2'b11;
-    always @(posedge sys_clk or negedge rst_n) begin
+    always @(posedge system_clk or negedge rst_n) begin
         if (!rst_n) reset_release <= 2'b11;
         else reset_release <= {reset_release[0], 1'b0};
     end
@@ -34,23 +41,23 @@ module instrument_board_stage11_rev7 #(
 
     wire octave_up_pulse, octave_down_pulse;
     button_debounce_onepulse #(
-        .CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US),
+        .CLK_FREQ_HZ(SYSTEM_CLK_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US),
         .RELEASE_DEBOUNCE_US(BUTTON_RELEASE_DEBOUNCE_US)
     ) u_octave_up (
-        .clk(sys_clk), .rst(rst), .key_n(enc1_sw_n),
+        .clk(system_clk), .rst(rst), .key_n(enc1_sw_n),
         .press_pulse(octave_up_pulse)
     );
     button_debounce_onepulse #(
-        .CLK_FREQ_HZ(CLK_FREQ_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US),
+        .CLK_FREQ_HZ(SYSTEM_CLK_HZ), .DEBOUNCE_US(BUTTON_DEBOUNCE_US),
         .RELEASE_DEBOUNCE_US(BUTTON_RELEASE_DEBOUNCE_US)
     ) u_octave_down (
-        .clk(sys_clk), .rst(rst), .key_n(enc2_sw_n),
+        .clk(system_clk), .rst(rst), .key_n(enc2_sw_n),
         .press_pulse(octave_down_pulse)
     );
 
     wire reply_bit, protocol_oe, guide_wave;
     reg miso_ready = 1'b0;
-    always @(posedge sys_clk or negedge rst_n) begin
+    always @(posedge system_clk or negedge rst_n) begin
         if (!rst_n) miso_ready <= 1'b0;
         else if (rst) miso_ready <= 1'b0;
         else miso_ready <= 1'b1;
@@ -68,11 +75,11 @@ module instrument_board_stage11_rev7 #(
     assign ws2812_inv = (!rst_n || rst) ? 1'b1 : ~guide_wave;
 
     instrument_io_stage11 #(
-        .CLK_FREQ_HZ(CLK_FREQ_HZ), .SPI_CLK_HZ(ADC_SPI_CLK_HZ),
+        .CLK_FREQ_HZ(SYSTEM_CLK_HZ), .SPI_CLK_HZ(ADC_SPI_CLK_HZ), .EXTERNAL_VIDEO_REFERENCE(1), .COMM_SEPARATE(1),
         .EC11_DEBOUNCE_US(500), .GLIDE_EC11_DEBOUNCE_US(1000),
         .EC11_TRANSITIONS_PER_STEP(4), .EC11_DIR_INVERT(0)
     ) u_instrument (
-        .clk(sys_clk), .rst(rst),
+        .clk(system_clk), .video_ref_clk(sys_clk), .comm_clk(sys_clk), .rst(rst),
         .adc_dout(adc_miso), .adc_cs_n(adc_cs_n),
         .adc_sclk(adc_sclk), .adc_din(adc_mosi),
         .ec11_s1(enc1_a), .ec11_s2(enc1_b),

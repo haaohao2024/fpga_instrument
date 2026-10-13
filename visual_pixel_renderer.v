@@ -1,5 +1,5 @@
 // Four pixel clocks of matched RGB/DE/HS/VS latency. No full-frame RAM.
-module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
+module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_FILE="src/visual_labels.mem")(
  input wire pixel_clk,rst,input wire [10:0] x,input wire [9:0] y,input wire de,hs,vs,
  input wire test_pattern,front_valid,input wire [1023:0] metadata,input wire [15:0] age_frames,
  output wire wave_re,xy_re,spectrum_re,
@@ -22,13 +22,41 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
  reg [3:0] de_pipe,hs_pipe,vs_pipe,valid_pipe,test_pipe;
  reg signed [15:0] minimum,held_minimum,held_maximum;
  reg [15:0] spec2,spec3;reg xy2,xy3;
- reg [7:0] font[0:1023];reg [7:0] font0,font1;
+ wire [7:0] font0;
  reg [2:0] fontbit0,fontbit1;reg text0,text1,text2,text3;
  reg [6:0] character;reg [2:0] glyph_x,glyph_y;reg text_enable;
  reg [6:0] col;reg [4:0] row;reg [10:0] local_x;reg [9:0] local_y;integer i;
- reg [191:0] text_line;
+ reg [5:0] text_line_id;
+ // Text ROM uses the original font0 stage; the glyph ROM uses the former
+ // font1 stage. RGB and DE/HS/VS keep exactly their original four-clock path.
+
+ wire [6:0] label_q;reg [6:0] character_q;reg [2:0] glyph_y_q;
+ reg use_label,use_label_q;
+
  reg [7:0] dynamic_char;
- initial $readmemh(FONT_FILE,font);
+ generate if(FONT_FILE=="src/visual_font.mem" && LABEL_FILE=="src/visual_labels.mem")begin: packed_text
+  // 42 rows x 24 bytes fit below 1024; all 128 glyphs occupy the upper half.
+  wire [9:0] label_address=({4'd0,text_line_id}<<4)+({4'd0,text_line_id}<<3)+{5'd0,col[4:0]};
+  wire [15:0] label_word,glyph_word;
+  DPB #(.READ_MODE0(1'b0),.READ_MODE1(1'b0),
+   .WRITE_MODE0(2'b00),.WRITE_MODE1(2'b00),.BIT_WIDTH_0(8),.BIT_WIDTH_1(8),
+   .BLK_SEL_0(3'b000),.BLK_SEL_1(3'b000),.RESET_MODE("SYNC"),
+`include "r30_text_init.vh"
+  ) rom(.CLKA(pixel_clk),.CLKB(pixel_clk),.CEA(1'b1),.CEB(1'b1),.OCEA(1'b1),.OCEB(1'b1),
+   .RESETA(1'b0),.RESETB(1'b0),.WREA(1'b0),.WREB(1'b0),
+   .BLKSELA(3'b000),.BLKSELB(3'b000),.ADA({1'b0,label_address,3'b000}),
+   .ADB({1'b1,(use_label_q?label_q:character_q),glyph_y_q,3'b000}),
+   .DIA(16'd0),.DIB(16'd0),.DOA(label_word),.DOB(glyph_word));
+  assign label_q=label_word[6:0];assign font0=glyph_word[7:0];
+ end else begin: custom_text
+  reg [7:0] font[0:1023];reg [6:0] labels[0:2047];
+  reg [7:0] f;reg [6:0] l;
+  initial begin $readmemh(FONT_FILE,font);$readmemh(LABEL_FILE,labels);end
+  always @(posedge pixel_clk)begin
+   l<=labels[{text_line_id,col[4:0]}];f<=font[{(use_label_q?label_q:character_q),glyph_y_q}];
+  end
+  assign label_q=l;assign font0=f;
+ end endgenerate
  function [7:0] digit(input [5:0] v);begin digit="0"+(v%6'd10);end endfunction
  function [7:0] hex_digit(input [3:0] v);begin hex_digit=v<10?"0"+v:"A"+v-10;end endfunction
  // Prepare decimal statistics once per immutable front snapshot. The
@@ -109,13 +137,9 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
    panel_row=r;panel_y=y-(304+r*12);statistics_text_rows=1;
   end
  end
- wire [7:0] text_words[0:23];wire [4:0] text_index=5'd23-col[4:0];
  wire [2:0] hex_index=3'd7-col[2:0];wire [1:0] age_index=2'd3-col[1:0];
  wire [3:0] hex_fx[0:7],hex_hi[0:7],hex_lo[0:7],hex_under[0:7],hex_deadline[0:7],hex_skip[0:7],hex_cancel[0:7],hex_dac[0:7],hex_age[0:3];
- generate for(genvar c=0;c<24;c=c+1)begin: text_word
-  assign text_words[c]=text_line[c*8+:8];
- end
- for(genvar c=0;c<8;c=c+1)begin: metadata_hex_word
+ generate for(genvar c=0;c<8;c=c+1)begin: metadata_hex_word
   assign hex_fx[c]=metadata[540+c*4+:4];assign hex_hi[c]=metadata[473+c*4+:4];
   assign hex_lo[c]=metadata[441+c*4+:4];assign hex_under[c]=metadata[508+c*4+:4];
   assign hex_deadline[c]=metadata[572+c*4+:4];assign hex_skip[c]=metadata[192+c*4+:4];
@@ -131,8 +155,8 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
   $fatal(1,"S8_STATISTICS_NOT_READY");
  // synthesis translate_on
  always @* begin
-  local_x=x-32;local_y=y-16;col=0;row=0;text_line=0;dynamic_char=0;
-  text_enable=0;glyph_x=0;glyph_y=0;character=32;
+  local_x=x-32;local_y=y-16;col=0;row=0;text_line_id=0;dynamic_char=0;
+  text_enable=0;glyph_x=0;glyph_y=0;character=32;use_label=0;
   if(x>=32&&x<736&&y>=16&&y<32)begin
    col=(x-32)>>4;glyph_x=((x-32)>>1)&7;glyph_y=(y-16)>>1;text_enable=1;
    case(col)
@@ -144,30 +168,30 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
     default:character=32;
    endcase
   end else begin
-   if(x>=32&&x<224&&y>=48&&y<56)begin local_x=x-32;local_y=y-48;text_line="LEFT WAVE - 512 SAMPLES ";text_enable=1;end
-   if(x>=32&&x<224&&y>=160&&y<168)begin local_x=x-32;local_y=y-160;text_line="RIGHT WAVE              ";text_enable=1;end
-   if(x>=624&&x<752&&y>=56&&y<64)begin local_x=x-624;local_y=y-56;text_line="L / R XY                ";text_enable=1;end
-   if(x>=32&&x<224&&y>=296&&y<304)begin local_x=x-32;local_y=y-296;text_line="SPECTRUM -72 TO 0 DBFS  ";text_enable=1;end
-   if(x>=32&&x<96&&y>=264&&y<272)begin local_x=x-32;local_y=y-264;text_line="DC L                    ";text_enable=1;end
-   if(x>=32&&x<96&&y>=280&&y<288)begin local_x=x-32;local_y=y-280;text_line="DC R                    ";text_enable=1;end
-   if(x>=344&&x<536&&y>=272&&y<280)begin local_x=x-344;local_y=y-272;text_line="DC -72 TO 0 DBFS        ";text_enable=1;end
+   if(x>=32&&x<224&&y>=48&&y<56)begin local_x=x-32;local_y=y-48;text_line_id=6'd1;text_enable=1;end
+   if(x>=32&&x<224&&y>=160&&y<168)begin local_x=x-32;local_y=y-160;text_line_id=6'd2;text_enable=1;end
+   if(x>=624&&x<752&&y>=56&&y<64)begin local_x=x-624;local_y=y-56;text_line_id=6'd3;text_enable=1;end
+   if(x>=32&&x<224&&y>=296&&y<304)begin local_x=x-32;local_y=y-296;text_line_id=6'd4;text_enable=1;end
+   if(x>=32&&x<96&&y>=264&&y<272)begin local_x=x-32;local_y=y-264;text_line_id=6'd5;text_enable=1;end
+   if(x>=32&&x<96&&y>=280&&y<288)begin local_x=x-32;local_y=y-280;text_line_id=6'd6;text_enable=1;end
+   if(x>=344&&x<536&&y>=272&&y<280)begin local_x=x-344;local_y=y-272;text_line_id=6'd7;text_enable=1;end
    if(x>=32&&x<544&&y>=552&&y<560)begin
     local_x=x-32;local_y=y-552;text_enable=1;
-    if(x<64)text_line="12HZ                    ";
-    else if(x>=176&&x<224)begin local_x=x-176;text_line="100HZ                   ";end
-    else if(x>=328&&x<368)begin local_x=x-328;text_line="1KHZ                    ";end
-    else if(x>=480&&x<528)begin local_x=x-480;text_line="10KHZ                   ";end
+    if(x<64)text_line_id=6'd8;
+    else if(x>=176&&x<224)begin local_x=x-176;text_line_id=6'd9;end
+    else if(x>=328&&x<368)begin local_x=x-328;text_line_id=6'd10;end
+    else if(x>=480&&x<528)begin local_x=x-480;text_line_id=6'd11;end
     else text_enable=0;
    end
    if(x>=592&&x<784&&fx_text_rows)begin
     local_x=x-592;local_y=panel_y;row=panel_row;text_enable=1;col=local_x/8;
     case(row)
-     0:text_line="FX VERSION HEX:         ";
-     1:text_line="TIME HI HEX:            ";
-     2:text_line="TIME LO HEX:            ";
-     3:text_line="EXT UNDER HEX:          ";
-     4:text_line="EXT ERROR:              ";
-     5:text_line="DEADLINE HEX:           ";
+     0:text_line_id=6'd12;
+     1:text_line_id=6'd13;
+     2:text_line_id=6'd14;
+     3:text_line_id=6'd15;
+     4:text_line_id=6'd16;
+     5:text_line_id=6'd17;
     endcase
     if(col>=16&&col<24)begin
      case(row)
@@ -183,31 +207,31 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
    if(x>=592&&x<784&&statistics_text_rows)begin
     local_x=x-592;local_y=panel_y;row=panel_row;text_enable=1;
     case(row)
-     0:text_line="SNAPSHOT STATUS         ";
-     1:text_line="VOICES:                 ";
-     2:text_line="HELD:                   ";
-     3:text_line="RELEASE:                ";
-     4:text_line="NEW TIMBRE:             ";
-     5:text_line="FX D C R:               ";
-     6:text_line="BYPASS:                 ";
-     7:text_line="TEACH / LOOP:           ";
-     8:text_line="SCORE STATE:            ";
-     9:text_line="SCORE ERROR:            ";
-     10:text_line="EXT STATE:              ";
-     11:text_line="WINDOW ID:              ";
-     12:text_line="SKIP32 HEX:             ";
-     13:text_line="CANCEL32 HEX:           ";
-     14:text_line="FX OFF MAY RETAIN TAILS ";
-     15:text_line="4096 POINT HANN FFT     ";
-     16:text_line="11.71875 HZ / BIN       ";
-     17:text_line="TIMBRE 0:               ";
-     18:text_line="TIMBRE 1:               ";
-     19:text_line="TIMBRE 2:               ";
-     20:text_line="TIMBRE 3:               ";
-     21:text_line="TIMBRE 4:               ";
-     22:text_line="AGE FRAMES HEX:         ";
-     23:text_line="DAC FRAME32 HEX:        ";
-     default:text_line=0;
+     0:text_line_id=6'd18;
+     1:text_line_id=6'd19;
+     2:text_line_id=6'd20;
+     3:text_line_id=6'd21;
+     4:text_line_id=6'd22;
+     5:text_line_id=6'd23;
+     6:text_line_id=6'd24;
+     7:text_line_id=6'd25;
+     8:text_line_id=6'd26;
+     9:text_line_id=6'd27;
+     10:text_line_id=6'd28;
+     11:text_line_id=6'd29;
+     12:text_line_id=6'd30;
+     13:text_line_id=6'd31;
+     14:text_line_id=6'd32;
+     15:text_line_id=6'd33;
+     16:text_line_id=6'd34;
+     17:text_line_id=6'd35;
+     18:text_line_id=6'd36;
+     19:text_line_id=6'd37;
+     20:text_line_id=6'd38;
+     21:text_line_id=6'd39;
+     22:text_line_id=6'd40;
+     23:text_line_id=6'd41;
+     default:text_line_id=0;
     endcase
     col=local_x/8;
     if(col==16||col==17)begin
@@ -234,8 +258,8 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
    end
    if(text_enable)begin
     col=local_x/8;glyph_x=local_x%8;glyph_y=local_y%8;
-    if(col<24)character=text_words[text_index];
-    if(dynamic_char!=0)character=dynamic_char;
+    if(col<24)use_label=1;
+    if(dynamic_char!=0)begin character=dynamic_char;use_label=0;end
    end
   end
  end
@@ -284,7 +308,9 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
  end
  always @(posedge pixel_clk)begin
   // 1024-byte synchronous font ROM; no display-sized pixel buffer.
-  font0<=font[{character,glyph_y}];font1<=font0;
+
+  character_q<=character;glyph_y_q<=glyph_y;use_label_q<=use_label;
+
   if(rst)begin
    x0<=0;x1<=0;x2<=0;x3<=0;y0<=0;y1<=0;y2<=0;y3<=0;
    de_pipe<=0;hs_pipe<=0;vs_pipe<=0;valid_pipe<=0;test_pipe<=0;
@@ -301,7 +327,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem")(
    spec2<=spectrum_data;spec3<=spec2;
    xy2<=xy_data[(x1-624)&15];xy3<=xy2;
    text0<=text_enable;text1<=text0;fontbit0<=glyph_x;fontbit1<=fontbit0;
-   text2<=text1&&font1[7-fontbit1];text3<=text2;
+   text2<=text1&&font0[7-fontbit1];text3<=text2;
    rgb<=de_pipe[3]?color:24'd0;out_de<=de_pipe[3];out_hs<=hs_pipe[3];out_vs<=vs_pipe[3];
   end
  end

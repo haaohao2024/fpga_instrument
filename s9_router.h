@@ -29,4 +29,6 @@ void s9_router_sent(s9_router *state,unsigned slot);
 int s9_router_result(s9_router *state,uint32_t generation,const uint8_t session[16],const uint8_t result[36]);
 int s9_router_notice(s9_router *state,uint8_t *out,unsigned capacity);
 void s9_make_result(uint8_t out[36],uint8_t channel,uint32_t sequence,unsigned phase,int error);
+int s9_router_control_dispatch(s9_router *,unsigned slot);
+void s9_router_control_step(s9_router *);
 #endif

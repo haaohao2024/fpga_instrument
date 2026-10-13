@@ -1,7 +1,7 @@
 // 50MHz oversampled Mode0 shared-SPI slave. RAM content is never reset.
 // A page is visible only after both complete transaction and CRC validation.
-module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0, STREAM_STATUS_CRC=0)(
- input wire clk,rst,spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,
+module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0, STREAM_STATUS_CRC=0)(
+ input wire comm_clk,clk,rst,spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
  output wire [255:0] observe_status_bytes,
  output reg ctrl_valid, input wire ctrl_ready,
@@ -19,9 +19,13 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
- reg [2:0] ss,cs;reg [1:0] ms,ds;
- wire rise=ss[2:1]==2'b01,fall=ss[2:1]==2'b10;
- wire select_start=cs[2:1]==2'b10,select_end=cs[2:1]==2'b01;
+ reg [1:0] ds;
+ wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall;
+ wire serial_clk=COMM_SEPARATE?comm_clk:clk;
+ r24_spi_edges #(.COMM_SEPARATE(COMM_SEPARATE)) phy(.clk(clk),.comm_clk(comm_clk),.rst(rst),
+ .sck(spi_sck),.cs_n(fpga_cs_n),.mosi(spi_mosi),.rise(rise),.fall(fall),.start(select_start),.finish(select_end),
+ .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall));
+
  reg [7:0] memory[0:511];
  reg [255:0] header,response;
  reg [31:0] rx_crc,footer,last_sequence;
@@ -34,14 +38,15 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
  reg [31:0] pending_sequence;
  reg [31:0] watchdog;
  reg [255:0] status_tmp;reg [31:0] status_crc;integer k;
- wire [7:0] next_byte={rx_shift[6:0],ms[1]};
+ wire [1:0] footer_lane=byte_count[1:0]-expected_bytes[1:0];
+ wire [7:0] next_byte={rx_shift[6:0],phy_bit};
  wire [7:0] command=header[47:40];
  wire [63:0] epoch=header[127:64],argument=header[255:192];
  wire [31:0] request_sequence=header[159:128];
  wire [15:0] length=header[175:160];
  assign observe_status_bytes=status_tmp;
  assign spi_miso_oe=!rst&&!fpga_cs_n&&sd_cs_n&&in_transaction&&!bad&&tx_index<256;
- assign spi_miso=(tx_index<256)?response[255-tx_index]:1'b0;
+ assign spi_miso=(tx_index<256)?response[~tx_index[7:0]]:1'b0;
  always @(*)begin
   status_tmp=0;status_tmp[31:0]=32'h54533753;status_tmp[39:32]=1;
   status_tmp[47:40]=player_error;status_tmp[55:48]={6'd0,reload_request,(!page_busy&&page_ready)};
@@ -58,22 +63,26 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
  // sole formal consumer, media transport, computes its own frozen copy.
  reg response_crc_busy;reg [4:0] response_crc_index;
  reg [31:0] response_crc_value;
- wire receive_crc_step=!select_start && in_transaction && !cs[2] && rise && bit_count==7 &&
+ wire receive_crc_step=!select_start && in_transaction && phy_selected && rise && bit_count==7 &&
      (byte_count<32 || (!transaction_s10 && byte_count<expected_bytes-4));
- wire [7:0] frozen_crc_byte=response[255-response_crc_index*8-:8];
+ wire [7:0] frozen_crc_byte=response[{~response_crc_index,3'b111}-:8];
  wire [31:0] scheduled_crc_next=crcbyte(receive_crc_step?rx_crc:response_crc_value,
      receive_crc_step?next_byte:frozen_crc_byte);
  wire [31:0] received_crc_next=STREAM_STATUS_CRC?scheduled_crc_next:crcbyte(rx_crc,next_byte);
  wire [31:0] completed_response_crc=~scheduled_crc_next;
+ always @(posedge serial_clk)begin
+  if(rst||fast_start)tx_index<=0;
+  else if(phy_selected&&fast_fall&&tx_index<256)tx_index<=tx_index+1'b1;
+ end
  integer j;
  always @(posedge clk)begin
-  ss<={ss[1:0],spi_sck};cs<={cs[1:0],fpga_cs_n};ms<={ms[0],spi_mosi};ds<={ds[0],sd_cs_n};
+  ds<={ds[0],sd_cs_n};
   page_data<=memory[page_addr];
   if(rst)begin
    response_crc_busy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
-   ss<=0;cs<=7;ds<=3;ms<=0;ctrl_valid<=0;page_valid<=0;page_busy<=0;
+   ds<=3;ctrl_valid<=0;page_valid<=0;page_busy<=0;
    transaction_s10<=0;header<=0;response<=0;rx_crc<=32'hffffffff;footer<=0;last_sequence<=32'hffffffff;
-   byte_count<=0;bit_count<=0;tx_index<=0;expected_bytes<=36;in_transaction<=0;bad<=0;
+   byte_count<=0;bit_count<=0;expected_bytes<=36;in_transaction<=0;bad<=0;
    active_epoch<=0;accepted_pages<=0;rejected_transactions<=0;cs_conflicts<=0;
    watchdog<=0;link_timeout<=0;pending_epoch<=0;pending_sequence<=0;
    ctrl_cmd<=0;ctrl_epoch<=0;ctrl_arg<=0;page_sequence<=0;ram_available<=0;rx_shift<=0;
@@ -101,18 +110,18 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
    end
    if(select_start)begin
     if(STREAM_STATUS_CRC)begin response_crc_busy<=1;response_crc_index<=0;response_crc_value<=32'hffffffff;end
-    in_transaction<=1;transaction_s10<=0;header<=0;footer<=0;byte_count<=0;bit_count<=0;rx_shift<=0;tx_index<=0;
+    in_transaction<=1;transaction_s10<=0;header<=0;footer<=0;byte_count<=0;bit_count<=0;rx_shift<=0;
     expected_bytes<=36;rx_crc<=32'hffffffff;bad<=!ds[1];ram_available<=!page_busy&&page_ready;
     // Reverse byte order for wire MSB-first, without reversing bits within a byte.
     for(j=0;j<32;j=j+1)response[255-j*8-:8]<=status_tmp[j*8+:8];
     if(!ds[1])cs_conflicts<=cs_conflicts+1;
    end
    if(in_transaction&&!ds[1]&&!bad)begin bad<=1;cs_conflicts<=cs_conflicts+1;end
-   if(in_transaction&&!cs[2]&&rise)begin
+   if(in_transaction&&phy_selected&&rise)begin
     rx_shift<=next_byte;bit_count<=bit_count+1'b1;
     if(bit_count==7)begin
      if(byte_count<32)begin
-      header[byte_count*8+:8]<=next_byte;
+      for(integer hb=0;hb<32;hb=hb+1)if(byte_count==hb)header[hb*8+:8]<=next_byte;
       rx_crc<=received_crc_next;
       if(ENABLE_S10_ROUTE && byte_count==3 && ({next_byte,header[23:0]}==32'h50303153||{next_byte,header[23:0]}==32'h50313153))transaction_s10<=1;
       if(byte_count==31 && !transaction_s10)begin
@@ -124,12 +133,14 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
      end else if(byte_count<expected_bytes-4)begin
       rx_crc<=received_crc_next;
       if(ram_available&&byte_count<544)memory[byte_count-32]<=next_byte;
-     end else if(byte_count<expected_bytes)footer[(byte_count-(expected_bytes-4))*8+:8]<=next_byte;
+     end else if(byte_count<expected_bytes)case(footer_lane)
+       0:footer[7:0]<=next_byte;1:footer[15:8]<=next_byte;2:footer[23:16]<=next_byte;3:footer[31:24]<=next_byte;
+      endcase
      else bad<=1;
      if(byte_count<1023)byte_count<=byte_count+1;else bad<=1;
     end
    end
-   if(in_transaction&&fall&&tx_index<256)tx_index<=tx_index+1;
+
    if(select_end&&in_transaction)begin
     in_transaction<=0;
     if(transaction_s10)begin end // new handler owns validation and diagnostics
@@ -157,4 +168,32 @@ module score_spi_transport # (parameter integer WATCHDOG_CLOCKS=5000000, ENABLE_
      tx_index>=224 && tx_index<256 && response_crc_busy)
   $fatal(1,"SCORE_STATUS_CRC_DEADLINE");
  // synthesis translate_on
+endmodule
+
+module r24_spi_edges #(parameter integer COMM_SEPARATE=0)(
+ input wire clk,comm_clk,rst,sck,cs_n,mosi,
+ output wire rise,fall,start,finish,selected,bit_data,
+ output wire fast_start,fast_fall);
+ wire fclk=COMM_SEPARATE?comm_clk:clk;
+ (* syn_preserve=1 *) reg [2:0] ss,cs; reg [1:0] ms;
+ wire fr=ss[2:1]==2'b01, ff=ss[2:1]==2'b10;
+ wire fs=cs[2:1]==2'b10, fe=cs[2:1]==2'b01;
+ reg [3:0] toggles,seen; reg captured_bit;
+ always @(posedge fclk)begin
+  ss<={ss[1:0],sck};cs<={cs[1:0],cs_n};ms<={ms[0],mosi};
+  if(rst)begin ss<=0;cs<=7;ms<=0;toggles<=0;captured_bit<=0;end
+  else begin
+   if(fr)begin toggles[0]<=~toggles[0];captured_bit<=ms[1];end
+   if(ff)toggles[1]<=~toggles[1];
+   if(fs)toggles[2]<=~toggles[2];
+   if(fe)toggles[3]<=~toggles[3];
+  end
+ end
+ always @(posedge clk)if(rst)seen<=0;else seen<=toggles;
+ assign rise=COMM_SEPARATE?(toggles[0]^seen[0]):fr;
+ assign fall=COMM_SEPARATE?(toggles[1]^seen[1]):ff;
+ assign start=COMM_SEPARATE?(toggles[2]^seen[2]):fs;
+ assign finish=COMM_SEPARATE?(toggles[3]^seen[3]):fe;
+ assign selected=!cs[2];assign bit_data=COMM_SEPARATE?captured_bit:ms[1];
+ assign fast_start=fs;assign fast_fall=ff;
 endmodule

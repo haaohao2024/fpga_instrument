@@ -53,7 +53,7 @@ module visual_snapshot_engine #(
  visual_plot_memory wave_ram(.process_clk(clk),.write_enable(wave_we&&!rst),.write_address({back_bank,wave_address}),.write_data(wave_data),
   .process_read_address(11'd0),.process_read_data(),.pixel_clk(pixel_clk),.read_enable(wave_read_enable&&front_valid),
   .read_address({front_bank,wave_read_address}),.read_data(wave_read_data));
- visual_plot_memory xy_ram(.process_clk(clk),.write_enable(xy_write&&!rst),.write_address({back_bank,xy_write_address}),.write_data(xy_write_data),
+ visual_plot_memory #(.PROCESS_RW_PORT(1)) xy_ram(.process_clk(clk),.write_enable(xy_write&&!rst),.write_address({back_bank,xy_write_address}),.write_data(xy_write_data),
   .process_read_address({back_bank,xy_process_address}),.process_read_data(xy_previous),.pixel_clk(pixel_clk),.read_enable(xy_read_enable&&front_valid),
   .read_address({front_bank,xy_read_address}),.read_data(xy_read_data));
  visual_plot_memory #(.ADDRESS_BITS(9)) spectrum_ram(.process_clk(clk),.write_enable(spectrum_we&&!rst),.write_address({back_bank,spectrum_column}),.write_data(spectrum_data),

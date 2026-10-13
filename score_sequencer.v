@@ -1,5 +1,7 @@
 // Source1 scheduler. No direct Voice access; completion is a read-only fence.
-module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
+module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKEN_WIDTH=64, EARLY_DEADLINE=960)(
+ input wire audio_published,
+ output reg event_write_valid,output reg[3:0] event_write_index,output reg[95:0] event_write_data,input wire event_write_ready,
  input wire clk,rst,sample_tick,stereo_locked,
  input wire ctrl_valid,output wire ctrl_ready,input wire [7:0] ctrl_cmd,input wire [63:0] ctrl_epoch,ctrl_arg,
  input wire header_valid,eof_seen,input wire [63:0] last_verified_time,input wire [7:0] parser_error,
@@ -20,6 +22,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  output wire observe_teach,observe_loop
 );
  localparam [63:0] TOKEN_MAX=(TOKEN_WIDTH==64)?64'hffffffffffffffff:((64'd1<<TOKEN_WIDTH)-1);
+ reg wait_audible;
  reg [63:0] token_counter;
  reg [63:0] key_tokens[0:31] /* synthesis syn_ramstyle="distributed_ram" */;
  reg [31:0] tokens_initialized;
@@ -37,7 +40,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  reg [40:0] offered_header;
  assign event_packet[904:864]=offered_header;
  generate for(genvar s=0;s<9;s=s+1)begin: offered_word
-  assign event_packet[s*96+:96]=offered_header[s]?build_items[s*96+:96]:96'd0;
+  assign event_packet[s*96+:96]=!SHARED_STORE&&offered_header[s]?build_items[s*96+:96]:96'd0;
  end endgenerate
 
  // At the fixed 50 MHz / 48 kHz interface, the next sample edge is
@@ -54,14 +57,18 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  // Reserve dispatch for the due same-time score group, including gaps while
  // its next packet is built. Already accepted phone packets still finish.
  // No reservation for future-time records or an idle music frame.
- assign observe_dispatch_active=!rst && state==2 && window_open &&
-    (group_active || build_count!=0 || event_valid || outstanding!=0 ||
-     (record_valid && rec_time==music_time));
+ assign observe_dispatch_active=!rst && (SERIAL_CONTROL ?
+    ((state==2 && (resuming || group_active || build_count!=0 || event_valid || outstanding!=0 ||
+       (record_valid && rec_time<=music_time&&!wait_audible))) ||
+     (state==4 && (stop_phase!=2 || build_count!=0 || event_valid || outstanding!=0))) :
+    (state==2 && window_open && (group_active || build_count!=0 || event_valid || outstanding!=0 ||
+      (record_valid && rec_time==music_time))));
+ wire append_ready=!SHARED_STORE||!event_write_valid;
  wire destructive_control=ctrl_valid&&ctrl_ready&&(ctrl_cmd==3||ctrl_cmd==6||ctrl_cmd==7);
  assign ctrl_ready=!rst;
  assign parser_enable=state==1||state==2||state==3;
- assign record_ready=!rst&&!sample_tick&&state==2&&window_open&&!resuming&&!event_valid&&
-  outstanding<2&&!local_backlog&&rec_time==music_time&&!destructive_control&&!parser_error;
+ assign record_ready=append_ready&&!rst&&!sample_tick&&state==2&&window_open&&!resuming&&!event_valid&&
+  outstanding<2&&!local_backlog&&(!SERIAL_CONTROL||!wait_audible)&&(SERIAL_CONTROL?rec_time<=music_time:rec_time==music_time)&&!destructive_control&&!parser_error;
  wire [6:0] resume_notes[0:31];wire [7:0] resume_pressures[0:31];
  wire [63:0] next_token=token_counter+64'd1;
  generate for(genvar s=0;s<32;s=s+1)begin: resume_word
@@ -102,7 +109,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
  // Keep stale full tokens until the original reset; clearing logical held
  // state must not clear token ownership or change later OFF/expression data.
  wire token_write_record=!rst&&state==2&&record_ready&&record_valid&&op==1&&!teach&&token_counter!=TOKEN_MAX;
- wire token_write_resume=!rst&&state==2&&resuming&&window_open&&!sample_tick&&!event_valid&&
+ wire token_write_resume=append_ready&&!rst&&state==2&&resuming&&window_open&&!sample_tick&&!event_valid&&
   outstanding<2&&!local_backlog&&resume_key!=32&&logical_held[resume_key[4:0]]&&token_counter!=TOKEN_MAX;
  wire token_write=token_write_record||token_write_resume;
  wire [4:0] token_write_slot=token_write_resume?resume_key[4:0]:key[4:0];
@@ -119,8 +126,10 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
   // synthesis translate_off
   append_calls=0;
   // synthesis translate_on
+  if(event_write_valid&&event_write_ready)event_write_valid<=0;
   parser_clear<=0;
   if(rst)begin
+   wait_audible<=0;event_write_valid<=0;event_write_index<=0;event_write_data<=0;
    state<=0;error_code<=0;music_time<=0;epoch<=0;logical_held<=0;sound_held<=0;logical_notes<=0;logical_pressures<=0;guide_held<=0;guide_notes<=0;
    teach<=0;loop_mode<=0;window_open<=0;group_active<=0;window_used<=0;pause_requested<=0;resume_pending<=0;resuming<=0;natural_end<=0;
    stop_phase<=0;cleanup_key<=0;resume_key<=0;stop_destination<=0;build_items<=0;build_count<=0;event_valid<=0;offered_header<=0;
@@ -128,10 +137,12 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
    deadline_count<=0;token_exhaustions<=0;stops<=0;last_group_cycles<=0;frame_age<=0;system_sample<=0;parser_clear<=1;reload_request<=0;
 
   end else begin
+   if(SERIAL_CONTROL&&audio_published)wait_audible<=0;
+   if(state!=2)wait_audible<=0;
    if(sample_tick)begin
     system_sample<=system_sample+1;frame_age<=0;window_open<=0;
     if(state==2)begin
-     if(window_used&&(group_active||build_count!=0||event_valid||outstanding!=0))begin deadline_count<=deadline_count+1;begin_stop(0,8);end
+     if(!SERIAL_CONTROL&&window_used&&(group_active||build_count!=0||event_valid||outstanding!=0))begin deadline_count<=deadline_count+1;begin_stop(0,8);end
      else music_time<=music_time+1;
     end
     window_used<=0;
@@ -142,12 +153,13 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
     state<=2;music_time<=0;window_open<=1;window_used<=0;
    end
    if(state==2&&stereo_locked)begin window_open<=1;window_used<=0;end
-   if(state==2&&window_open&&record_valid&&rec_time<music_time)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
+   if(!SERIAL_CONTROL&&state==2&&window_open&&record_valid&&rec_time<music_time)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
    if(state==2&&window_open&&!record_valid&&visible_records==0&&!eof_seen&&last_verified_time<music_time)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
-   if(state==2&&window_open&&frame_age>=960&&(group_active||event_valid||outstanding!=0)&&window_used)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
+   if(!SERIAL_CONTROL&&state==2&&window_open&&frame_age>=EARLY_DEADLINE&&(group_active||event_valid||outstanding!=0)&&window_used)begin deadline_count<=deadline_count+1;begin_stop(0,8);end
    if(state==2&&record_ready&&record_valid)begin
     records_consumed<=records_consumed+1;window_used<=1;group_active<=!closed;
     if(closed)begin
+     if(SERIAL_CONTROL&&!teach&&op!=4)wait_audible<=1;
      last_group_cycles<=frame_age;
      // LED sees a complete chord state, never an intermediate partial group.
      guide_held<=logical_held;guide_notes<=logical_notes;
@@ -174,7 +186,7 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
     end
     if(pause_requested&&closed&&op!=4)begin pause_requested<=0;begin_stop(3,0);end
    end
-   if(state==4&&!event_valid)case(stop_phase)
+   if(state==4&&!event_valid&&append_ready)case(stop_phase)
     0:begin if(build_count!=0)offer_build();else begin stop_phase<=1;cleanup_key<=0;end end
     1:begin
      if(cleanup_key==32)begin if(build_count!=0)offer_build();else stop_phase<=2;end
@@ -192,9 +204,9 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
    if(state==3&&resume_pending&&stereo_locked)begin
     state<=2;resuming<=!teach;resume_key<=0;resume_pending<=0;window_open<=1;window_used<=!teach;
    end
-   if(state==2&&resuming&&window_open&&!sample_tick&&!event_valid&&outstanding<2&&!local_backlog)begin
+   if(state==2&&resuming&&append_ready&&window_open&&!sample_tick&&!event_valid&&outstanding<2&&!local_backlog)begin
     if(resume_key==32)begin
-     if(build_count!=0)offer_build();else if(outstanding==0)resuming<=0;
+     if(build_count!=0)offer_build();else if(outstanding==0)begin resuming<=0;if(SERIAL_CONTROL&&logical_held!=0)wait_audible<=1;end
     end else if(logical_held[resume_key[4:0]])begin
      if(token_counter==TOKEN_MAX)begin token_exhaustions<=token_exhaustions+1;begin_stop(0,9);end
      else begin token_counter<=next_token;sound_held[resume_key[4:0]]<=1;
@@ -224,13 +236,17 @@ module score_sequencer # (parameter integer TOKEN_WIDTH=64)(
     5:if(state==3)resume_pending<=1;
    endcase
    if(append_valid)begin
-    append_items=build_items;
-    for(integer s=0;s<9;s=s+1)if(build_count==s)append_items[s*96+:96]=append_data;
+    if(SHARED_STORE)begin
+     event_write_valid<=1;event_write_index<=build_count;event_write_data<=append_data;
+    end else begin
+     append_items=build_items;
+     for(integer s=0;s<9;s=s+1)if(build_count==s)append_items[s*96+:96]=append_data;
+    end
     append_count=build_count+1;
     if(append_flush || append_count==9)begin
      offered_header<={system_sample,((9'd1<<append_count)-1'b1)};
-     event_valid<=1;events_offered<=events_offered+1;build_count<=0;build_items<=append_items;
-    end else begin build_items<=append_items;build_count<=append_count;end
+     event_valid<=1;events_offered<=events_offered+1;build_count<=0;if(!SHARED_STORE)build_items<=append_items;
+    end else begin if(!SHARED_STORE)build_items<=append_items;build_count<=append_count;end
    end
    // synthesis translate_off
    if(append_calls>1)$fatal(1,"SCORE_APPEND_MULTIPLE_REQUESTS");

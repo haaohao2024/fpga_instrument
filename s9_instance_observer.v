@@ -113,7 +113,10 @@ endmodule
 // Current-session ownership metadata only. Allocation decisions remain frozen.
 // Captures press IDs against actual newly published tokens, including two ONs
 // of one key separated by OFF in the same packet. Release ownership is retained.
-module s9_instance_observer_prepared(
+module s9_instance_observer_prepared #(parameter integer PREPARE_PAN=0, REGISTER_PAN_BINDING=0)(
+ input wire [4:0] pan_commit_slot,output wire pan_commit_slot_live,
+ input wire pan_query_changed,
+ output wire pan_lookup_ready,
  input wire clk,rst,session_flush,session_ready,
  input wire query_prepare,query_consume,input wire [63:0] prepare_press,
  output reg query_prepared,
@@ -235,6 +238,8 @@ module s9_instance_observer_prepared(
  end
  // synthesis translate_on
 
+ assign pan_commit_slot_live=owned[pan_commit_slot]&&slot_valid[pan_commit_slot]&&
+  !slot_cancel[pan_commit_slot]&&slot_sources[pan_commit_slot*4+:4]==2;
  assign stable=!allocator_publish&&!published;
  assign owned_slots=owned;
  integer i,j;
@@ -261,6 +266,35 @@ module s9_instance_observer_prepared(
   reg [3:0] matched /* synthesis syn_keep=1 */;integer k;
   begin for(k=0;k<4;k=k+1)matched[k]=(a[k*2+:2]==b[k*2+:2]);equal8=&matched;end
  endfunction
+ // Prepare full identity prepared_matches while the command is frozen upstream.
+ // Publication holds stable low on P and P+1; by P+2 all comparison
+ // registers see the new public identities. Reclaim/Cancel remain live masks.
+ wire [31:0] pan_identity_match;
+ generate if(PREPARE_PAN)begin: prepared_pan
+  reg [31:0] prepared_matches;reg [79:0] key;reg initialized;reg bound;
+  always @(posedge clk)begin
+   if(rst||session_flush)begin initialized<=0;bound<=0;end
+   else begin
+    initialized<=1;bound<=!pan_query_changed;key<={pan_generation,pan_instance_id};
+    for(integer k=0;k<32;k=k+1)
+     prepared_matches[k]<=equal64(slot_ids[k*64+:64],pan_instance_id)&&equal16(slot_generations[k*16+:16],pan_generation);
+   end
+  end
+  assign pan_lookup_ready=initialized&&(REGISTER_PAN_BINDING?bound:(key=={pan_generation,pan_instance_id}));
+  assign pan_identity_match=prepared_matches;
+  // synthesis translate_off
+  always @(posedge clk)if(!rst&&!session_flush&&pan_lookup_ready)
+   if(key!=={pan_generation,pan_instance_id})$fatal(1,"CFG_PAN_PREPARED_BINDING");
+  always @(posedge clk)if(!rst&&!session_flush&&stable&&pan_lookup_ready)
+   for(integer k=0;k<32;k=k+1)
+    if(prepared_matches[k]!==((slot_ids[k*64+:64]==pan_instance_id)&&(slot_generations[k*16+:16]==pan_generation)))
+     $fatal(1,"CFG_PAN_PREPARED_IDENTITY slot=%0d",k);
+  // synthesis translate_on
+ end else begin: combinational_pan
+  assign pan_lookup_ready=1'b1;
+  for(genvar k=0;k<32;k=k+1)
+   assign pan_identity_match[k]=equal64(slot_ids[k*64+:64],pan_instance_id)&&equal16(slot_generations[k*16+:16],pan_generation);
+ end endgenerate
  reg [31:0] query_matches,pan_matches;
  wire [31:0] query_winner;
  generate for(genvar k=0;k<32;k=k+1)begin: first_query_winner
@@ -272,7 +306,7 @@ module s9_instance_observer_prepared(
   if(session_ready&&stable)for(integer k=0;k<32;k=k+1)begin
    if(owned[k]&&slot_valid[k]&&!slot_cancel[k]&&slot_sources[k*4+:4]==2)begin
     if(equal8(slot_keys[k*8+:8],query_key)&&press_public_match[k])query_matches[k]=1;
-    if(equal64(slot_ids[k*64+:64],pan_instance_id)&&equal16(slot_generations[k*16+:16],pan_generation))pan_matches[k]=1;
+    if(pan_lookup_ready&&pan_identity_match[k])pan_matches[k]=1;
    end
   end
  end
@@ -323,5 +357,5 @@ module r16_phone_identity_probe(
  output reg pan_found,output reg[4:0] pan_slot,
  output wire[31:0] owned_slots
 );
-s9_instance_observer_prepared impl(.*);
+s9_instance_observer_prepared impl(.pan_commit_slot(5'd0),.pan_commit_slot_live(),.pan_query_changed(1'b0),.pan_lookup_ready(),.*);
 endmodule

@@ -35,8 +35,9 @@ module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
     reg [13:0] d_old,d_new;
     reg [10:0] d_position;
     reg d_transition;
-    reg signed [31:0] d_first[0:1],d_second[0:1],d_send[0:1],d_wet[0:1];
-    reg signed [47:0] d_input_product[0:1],d_return[0:1];
+    reg signed [17:0] d_first[0:1],d_second[0:1],d_send[0:1],d_wet[0:1];
+    reg signed [32:0] d_input_product[0:1];
+    reg signed [28:0] d_return[0:1];
     reg signed [17:0] d_write[0:1];
     wire signed [17:0] d_read_l,d_read_r;
     wire d_read_valid_l,d_read_valid_r;
@@ -49,17 +50,19 @@ module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
     reg [10:0] c_position;
     reg c_transition;
     reg [31:0] c_delay[0:3];
-    reg signed [31:0] c_floor[0:3],c_ceil[0:3],c_interp[0:3];
-    reg signed [31:0] c_send[0:1],c_wet[0:1];
-    reg signed [47:0] c_return[0:1];
+    reg signed [17:0] c_floor[0:3],c_ceil[0:3],c_interp[0:3];
+    reg signed [17:0] c_send[0:1],c_wet[0:1];
+    reg signed [28:0] c_return[0:1];
     wire signed [17:0] c_read_l,c_read_r;
     wire c_read_valid_l,c_read_valid_r;
     wire c_read_enable=busy && cycle>=33 && cycle<=36;
     wire [14:0] c_lag_l=(cycle<35 ? c_delay[0][30:16] : c_delay[2][30:16])+((cycle==34 || cycle==36)?15'd1:15'd0);
     wire [14:0] c_lag_r=(cycle<35 ? c_delay[1][30:16] : c_delay[3][30:16])+((cycle==34 || cycle==36)?15'd1:15'd0);
-    reg signed [31:0] r_send[0:1],r_tap[0:3],r_h[0:3],r_b[0:3],r_wet[0:1];
+    reg signed [17:0] r_send[0:1],r_tap[0:3],r_b[0:3],r_wet[0:1];
+    reg signed [18:0] r_h[0:3];
     reg signed [17:0] r_write[0:3],r_tone[0:1];
-    reg signed [47:0] r_tone_input[0:1],r_return[0:1];
+    reg signed [32:0] r_tone_input[0:1];
+    reg signed [28:0] r_return[0:1];
     wire signed [17:0] r_read[0:3];
     wire [3:0] r_read_valid;
     reg [31:0] job_version;
@@ -110,16 +113,12 @@ module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
     fx_history18 #(.DEPTH(2048),.LENGTH(2048),.AW(11)) chorus_r(
         .clk(clk),.rst(rst),.clear(clear_pulse[1]),.read_en(c_read_enable),.read_lag(c_lag_r),
         .read_data(c_read_r),.read_valid(c_read_valid_r),.write_en(busy && cycle==45),.write_data(c_send[1][17:0]));
-    genvar line;
-    generate for(line=0;line<4;line=line+1)begin: reverb
-        localparam integer N=(line==0)?1567:(line==1)?1789:(line==2)?1999:2137;
-        localparam [14:0] LAG=N;
-        fx_history18 #(.DEPTH(line==3?4096:2048),.LENGTH(N),.AW(line==3?12:11)) history(
-            .clk(clk),.rst(rst),.clear(clear_pulse[2]),
-            .read_en(busy && cycle==(line<2?55:56)),.read_lag(LAG),
-            .read_data(r_read[line]),.read_valid(r_read_valid[line]),
-            .write_en(busy && cycle==(line<2?68:69)),.write_data(r_write[line]));
-    end endgenerate
+    wire [3:0] r_write_enable={ {2{busy && cycle==69}}, {2{busy && cycle==68}} };
+    wire [3:0] r_read_enable={ {2{busy && cycle==56}}, {2{busy && cycle==55}} };
+    r32_reverb_history history_bank(.clk(clk),.rst(rst),.clear(clear_pulse[2]),
+      .read_en(r_read_enable),.write_en(r_write_enable),
+      .write_data({r_write[3],r_write[2],r_write[1],r_write[0]}),
+      .read_data({r_read[3],r_read[2],r_read[1],r_read[0]}),.read_valid(r_read_valid));
     always @* begin
         ma0=0;ma1=0;mb0=0;mb1=0;
         if(busy)case(cycle)
@@ -330,6 +329,14 @@ module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
         end
     end
     // synthesis translate_off
+    always @(posedge clk)if(!rst&&busy)begin
+      if(cycle==7||cycle==11||cycle==19||cycle==20||cycle==39||cycle==41||cycle==44)
+        if(post_value0>131071||post_value0< -131072||post_value1>131071||post_value1< -131072)$fatal(1,"FX_INTERMEDIATE_18_RANGE");
+      if(cycle==14||cycle==88)
+        if(mq0>48'sd4294967295||mq0< -48'sd4294967296||mq1>48'sd4294967295||mq1< -48'sd4294967296)$fatal(1,"FX_PRODUCT_33_RANGE");
+      if(cycle==92||cycle==93||cycle==94)
+        if(post_value0>48'sd268435455||post_value0< -48'sd268435456||post_value1>48'sd268435455||post_value1< -48'sd268435456)$fatal(1,"FX_RETURN_29_RANGE");
+    end
     initial if(MIX_SHIFT<0 || MIX_SHIFT>23)$fatal(1,"Effects MIX_SHIFT must be 0..23");
     // synthesis translate_on
 endmodule

@@ -1,5 +1,6 @@
 #include "s9_router.h"
 #include <string.h>
+static int history_pinned(const s9_router *,unsigned,uint32_t);
 void s9_make_result(uint8_t out[36],uint8_t channel,uint32_t sequence,unsigned phase,int error){
  memset(out,0,36);s9_put32(out,sequence);out[4]=channel;out[5]=(uint8_t)phase;s9_put16(out+6,(uint16_t)error);
 }
@@ -53,7 +54,7 @@ int s9_router_fragment(s9_router *s,uint32_t generation,uint8_t channel,const ui
  for(unsigned i=0;i<S9_ROUTER_SLOTS;i++){
   s9_router_entry *e=&s->entry[i];
   if(!e->used){slot=(int)i;break;}
-  if(e->terminal&&!e->dirty&&e->order<age){slot=(int)i;age=e->order;}
+  if(e->terminal&&!e->dirty&&!history_pinned(s,e->request[5],s9_get32(e->request+24))&&e->order<age){slot=(int)i;age=e->order;}
  }
  if(slot<0)return transient(s,channel,message.sequence,S9_E_BUSY);
  s9_router_entry *e=&s->entry[slot];memset(e,0,sizeof *e);memcpy(e->request,raw,count);
@@ -121,4 +122,47 @@ int s9_router_notice(s9_router *s,uint8_t *out,unsigned capacity){
  if(chosen<0)s->error_dirty=0;
  else{s->entry[chosen].dirty=0;s->notification_cursor=(chosen+1)%S9_ROUTER_SLOTS;}
  return n;
+}
+
+/* Queries and barriers observe software history populated only by real FPGA
+ * completions. A waiting barrier pins its target against cache eviction. */
+static int history_pinned(const s9_router *s,unsigned ch,uint32_t sequence){
+ for(unsigned i=0;i<S9_ROUTER_SLOTS;i++){
+  const s9_router_entry *e=&s->entry[i];
+  if(e->used&&!e->terminal&&e->request[5]==S9_CH_CFG&&
+     (e->request[6]==S9_OP_BARRIER||e->request[6]==S9_OP_QUERY_RESULT)){
+   const uint8_t *p=e->request+32;
+   if(p[0]==ch&&s9_get32(p+(e->request[6]==S9_OP_BARRIER?4:1))==sequence)return 1;
+  }
+ }
+ return 0;
+}
+static void software_control_result(s9_router *s,unsigned i,unsigned phase,int error){
+ s9_router_entry *e=&s->entry[i];uint8_t r[36];
+ s9_make_result(r,e->request[5],s9_get32(e->request+24),phase,error);
+ (void)s9_router_result(s,s->generation,s->session,r);
+}
+int s9_router_control_dispatch(s9_router *s,unsigned i){
+ if(i>=S9_ROUTER_SLOTS)return 0;
+ s9_router_entry *e=&s->entry[i];
+ if(!s->ready||!e->used||e->sent||e->terminal||e->request[5]!=S9_CH_CFG)return 0;
+ unsigned op=e->request[6];if(op!=S9_OP_QUERY_RESULT&&op!=S9_OP_BARRIER)return 0;
+ s9_router_sent(s,i);
+ const uint8_t *p=e->request+32;int target=find(s,p[0],s9_get32(p+(op==S9_OP_BARRIER?4:1)));
+ if(target<0||target==(int)i){software_control_result(s,i,7,S9_E_EXPIRED);return 1;}
+ if(op==S9_OP_QUERY_RESULT){s->entry[target].dirty=1;software_control_result(s,i,3,0);}
+ else {software_control_result(s,i,2,0);s9_router_control_step(s);}
+ return 1;
+}
+void s9_router_control_step(s9_router *s){
+ if(!s->ready)return;
+ for(unsigned i=0;i<S9_ROUTER_SLOTS;i++){
+  s9_router_entry *e=&s->entry[i];
+  if(!e->used||!e->sent||e->terminal||e->request[5]!=S9_CH_CFG||e->request[6]!=S9_OP_BARRIER)continue;
+  const uint8_t *p=e->request+32;int target=find(s,p[0],s9_get32(p+4));
+  if(target<0){software_control_result(s,i,7,S9_E_EXPIRED);continue;}
+  unsigned phase=s->entry[target].result[5];
+  if(phase>=6)software_control_result(s,i,7,S9_E_STATE);
+  else if(phase>=p[1])software_control_result(s,i,3,0);
+ }
 }
