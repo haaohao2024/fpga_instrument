@@ -1,6 +1,6 @@
 // 50MHz oversampled Mode0 shared-SPI slave. RAM content is never reset.
 // A page is visible only after both complete transaction and CRC validation.
-module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0, STREAM_STATUS_CRC=0)(
+module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARATE=0, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0, STREAM_STATUS_CRC=0)(
  input wire comm_clk,clk,rst,spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,
  output wire spi_miso,spi_miso_oe,
  output wire [255:0] observe_status_bytes,
@@ -14,7 +14,7 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
  output reg [63:0] active_epoch,
  output reg [31:0] accepted_pages,rejected_transactions,cs_conflicts,
  output reg link_timeout
- ,input wire field_busy
+ ,input wire field_busy,input wire [540:0] shared_score_rx
 );
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
@@ -22,15 +22,24 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
  reg [1:0] ds;
  wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall;
  wire serial_clk=COMM_SEPARATE?comm_clk:clk;
+ generate if(!EXTERNAL_SCORE_RX)begin: own_front
  r24_spi_edges #(.COMM_SEPARATE(COMM_SEPARATE)) phy(.clk(clk),.comm_clk(comm_clk),.rst(rst),
  .sck(spi_sck),.cs_n(fpga_cs_n),.mosi(spi_mosi),.rise(rise),.fall(fall),.start(select_start),.finish(select_end),
  .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall));
+ end else begin: shared_front
+  assign {fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fall,rise}=shared_score_rx[7:0];
+ end endgenerate
 
  reg [7:0] memory[0:511];
- reg [255:0] header,response;
+ reg [255:0] local_header,local_response;
+ wire [255:0] header=EXTERNAL_SCORE_RX?shared_score_rx[284:29]:local_header;
+ wire [255:0] response=EXTERNAL_SCORE_RX?shared_score_rx[540:285]:local_response;
  reg [31:0] rx_crc,footer,last_sequence;
- reg [9:0] byte_count,expected_bytes;
- reg [2:0] bit_count;reg [7:0] rx_shift;
+ reg [9:0] local_byte_count,expected_bytes;
+ wire [9:0] byte_count=EXTERNAL_SCORE_RX?shared_score_rx[28:19]:local_byte_count;
+ reg [2:0] local_bit_count;reg [7:0] local_rx_shift;
+ wire [2:0] bit_count=EXTERNAL_SCORE_RX?shared_score_rx[18:16]:local_bit_count;
+ wire [7:0] rx_shift=EXTERNAL_SCORE_RX?shared_score_rx[15:8]:local_rx_shift;
  reg [8:0] tx_index;
  reg in_transaction,bad,ram_available,page_busy;
  reg transaction_s10;
@@ -68,7 +77,7 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
  wire [7:0] frozen_crc_byte=response[{~response_crc_index,3'b111}-:8];
  wire [31:0] scheduled_crc_next=crcbyte(receive_crc_step?rx_crc:response_crc_value,
      receive_crc_step?next_byte:frozen_crc_byte);
- wire [31:0] received_crc_next=STREAM_STATUS_CRC?scheduled_crc_next:crcbyte(rx_crc,next_byte);
+ wire [31:0] received_crc_next=EXTERNAL_SCORE_RX?crcbyte(rx_crc,next_byte):STREAM_STATUS_CRC?scheduled_crc_next:crcbyte(rx_crc,next_byte);
  wire [31:0] completed_response_crc=~scheduled_crc_next;
  always @(posedge serial_clk)begin
   if(rst||fast_start)tx_index<=0;
@@ -81,16 +90,16 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
   if(rst)begin
    response_crc_busy<=0;response_crc_index<=0;response_crc_value<=32'hffffffff;
    ds<=3;ctrl_valid<=0;page_valid<=0;page_busy<=0;
-   transaction_s10<=0;header<=0;response<=0;rx_crc<=32'hffffffff;footer<=0;last_sequence<=32'hffffffff;
-   byte_count<=0;bit_count<=0;expected_bytes<=36;in_transaction<=0;bad<=0;
+   transaction_s10<=0;local_header<=0;local_response<=0;rx_crc<=32'hffffffff;footer<=0;last_sequence<=32'hffffffff;
+   local_byte_count<=0;local_bit_count<=0;expected_bytes<=36;in_transaction<=0;bad<=0;
    active_epoch<=0;accepted_pages<=0;rejected_transactions<=0;cs_conflicts<=0;
    watchdog<=0;link_timeout<=0;pending_epoch<=0;pending_sequence<=0;
-   ctrl_cmd<=0;ctrl_epoch<=0;ctrl_arg<=0;page_sequence<=0;ram_available<=0;rx_shift<=0;
+   ctrl_cmd<=0;ctrl_epoch<=0;ctrl_arg<=0;page_sequence<=0;ram_available<=0;local_rx_shift<=0;
   end else begin
-   if(STREAM_STATUS_CRC && response_crc_busy && !receive_crc_step && !select_start)begin
+   if(STREAM_STATUS_CRC && !EXTERNAL_SCORE_RX && response_crc_busy && !receive_crc_step && !select_start)begin
     response_crc_value<=scheduled_crc_next;
     if(response_crc_index==27)begin
-     for(integer b=0;b<4;b++)response[31-b*8-:8]<=completed_response_crc[b*8+:8];
+     for(integer b=0;b<4;b++)local_response[31-b*8-:8]<=completed_response_crc[b*8+:8];
      response_crc_busy<=0;
     end else response_crc_index<=response_crc_index+1'b1;
    end
@@ -109,19 +118,19 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
     else rejected_transactions<=rejected_transactions+1;
    end
    if(select_start)begin
-    if(STREAM_STATUS_CRC)begin response_crc_busy<=1;response_crc_index<=0;response_crc_value<=32'hffffffff;end
-    in_transaction<=1;transaction_s10<=0;header<=0;footer<=0;byte_count<=0;bit_count<=0;rx_shift<=0;
+    if(STREAM_STATUS_CRC&&!EXTERNAL_SCORE_RX)begin response_crc_busy<=1;response_crc_index<=0;response_crc_value<=32'hffffffff;end
+    in_transaction<=1;transaction_s10<=0;local_header<=0;footer<=0;local_byte_count<=0;local_bit_count<=0;local_rx_shift<=0;
     expected_bytes<=36;rx_crc<=32'hffffffff;bad<=!ds[1];ram_available<=!page_busy&&page_ready;
     // Reverse byte order for wire MSB-first, without reversing bits within a byte.
-    for(j=0;j<32;j=j+1)response[255-j*8-:8]<=status_tmp[j*8+:8];
+    for(j=0;j<32;j=j+1)local_response[255-j*8-:8]<=status_tmp[j*8+:8];
     if(!ds[1])cs_conflicts<=cs_conflicts+1;
    end
    if(in_transaction&&!ds[1]&&!bad)begin bad<=1;cs_conflicts<=cs_conflicts+1;end
    if(in_transaction&&phy_selected&&rise)begin
-    rx_shift<=next_byte;bit_count<=bit_count+1'b1;
+    local_rx_shift<=next_byte;local_bit_count<=bit_count+1'b1;
     if(bit_count==7)begin
      if(byte_count<32)begin
-      for(integer hb=0;hb<32;hb=hb+1)if(byte_count==hb)header[hb*8+:8]<=next_byte;
+      for(integer hb=0;hb<32;hb=hb+1)if(byte_count==hb)local_header[hb*8+:8]<=next_byte;
       rx_crc<=received_crc_next;
       if(ENABLE_S10_ROUTE && byte_count==3 && ({next_byte,header[23:0]}==32'h50303153||{next_byte,header[23:0]}==32'h50313153))transaction_s10<=1;
       if(byte_count==31 && !transaction_s10)begin
@@ -137,7 +146,7 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
        0:footer[7:0]<=next_byte;1:footer[15:8]<=next_byte;2:footer[23:16]<=next_byte;3:footer[31:24]<=next_byte;
       endcase
      else bad<=1;
-     if(byte_count<1023)byte_count<=byte_count+1;else bad<=1;
+     if(byte_count<1023)local_byte_count<=byte_count+1;else bad<=1;
     end
    end
 
@@ -164,7 +173,7 @@ module score_spi_transport # (parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS
   end
  end
  // synthesis translate_off
- always @(posedge clk)if(!rst && STREAM_STATUS_CRC && in_transaction &&
+ always @(posedge clk)if(!rst && STREAM_STATUS_CRC && !EXTERNAL_SCORE_RX && in_transaction &&
      tx_index>=224 && tx_index<256 && response_crc_busy)
   $fatal(1,"SCORE_STATUS_CRC_DEADLINE");
  // synthesis translate_on

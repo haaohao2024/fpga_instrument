@@ -1,6 +1,6 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage8 #(
-    parameter integer STREAM_PHONE=0,COMM_SEPARATE=0,
+    parameter integer EXTERNAL_SCORE_RX=0,STREAM_PHONE=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
@@ -158,11 +158,11 @@ module instrument_core_stage8 #(
     output wire [223:0] observe_slot_notes,
     output wire [255:0] observe_slot_pressures,
     output wire [287:0] observe_current_pan,
-    output wire [103:0] observe_gain_state
+    output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
- instrument_core_stage7 #(.STREAM_PHONE(STREAM_PHONE),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage7 #(.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.STREAM_PHONE(STREAM_PHONE),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
-  .CLK_FREQ_HZ(CLK_FREQ_HZ),.ADC_ZERO(ADC_ZERO),.ADC_FULL(ADC_FULL),.DEADZONE(DEADZONE),.PRESS_THRESHOLD(PRESS_THRESHOLD),.RELEASE_THRESHOLD(RELEASE_THRESHOLD),.VIBRATO_STEP(VIBRATO_STEP),.OCTAVE_MIN(OCTAVE_MIN),.OCTAVE_MAX(OCTAVE_MAX),.MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.ENABLE_REMOTE(ENABLE_REMOTE)) u_audio (
+  .CLK_FREQ_HZ(CLK_FREQ_HZ),.ADC_ZERO(ADC_ZERO),.ADC_FULL(ADC_FULL),.DEADZONE(DEADZONE),.PRESS_THRESHOLD(PRESS_THRESHOLD),.RELEASE_THRESHOLD(RELEASE_THRESHOLD),.VIBRATO_STEP(VIBRATO_STEP),.OCTAVE_MIN(OCTAVE_MIN),.OCTAVE_MAX(OCTAVE_MAX),.MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.ENABLE_REMOTE(ENABLE_REMOTE)) u_audio (.shared_score_rx(shared_score_rx),
   .r18_snapshot_valid(r18_snapshot_valid),
   .r18_snapshot_ready(r18_snapshot_ready),
   .r18_query_valid(r18_query_valid),

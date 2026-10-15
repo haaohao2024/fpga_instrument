@@ -1,4 +1,4 @@
-module score_subsystem #(parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,COMM_SEPARATE=0,
+module score_subsystem #(parameter integer EXTERNAL_SCORE_RX=0,SERIAL_CONTROL=0,SHARED_STORE=0,COMM_SEPARATE=0,
  parameter integer CLK_FREQ_HZ=50_000_000,TOKEN_WIDTH=64, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_S11=0, STREAM_STATUS_CRC=0, EARLY_DEADLINE=960)(
  output wire event_write_valid,output wire[3:0] event_write_index,output wire[95:0] event_write_data,input wire event_write_ready,
  input wire comm_clk, input wire clk,rst,sample_tick,stereo_locked,
@@ -13,7 +13,7 @@ module score_subsystem #(parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,COMM_
  output wire observe_dispatch_active,
  output wire observe_teach,observe_loop,
  input wire field_valid,field_start,input wire [1:0] field_size,
- output wire field_ready,field_active,field_rejected,field_committed,field_running
+ output wire field_ready,field_active,field_rejected,field_committed,field_running,input wire [540:0] shared_score_rx
 );
  wire cv,cr,pv,pr,pdone,pok,pc,pe,rv,rr,hv,eof;
  wire [7:0] cmd,parser_error;wire [63:0] ep,arg,active_epoch,end_time,last_time;
@@ -53,7 +53,7 @@ module score_subsystem #(parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,COMM_
   assign field_rv=0;assign field_record=0;assign field_visible=0;assign field_voices=0;
  end endgenerate
  wire clear=pc||(cv&&cr&&(cmd==3||cmd==6||cmd==7));
- score_spi_transport #(.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(WATCHDOG_CLOCKS),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_FIELD(ENABLE_S11),.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) transport(
+ score_spi_transport #(.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(WATCHDOG_CLOCKS),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_FIELD(ENABLE_S11),.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) transport(.shared_score_rx(shared_score_rx),
   .comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.fpga_cs_n(fpga_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.observe_status_bytes(observe_score_status),.ctrl_valid(cv),.ctrl_ready(cr),.ctrl_cmd(cmd),.ctrl_epoch(ep),.ctrl_arg(arg),
   .page_valid(pv),.page_ready(pr),.page_sequence(seq),.page_done(pdone),.page_ok(pok),.page_addr(addr),.page_data(data),
@@ -68,7 +68,7 @@ module score_subsystem #(parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,COMM_
   .clk(clk),.rst(rst),.clear(clear),.s_valid(rv),.s_ready(rr),.s_record(record_in),
   .m_valid(mvalid),.m_ready(fifo_ready),.m_record(record_out),.occupancy(occupancy),.visible_records(visible),
   .inserted(inserted),.consumed(consumed),.preview_valid(preview_valid),.preview_time(preview_time),.preview_notes(preview_notes));
- score_sequencer #(.SERIAL_CONTROL(SERIAL_CONTROL),.SHARED_STORE(SHARED_STORE),.TOKEN_WIDTH(TOKEN_WIDTH),.EARLY_DEADLINE(EARLY_DEADLINE)) player(.audio_published(audio_published),.event_write_valid(event_write_valid),.event_write_index(event_write_index),.event_write_data(event_write_data),.event_write_ready(event_write_ready),
+ score_sequencer #(.PARALLEL_PRESSURE_VIEW(0),.SERIAL_CONTROL(SERIAL_CONTROL),.SHARED_STORE(SHARED_STORE),.TOKEN_WIDTH(TOKEN_WIDTH),.EARLY_DEADLINE(EARLY_DEADLINE)) player(.audio_published(audio_published),.event_write_valid(event_write_valid),.event_write_index(event_write_index),.event_write_data(event_write_data),.event_write_ready(event_write_ready),
   .clk(clk),.rst(rst),.sample_tick(sample_tick),.stereo_locked(stereo_locked),.ctrl_valid(player_cv),.ctrl_ready(player_cr),
   .ctrl_cmd(player_cmd),.ctrl_epoch(player_ep),.ctrl_arg(player_arg),.header_valid(field_active?field_hv:hv),.eof_seen(field_active?field_eof:eof),.last_verified_time(field_active?field_verified:last_time),.parser_error(field_active?8'd0:parser_error),
   .parser_clear(pc),.parser_enable(pe),.record_valid(field_active?field_rv:mvalid),.record_ready(mready),.record_data(field_active?field_record:record_out),.visible_records(field_active?field_visible:visible),

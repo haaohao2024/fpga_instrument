@@ -1,6 +1,6 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage9 #(
-    parameter integer COMM_SEPARATE=0,
+    parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
@@ -147,7 +147,7 @@ module instrument_core_stage9 #(
     output wire [6:0] observe_gain_remaining,
     output wire [55:0] observe_keymap,
     output wire [31:0] observe_keymap_version,
-    output wire [103:0] observe_gain_state
+    output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
  wire  phone_session_flush;
  wire  phone_session_ready;
@@ -260,7 +260,7 @@ module instrument_core_stage9 #(
   .field_valid(field_cfg_valid),.field_start(field_cfg_start),.field_size(field_cfg_size),.field_ready(ENABLE_S11?field_ready:1'b1),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .result_valid(cfg_result_valid),.result_ready(cfg_result_ready),.result_slot(cfg_result_slot),.result_sequence(cfg_result_sequence),.result_bytes(cfg_result_bytes),.result_final(cfg_result_final));
- instrument_core_stage8 #(.STREAM_PHONE(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage8 #(.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.STREAM_PHONE(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -272,7 +272,7 @@ module instrument_core_stage9 #(
   .OCTAVE_MIN(OCTAVE_MIN),
   .OCTAVE_MAX(OCTAVE_MAX),
   .MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),
-  .ENABLE_REMOTE(1)) core(
+  .ENABLE_REMOTE(1)) core(.shared_score_rx(shared_score_rx),
   .r18_snapshot_valid(r18_snapshot_valid),
   .r18_snapshot_ready(r18_snapshot_ready),
   .r18_query_valid(r18_query_valid),

@@ -23,10 +23,13 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  localparam [31:0] ZERO_PACKET_RAW=32'h538d84e8; // raw CRC residue continued through 512 zeros
  localparam [31:0] SHORT_PACKET_CRC=32'h2144df1c; // complement of header64 raw residue DEBB20E3
  reg [1:0] scan_state;reg [9:0] scan_index;reg [31:0] scan_crc,payload_crc;
- reg prepared;reg [63:0] prepared_id,scan_id;
- reg [31:0] prepared_sequence,scan_sequence;reg [15:0] scan_bytes;
- reg [7:0] prepared_kind,scan_kind;reg [15:0] prepared_bytes,prepared_items,scan_items;
- reg [63:0] prepared_first_frame,scan_first_frame;
+ reg prepared;reg [63:0] scan_id;
+ reg [31:0] scan_sequence;reg [15:0] scan_bytes;
+ reg [7:0] scan_kind;reg [15:0] scan_items;
+ // Completed CRC and active scan never own different live blocks.
+ // A new scan starts only after the prepared flag is invalidated, and
+ // cannot overwrite the context of an advertised in-flight payload.
+ reg [63:0] scan_first_frame;
  reg [511:0] header,header_snapshot;reg [31:0] hcrc,packet_crc_snapshot;
  reg payload_snapshot;reg [15:0] payload_bytes_snapshot;
  reg [31:0] header_crc;reg [5:0] header_crc_index;reg header_crc_busy;
@@ -38,8 +41,8 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  wire [31:0] shared_crc_next=crcbyte(payload_crc_step?scan_crc:header_crc,
   payload_crc_step?(scan_index<scan_bytes?peek_byte_data:8'd0):header_snapshot[header_crc_index*8+:8]);
  integer j;
- wire match_payload=block_valid&&prepared&&prepared_id==recorder_id&&prepared_sequence==block_sequence&&
-  prepared_kind==block_kind&&prepared_bytes==block_bytes&&prepared_items==block_items&&prepared_first_frame==block_first_frame;
+ wire match_payload=block_valid&&prepared&&scan_id==recorder_id&&scan_sequence==block_sequence&&
+  scan_kind==block_kind&&scan_bytes==block_bytes&&scan_items==block_items&&scan_first_frame==block_first_frame;
  assign payload_ready=match_payload;
  wire [9:0] wire_byte=tx_bit_index>>3;
  // At bit4 request the following byte; capture at bit7's falling edge.
@@ -74,9 +77,9 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  end
  always @(posedge clk)begin
   if(rst)begin scan_state<=0;scan_index<=0;scan_crc<=0;payload_crc<=0;prepared<=0;
-   prepared_id<=0;prepared_sequence<=0;scan_id<=0;scan_sequence<=0;scan_bytes<=0;
-   prepared_kind<=0;scan_kind<=0;prepared_bytes<=0;prepared_items<=0;scan_items<=0;
-   prepared_first_frame<=0;scan_first_frame<=0;
+   scan_id<=0;scan_sequence<=0;scan_bytes<=0;
+   scan_kind<=0;scan_items<=0;
+   scan_first_frame<=0;
    header_snapshot<=0;packet_crc_snapshot<=0;payload_snapshot<=0;payload_bytes_snapshot<=0;
    header_crc<=32'hffffffff;header_crc_index<=0;header_crc_busy<=0;end
   else begin
@@ -104,8 +107,8 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
      scan_crc<=STREAM_HEADER_CRC?shared_crc_next:crcbyte(scan_crc,scan_index<scan_bytes?peek_byte_data:8'd0);
      if(scan_index==511)begin
       payload_crc<=STREAM_HEADER_CRC?shared_crc_next:crcbyte(scan_crc,scan_index<scan_bytes?peek_byte_data:8'd0);
-      prepared_id<=scan_id;prepared_sequence<=scan_sequence;prepared<=1;scan_state<=0;
-      prepared_kind<=scan_kind;prepared_bytes<=scan_bytes;prepared_items<=scan_items;prepared_first_frame<=scan_first_frame;
+      prepared<=1;scan_state<=0;
+      
      end else begin scan_index<=scan_index+1'b1;scan_state<=1;end
     end
    end

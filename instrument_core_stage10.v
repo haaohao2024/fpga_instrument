@@ -156,6 +156,7 @@ module instrument_core_stage10 #(
  wire stream_ctrl_valid,stream_ctrl_ready,stream_ctrl_track,external_valid,external_ready;
  wire [1:0] stream_ctrl_cmd;wire [63:0] stream_ctrl_epoch,external_epoch;
  wire [31:0] stream_ctrl_rate;wire signed [15:0] external_l,external_r;
+ wire [540:0] shared_score_rx;
  wire legacy_miso,legacy_oe,media_miso,media_oe,route_s10;
  wire [1:0] media_state,media_banks;wire [8:0] media_credit,media_reserved,media_resident;
  wire [31:0] media_last_sequence;wire [63:0] media_epoch,media_source_start;
@@ -164,7 +165,7 @@ module instrument_core_stage10 #(
  // Its front 32 bytes are the same score snapshot as the legacy response.
  assign spi_miso=(!score_cs_n&&route_s10)?media_miso:legacy_miso;
  assign spi_miso_oe=(!score_cs_n&&route_s10)?media_oe:legacy_oe;
- s10_pcm_transport #(.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/100),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
+ s10_pcm_transport #(.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/100),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.shared_score_rx(shared_score_rx),.comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
   .control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .legacy_status_bytes(observe_score_status),.stream_buffered(observe_stream_buffered),
   .stream_generation(observe_stream_generation),.stream_state(observe_stream_state),.cancel(1'b0),
@@ -202,7 +203,7 @@ module instrument_core_stage10 #(
   .record_block_items(record_block_items),
   .record_peek_address(record_peek_address),
   .record_peek_data(record_peek_data));
- instrument_core_stage9 #(.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage9 #(.EXTERNAL_SCORE_RX(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
  .CLK_FREQ_HZ(CLK_FREQ_HZ),
  .ADC_ZERO(ADC_ZERO),
@@ -214,7 +215,7 @@ module instrument_core_stage10 #(
  .OCTAVE_MIN(OCTAVE_MIN),
  .OCTAVE_MAX(OCTAVE_MAX),
  .MIX_SHIFT(MIX_SHIFT),
- .ENABLE_S10_ROUTE(1),.ENABLE_S11(ENABLE_S11)) base(
+ .ENABLE_S10_ROUTE(1),.ENABLE_S11(ENABLE_S11)) base(.shared_score_rx(shared_score_rx),
   .r18_snapshot_valid(r18_snapshot_valid),
   .r18_snapshot_ready(r18_snapshot_ready),
   .r18_query_valid(r18_query_valid),

@@ -129,14 +129,31 @@ module r28_borrowed_score_parser(
  reg [5:0] page_count,record_index;reg [3:0] record_byte;
  reg [8:0] read_addr;wire [7:0] read_data=page_data;reg [127:0] candidate;
  reg [31:0] logical_held;reg [63:0] last_time;reg group_closed;reg [6:0] group_count;
- reg [63:0] recent_times[0:127];reg [6:0] recent_ptr;reg [31:0] seen;
+ // One 256 x 32 history bank retains all 128 full timestamps.
+ reg [31:0] recent_times[0:255] /* synthesis syn_ramstyle="block_ram" */;
+ reg [6:0] recent_ptr;reg [31:0] seen;
+ reg [31:0] recent_q;reg [63:0] recent_value;
+ wire [7:0] recent_address={recent_ptr,(state==10)};
+ wire recent_write=!rst&&!clear&&(state==12||state==13);
+ always @(posedge clk)begin
+  recent_q<=recent_times[recent_address];
+  if(recent_write)recent_times[{recent_ptr,(state==13)}]<=state==13?candidate[63:32]:candidate[31:0];
+ end
  assign page_addr=(state>=4&&state<=7)?read_addr:scan_addr;
  wire [63:0] t=candidate[63:0];wire [7:0] op=candidate[71:64],key=candidate[79:72],note=candidate[87:80],value=candidate[95:88];
  wire [31:0] flags=candidate[127:96];
- wire valid_record=(flags<=1)&&(t>=last_time)&&
-  (seen==0||((t==last_time)?!group_closed:group_closed))&&
-  ((t!=last_time)?1:group_count<64)&&
-  (seen<128||t-recent_times[recent_ptr]>=4800)&&
+ // One 32-bit subtractor covers chronological and density checks.
+ reg time_ge,time_equal,density_ok,subtract_borrow,low_zero;
+ reg [31:0] density_low;
+ wire subtract_high=state==15||state==17;
+ wire [63:0] subtract_reference=state<16?last_time:recent_value;
+ wire [31:0] subtract_a=subtract_high?t[63:32]:t[31:0];
+ wire [31:0] subtract_b=subtract_high?subtract_reference[63:32]:subtract_reference[31:0];
+ wire [32:0] time_difference={1'b0,subtract_a}-{1'b0,subtract_b}-(subtract_high&&subtract_borrow);
+ wire valid_record=(flags<=1)&&time_ge&&
+  (seen==0||(time_equal?!group_closed:group_closed))&&
+  (!time_equal?1:group_count<64)&&
+  (seen<128||density_ok)&&
   ((op==1&&key<32&&note<128&&value!=0&&!logical_held[key[4:0]])||
    (op==2&&key<32&&note==0&&value==0&&logical_held[key[4:0]])||
    (op==3&&key<32&&note<128&&logical_held[key[4:0]])||
@@ -149,7 +166,7 @@ module r28_borrowed_score_parser(
    page_done<=0;page_ok<=0;record_valid<=0;record_data<=0;header_valid<=0;eof_seen<=0;
    end_time<=0;total_records<=0;parsed_records<=0;error_code<=0;last_verified_time<=0;
    logical_held<=0;last_time<=0;group_closed<=1;group_count<=0;recent_ptr<=0;seen<=0;
-   record_index<=0;record_byte<=0;read_addr<=0;candidate<=0;page_count<=0;
+   record_index<=0;record_byte<=0;read_addr<=0;candidate<=0;page_count<=0;recent_value<=0;time_ge<=0;time_equal<=0;density_ok<=0;subtract_borrow<=0;low_zero<=0;density_low<=0;
   end else begin
    case(state)
     0: if(page_valid&&page_ready)begin
@@ -179,23 +196,34 @@ module r28_borrowed_score_parser(
     end
     4: state<=5;
     5: begin
-     candidate[record_byte*8+:8]<=read_data;
-     if(record_byte==15)state<=6;
+     candidate<={read_data,candidate[127:8]};
+     if(record_byte==15)state<=10;
      else begin record_byte<=record_byte+1;read_addr<=read_addr+1;state<=4;end
+    end
+    10:begin recent_value[31:0]<=recent_q;state<=11;end
+    11:begin recent_value[63:32]<=recent_q;state<=14;end
+    14:begin low_zero<=time_difference[31:0]==0;subtract_borrow<=time_difference[32];state<=15;end
+    15:begin time_ge<=!time_difference[32];time_equal<=low_zero&&time_difference[31:0]==0;state<=16;end
+    16:begin density_low<=time_difference[31:0];subtract_borrow<=time_difference[32];state<=17;end
+    17:begin density_ok<=time_difference[31:0]!=0||density_low>=4800;state<=6;end
+    12:state<=13;
+    13:begin
+     recent_ptr<=recent_ptr+1'b1;
+     if(parsed_records==total_records&&op!=4)begin error_code<=5;state<=8;end
+     else if(record_index+1==page_count)begin if(page_count==30)expected_data_page<=expected_data_page+1;page_ok<=1;page_done<=1;state<=0;end
+     else begin record_index<=record_index+1;record_byte<=0;read_addr<=16+(record_index+1)*16;state<=4;end
     end
     6:begin
      if(!valid_record)begin error_code<=4;state<=8;end
      else begin record_valid<=1;record_data<=candidate;state<=7;end
     end
     7:if(record_valid&&record_ready)begin
-     record_valid<=0;parsed_records<=parsed_records+1;seen<=seen+1;recent_times[recent_ptr]<=t;recent_ptr<=recent_ptr+1;
-     last_time<=t;group_closed<=flags[0];group_count<=(t==last_time)?group_count+1:1;
+     record_valid<=0;parsed_records<=parsed_records+1;seen<=seen+1;state<=12;
+     last_time<=t;group_closed<=flags[0];group_count<=time_equal?group_count+1:1;
      if(flags[0])last_verified_time<=t;
      if(op==1)logical_held[key[4:0]]<=1;else if(op==2)logical_held[key[4:0]]<=0;
      if(op==4)eof_seen<=1;
-     if(parsed_records+1==total_records&&op!=4)begin error_code<=5;state<=8;end
-     else if(record_index+1==page_count)begin if(page_count==30)expected_data_page<=expected_data_page+1;page_ok<=1;page_done<=1;state<=0;end
-     else begin record_index<=record_index+1;record_byte<=0;read_addr<=16+(record_index+1)*16;state<=4;end
+
     end
     8:begin page_ok<=0;page_done<=1;record_valid<=0;state<=9;end
     9:begin end

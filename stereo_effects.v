@@ -72,7 +72,12 @@ module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
     function signed [47:0] trunc0;
         input signed [47:0] x;
         input integer shift;
-        begin trunc0=(x<0)?-((-x)>>>shift):(x>>>shift);end
+        begin
+          // Toward-zero division by 2^n: arithmetic shift plus one only
+          // for a negative value with discarded nonzero bits. No abs/negate
+          // chains, and the most-negative signed value remains correct.
+          trunc0=(x>>>shift)+((x[47]&&((x&((48'd1<<shift)-1'b1))!=0))?48'sd1:48'sd0);
+        end
     endfunction
     function signed [17:0] sat18;
         input signed [47:0] x;
@@ -177,20 +182,19 @@ module stereo_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0) (
         endcase
     end
     wire signed [47:0] post_sum0=post_a0+post_b0,post_sum1=post_a1+post_b1;
-    wire signed [47:0] post_abs0=post_sum0<0?-post_sum0:post_sum0;
-    wire signed [47:0] post_abs1=post_sum1<0?-post_sum1:post_sum1;
     reg signed [47:0] post_scaled0,post_scaled1;
+    reg discarded0,discarded1;
     always @*begin
         case(post_shift)
-            2:begin post_scaled0=post_abs0>>>2;post_scaled1=post_abs1>>>2;end
-            10:begin post_scaled0=post_abs0>>>10;post_scaled1=post_abs1>>>10;end
-            13:begin post_scaled0=post_abs0>>>13;post_scaled1=post_abs1>>>13;end
-            16:begin post_scaled0=post_abs0>>>16;post_scaled1=post_abs1>>>16;end
-            default:begin post_scaled0=post_abs0>>>15;post_scaled1=post_abs1>>>15;end
+            2:begin post_scaled0=post_sum0>>>2;post_scaled1=post_sum1>>>2;discarded0=|post_sum0[1:0];discarded1=|post_sum1[1:0];end
+            10:begin post_scaled0=post_sum0>>>10;post_scaled1=post_sum1>>>10;discarded0=|post_sum0[9:0];discarded1=|post_sum1[9:0];end
+            13:begin post_scaled0=post_sum0>>>13;post_scaled1=post_sum1>>>13;discarded0=|post_sum0[12:0];discarded1=|post_sum1[12:0];end
+            16:begin post_scaled0=post_sum0>>>16;post_scaled1=post_sum1>>>16;discarded0=|post_sum0[15:0];discarded1=|post_sum1[15:0];end
+            default:begin post_scaled0=post_sum0>>>15;post_scaled1=post_sum1>>>15;discarded0=|post_sum0[14:0];discarded1=|post_sum1[14:0];end
         endcase
     end
-    wire signed [47:0] post_value0=post_sum0<0?-post_scaled0:post_scaled0;
-    wire signed [47:0] post_value1=post_sum1<0?-post_scaled1:post_scaled1;
+    wire signed [47:0] post_value0=post_scaled0+((post_sum0[47]&&discarded0)?48'sd1:48'sd0);
+    wire signed [47:0] post_value1=post_scaled1+((post_sum1[47]&&discarded1)?48'sd1:48'sd0);
     wire signed [17:0] post_sat0=sat18(post_value0),post_sat1=sat18(post_value1);
 
     wire start=in_valid && !busy;

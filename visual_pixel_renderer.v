@@ -62,9 +62,14 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
  // Prepare decimal statistics once per immutable front snapshot. The
  // bank exchange switches only in vertical blank. Eight preparation clocks
  // finish before any statistic text pixel (first one is x=720,y=316).
- reg [31:0] statistics_sequence;reg statistics_valid;reg [3:0] statistics_phase;
+ reg [31:0] statistics_sequence;reg statistics_valid;reg [5:0] statistics_phase;
  reg [5:0] statistics_counts[0:7];reg [15:0] statistics_digits[0:7];
- reg [5:0] current_counts[0:7];integer count_slot,count_timbre;
+ wire [4:0] count_slot=statistics_phase-6'd1;
+ wire count_active=metadata[256+count_slot];
+ wire count_gate=metadata[288+count_slot];
+ wire [2:0] count_timbre=metadata[320+count_slot*3+:3];
+ wire [2:0] histogram_index=count_timbre+3'd3;
+ wire [5:0] histogram_next=statistics_counts[histogram_index]+6'd1;
  function [15:0] decimal_pair(input [5:0] count);
   begin case(count)
    6'd0:decimal_pair=16'h3030;
@@ -103,17 +108,8 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
    default:decimal_pair=16'h3030;
   endcase end
  endfunction
- always @*begin
-  for(integer c=0;c<8;c=c+1)current_counts[c]=0;
-  for(count_slot=0;count_slot<32;count_slot=count_slot+1)begin
-   current_counts[0]=current_counts[0]+metadata[256+count_slot];
-   current_counts[1]=current_counts[1]+(metadata[256+count_slot]&&metadata[288+count_slot]);
-   for(count_timbre=0;count_timbre<5;count_timbre=count_timbre+1)
-    if(metadata[256+count_slot] && metadata[320+count_slot*3+:3]==count_timbre)
-     current_counts[3+count_timbre]=current_counts[3+count_timbre]+1'b1;
-  end
-  current_counts[2]=current_counts[0]-current_counts[1];
- end
+ // A published pixel snapshot remains immutable during this bounded scan.
+ // 32 voices, one tail count, then eight decimal conversions: 41 clocks.
  wire statistics_changed=front_valid&&(!statistics_valid||metadata[159:128]!=statistics_sequence);
  always @(posedge pixel_clk)begin
   if(rst)begin
@@ -121,10 +117,19 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
    for(integer c=0;c<8;c=c+1)begin statistics_counts[c]<=0;statistics_digits[c]<=16'h3030;end
   end else if(statistics_changed)begin
    statistics_valid<=1;statistics_sequence<=metadata[159:128];statistics_phase<=1;
-   for(integer c=0;c<8;c=c+1)statistics_counts[c]<=current_counts[c];
+   for(integer c=0;c<8;c=c+1)statistics_counts[c]<=0;
   end else if(statistics_phase!=0)begin
-   for(integer c=0;c<8;c=c+1)if(statistics_phase==c+1)statistics_digits[c]<=decimal_pair(statistics_counts[c]);
-   statistics_phase<=statistics_phase==8?0:statistics_phase+1'b1;
+   if(statistics_phase<=32)begin
+    if(count_active)begin
+     statistics_counts[0]<=statistics_counts[0]+6'd1;
+     if(count_gate)statistics_counts[1]<=statistics_counts[1]+6'd1;
+     if(count_timbre<5)statistics_counts[histogram_index]<=histogram_next;
+    end
+   end else if(statistics_phase==33)statistics_counts[2]<=statistics_counts[0]-statistics_counts[1];
+   else begin
+    for(integer c=0;c<8;c=c+1)if(statistics_phase==c+34)statistics_digits[c]<=decimal_pair(statistics_counts[c]);
+   end
+   statistics_phase<=statistics_phase==41?0:statistics_phase+1'b1;
   end
  end
  reg [4:0] panel_row;reg [3:0] panel_y;reg fx_text_rows,statistics_text_rows;

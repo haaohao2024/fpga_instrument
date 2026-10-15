@@ -30,7 +30,8 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
  input wire record_block_valid,input wire [7:0] record_block_kind,
  input wire [31:0] record_block_sequence,input wire [63:0] record_block_first,
  input wire [15:0] record_block_bytes,record_block_items,
- output wire [8:0] record_peek_address,input wire [7:0] record_peek_data
+ output wire [8:0] record_peek_address,input wire [7:0] record_peek_data,
+ output wire [540:0] shared_score_rx
 );
  localparam STOPPED=0,OPENING=1,PLAY=2,CLOSING=3;
  localparam OP_START=1,OP_DATA=2,OP_STOP=3,OP_STATUS=4;
@@ -59,6 +60,8 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
  reg [31:0] rx_crc,footer,watchdog,request_header_crc;
  reg [9:0] byte_count,expected_bytes,wire_length;
  reg [2:0] bit_count;reg [7:0] rx_shift;reg [12:0] tx_index;
+ assign shared_score_rx={legacy_snapshot,header[255:0],byte_count,bit_count,rx_shift,
+   fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fall,rise};
  wire [1:0] footer_lane=byte_count[1:0]-expected_bytes[1:0];
  wire [7:0] next_byte={rx_shift[6:0],phy_bit};
  wire [7:0] operation=header[47:40];wire [15:0] request_pairs=header[63:48];

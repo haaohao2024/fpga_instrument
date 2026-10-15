@@ -1,5 +1,5 @@
 // Source1 scheduler. No direct Voice access; completion is a read-only fence.
-module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKEN_WIDTH=64, EARLY_DEADLINE=960)(
+module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONTROL=0,SHARED_STORE=0,TOKEN_WIDTH=64, EARLY_DEADLINE=960)(
  input wire audio_published,
  output reg event_write_valid,output reg[3:0] event_write_index,output reg[95:0] event_write_data,input wire event_write_ready,
  input wire clk,rst,sample_tick,stereo_locked,
@@ -13,7 +13,7 @@ module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKE
  input wire dispatch_done,
  output reg [7:0] state,error_code,
  output reg [63:0] music_time,epoch,
- output reg [31:0] logical_held,output reg [223:0] logical_notes,output reg [255:0] logical_pressures,
+ output reg [31:0] logical_held,output reg [223:0] logical_notes,output wire [255:0] logical_pressures,
  output reg [31:0] guide_held,output reg [223:0] guide_notes,
  output reg reload_request,output reg [31:0] records_consumed,events_offered,events_accepted,events_completed,
  output reg [31:0] deadline_count,token_exhaustions,stops,
@@ -53,6 +53,27 @@ module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKE
  wire [31:0] outstanding=events_accepted-events_completed;
  wire [63:0] rec_time=record_data[63:0];
  wire [7:0] op=record_data[71:64],key=record_data[79:72],note=record_data[87:80],value=record_data[95:88];
+ wire [7:0] pressure_read;
+ wire pressure_write=!rst&&state==2&&record_ready&&record_valid&&(op==1||op==3);
+ generate if(PARALLEL_PRESSURE_VIEW)begin: observed_pressure
+  reg [7:0] storage[0:31];reg [31:0] initialized;
+  always @(posedge clk)begin
+   if(rst)initialized<=0;else if(pressure_write)initialized[key[4:0]]<=1;
+   if(pressure_write)storage[key[4:0]]<=value;
+  end
+  for(genvar k=0;k<32;k++)assign logical_pressures[k*8+:8]=initialized[k]?storage[k]:8'd0;
+  assign pressure_read=storage[resume_key[4:0]];
+ end else begin: indexed_pressure
+  wire [7:0] bank_q[0:1];
+  for(genvar b=0;b<2;b++)begin: banks
+   for(genvar w=0;w<2;w++)begin: words
+    RAM16SDP4 memory(.CLK(clk),.WRE(pressure_write&&key[4]==b),.WAD(key[3:0]),
+      .RAD(resume_key[3:0]),.DI(value[w*4+:4]),.DO(bank_q[b][w*4+:4]));
+   end
+  end
+  assign pressure_read=bank_q[resume_key[4]];
+  assign logical_pressures=256'd0; // unconsumed parallel diagnostic port
+ end endgenerate
  wire closed=record_data[96];
  // Reserve dispatch for the due same-time score group, including gaps while
  // its next packet is built. Already accepted phone packets still finish.
@@ -130,7 +151,7 @@ module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKE
   parser_clear<=0;
   if(rst)begin
    wait_audible<=0;event_write_valid<=0;event_write_index<=0;event_write_data<=0;
-   state<=0;error_code<=0;music_time<=0;epoch<=0;logical_held<=0;sound_held<=0;logical_notes<=0;logical_pressures<=0;guide_held<=0;guide_notes<=0;
+   state<=0;error_code<=0;music_time<=0;epoch<=0;logical_held<=0;sound_held<=0;logical_notes<=0;guide_held<=0;guide_notes<=0;
    teach<=0;loop_mode<=0;window_open<=0;group_active<=0;window_used<=0;pause_requested<=0;resume_pending<=0;resuming<=0;natural_end<=0;
    stop_phase<=0;cleanup_key<=0;resume_key<=0;stop_destination<=0;build_items<=0;build_count<=0;event_valid<=0;offered_header<=0;
    token_counter<=0;records_consumed<=0;events_offered<=0;events_accepted<=0;events_completed<=0;
@@ -168,7 +189,7 @@ module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKE
      else if(op==3)for(integer s=0;s<32;s=s+1)if(key==s)guide_notes[s*7+:7]<=note[6:0];
     end
     if(op==1)begin
-     logical_held[key[4:0]]<=1;for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];for(integer s=0;s<32;s=s+1)if(key==s)logical_pressures[s*8+:8]<=value;
+     logical_held[key[4:0]]<=1;for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];
      if(!teach)begin
       if(token_counter==TOKEN_MAX)begin token_exhaustions<=token_exhaustions+1;begin_stop(0,9);end
       else begin token_counter<=next_token;sound_held[key[4:0]]<=1;
@@ -179,7 +200,7 @@ module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKE
      logical_held[key[4:0]]<=0;
      if(!teach)begin sound_held[key[4:0]]<=0;append_item({selected_key_token,4'd1,4'd2,key,7'd0,8'd0,1'b0},closed);end
     end else if(op==3)begin
-     for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];for(integer s=0;s<32;s=s+1)if(key==s)logical_pressures[s*8+:8]<=value;
+     for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];
      if(!teach)append_item({selected_key_token,4'd1,4'd3,key,note[6:0],value,1'b0},closed);
     end else if(op==4)begin
      natural_end<=1;begin_stop(0,0);
@@ -210,7 +231,7 @@ module score_sequencer # (parameter integer SERIAL_CONTROL=0,SHARED_STORE=0,TOKE
     end else if(logical_held[resume_key[4:0]])begin
      if(token_counter==TOKEN_MAX)begin token_exhaustions<=token_exhaustions+1;begin_stop(0,9);end
      else begin token_counter<=next_token;sound_held[resume_key[4:0]]<=1;
-      append_item({next_token,4'd1,4'd1,{3'd0,resume_key[4:0]},resume_notes[resume_key],resume_pressures[resume_key],1'b0},1'b0);
+      append_item({next_token,4'd1,4'd1,{3'd0,resume_key[4:0]},resume_notes[resume_key],pressure_read,1'b0},1'b0);
       resume_key<=resume_key+1;
      end
     end else resume_key<=resume_key+1;

@@ -2,7 +2,7 @@
 // All logic uses clk; rst is synchronous and HIGH active. No vendor IP.
 // Voice tables and ADSR use 48 kHz, so the system audio rate is fixed at 48 kHz.
 module instrument_core_stage7 #(
-    parameter integer STREAM_PHONE=0,COMM_SEPARATE=0,
+    parameter integer EXTERNAL_SCORE_RX=0,STREAM_PHONE=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
@@ -158,7 +158,7 @@ module instrument_core_stage7 #(
     output wire [223:0] observe_slot_notes,
     output wire [255:0] observe_slot_pressures,
     output wire [287:0] observe_current_pan,
-    output wire [103:0] observe_gain_state
+    output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
     wire [7:0] vibrato_depth;
     wire [31:0] slot_valid,slot_gate,slot_trigger;
@@ -292,7 +292,7 @@ module instrument_core_stage7 #(
      if(rst)allocator_inflight_score<=0;
      else if(observe_batch_begin)allocator_inflight_score<=r18_batch_source==1;
     end
-    score_subsystem #(.SERIAL_CONTROL(1),.SHARED_STORE(1),.COMM_SEPARATE(COMM_SEPARATE),.EARLY_DEADLINE(CLK_FREQ_HZ/48000-8),.CLK_FREQ_HZ(CLK_FREQ_HZ),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/10),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1)) u_score (.audio_published(audible_publish),.event_write_valid(score_write_valid),.event_write_index(score_write_index),.event_write_data(score_write_data),.event_write_ready(score_write_ready),
+    score_subsystem #(.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.SERIAL_CONTROL(1),.SHARED_STORE(1),.COMM_SEPARATE(COMM_SEPARATE),.EARLY_DEADLINE(CLK_FREQ_HZ/48000-8),.CLK_FREQ_HZ(CLK_FREQ_HZ),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/10),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1)) u_score (.shared_score_rx(shared_score_rx),.audio_published(audible_publish),.event_write_valid(score_write_valid),.event_write_index(score_write_index),.event_write_data(score_write_data),.event_write_ready(score_write_ready),
         .field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
         .comm_clk(comm_clk),.clk(clk),.rst(rst),.sample_tick(frame_pulse),.stereo_locked(stereo_control_locked),
         .spi_sck(score_spi_sck),.fpga_cs_n(score_cs_n),.sd_cs_n(score_sd_cs_n),.spi_mosi(score_spi_mosi),
