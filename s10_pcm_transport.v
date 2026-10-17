@@ -2,7 +2,7 @@
 // verification contract; this module does not qualify physical IO timing.
 // Two 512-byte synchronous byte RAMs own each accepted packet until its
 // stereo pairs handshake or an explicit stream barrier discards them.
-module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
+module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARATE=0, WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
  input wire comm_clk,clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
  input wire [255:0] legacy_status_bytes,
  input wire [11:0] stream_buffered,input wire [31:0] stream_generation,
@@ -33,6 +33,13 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
  output wire [8:0] record_peek_address,input wire [7:0] record_peek_data,
  output wire [540:0] shared_score_rx
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+ wire r54_equal_3;
+ wire r54_equal_4;
+ wire r54_equal_5;
+
  localparam STOPPED=0,OPENING=1,PLAY=2,CLOSING=3;
  localparam OP_START=1,OP_DATA=2,OP_STOP=3,OP_STATUS=4;
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
@@ -83,7 +90,7 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
  wire s11_serial_bit;wire [511:0] s11_snapshot;wire s11_payload_ready;
  wire short_s11=route_s11&&header[431:416]==0;
  generate if(ENABLE_S11)begin: s11_response_enabled
-  s11_spi_response #(.COMM_SEPARATE(COMM_SEPARATE),.STREAM_HEADER_CRC(1)) response_encoder(.comm_clk(comm_clk),.fast_fall(fast_fall),.fast_start(fast_start),.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
+  s11_spi_response #(.PINNED_PREFIX(PINNED_RECORD_PREFIX),.COMM_SEPARATE(COMM_SEPARATE),.STREAM_HEADER_CRC(1)) response_encoder(.comm_clk(comm_clk),.fast_fall(fast_fall),.fast_start(fast_start),.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
    .media_state(state),.media_epoch(stream_epoch),.media_last_sequence(last_sequence),.media_credit(free_pair_credit),
    .recorder_state(record_state),.recorder_incomplete(record_incomplete),.recorder_mask(record_mask),.recorder_id(record_id),
    .recorder_command_sequence(record_last_command),.recorder_error(record_error),.captured_pcm_pairs(record_captured_pcm),.first_missing_frame(record_first_missing_frame),
@@ -188,7 +195,7 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
     read_bank<=head_bank;read_phase<=read_index[1:0];read_generation<=generation;
     read_epoch<=stream_epoch;read_index<=read_index+1'b1;
    end
-   if(read_pending&&read_generation==generation&&state==PLAY&&bank_used[read_bank])begin
+   if(read_pending&&r54_equal_0&&state==PLAY&&bank_used[read_bank])begin
     case(read_phase)
      0:part0<=ram_q;
      1:part1<=ram_q;
@@ -199,7 +206,7 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
    if(handshake)begin
     delivered_pair_count<=delivered_pair_count+1;
     // A same-edge completed next pair replaces the pair just handshaken.
-    if(!(read_pending&&read_phase==3&&read_generation==generation&&state==PLAY&&bank_used[read_bank]))pcm_valid<=0;
+    if(!(read_pending&&read_phase==3&&r54_equal_0&&state==PLAY&&bank_used[read_bank]))pcm_valid<=0;
     bank_remaining[head_bank]<=bank_remaining[head_bank]-1'b1;
     if(bank_remaining[head_bank]==1)begin bank_used[head_bank]<=0;head_bank<=~head_bank;read_index<=0;end
    end
@@ -280,10 +287,10 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
        end
        if(route_s11&&operation==0)begin end
        else if(operation==OP_STATUS)begin
-       if(request_epoch!=0&&request_epoch!=stream_epoch)rejected_transactions<=rejected_transactions+1;
+       if(request_epoch!=0&&!r54_equal_1)rejected_transactions<=rejected_transactions+1;
       end else if(operation==OP_START)begin
-       if((state==OPENING||state==PLAY)&&request_epoch==stream_epoch&&last_track==flags[0])duplicate_packets<=duplicate_packets+1;
-       else if(state!=STOPPED||ctrl_valid||stop_pending||request_epoch==stream_epoch||request_epoch==0)rejected_transactions<=rejected_transactions+1;
+       if((state==OPENING||state==PLAY)&&r54_equal_1&&last_track==flags[0])duplicate_packets<=duplicate_packets+1;
+       else if(state!=STOPPED||ctrl_valid||stop_pending||r54_equal_1||request_epoch==0)rejected_transactions<=rejected_transactions+1;
        else begin
         state<=OPENING;stream_epoch<=request_epoch;next_source_start<=0;last_sequence<=0;last_source_start<=0;last_pair_count<=0;last_packet_crc<=0;last_track<=flags[0];
         ctrl_valid<=1;ctrl_cmd<=0;ctrl_epoch<=request_epoch;ctrl_track<=flags[0];
@@ -291,11 +298,11 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
         head_bank<=0;read_index<=0;read_pending<=0;pcm_valid<=0;barrier<=1;
        end
       end else if(operation==OP_DATA)begin
-       if(state!=PLAY||request_epoch!=stream_epoch||request_epoch==0)rejected_transactions<=rejected_transactions+1;
-       else if(request_sequence==last_sequence&&last_sequence!=0)begin
-        if(request_pairs==last_pair_count&&source_start==last_source_start&&footer==last_packet_crc)duplicate_packets<=duplicate_packets+1;
+       if(state!=PLAY||!r54_equal_1||request_epoch==0)rejected_transactions<=rejected_transactions+1;
+       else if(r54_equal_2&&last_sequence!=0)begin
+        if(request_pairs==last_pair_count&&r54_equal_3&&r54_equal_4)duplicate_packets<=duplicate_packets+1;
         else rejected_transactions<=rejected_transactions+1;
-       end else if(request_sequence!=last_sequence+1||last_sequence==32'hffffffff||source_start!=next_source_start||!capacity||bank_used[receive_bank]||
+       end else if(request_sequence!=last_sequence+1||last_sequence==32'hffffffff||!r54_equal_5||!capacity||bank_used[receive_bank]||
                     next_source_start>64'hffffffffffffffff-request_pairs)rejected_transactions<=rejected_transactions+1;
        else begin
         bank_used[receive_bank]<=1;bank_pairs[receive_bank]<=request_pairs[8:0];bank_remaining[receive_bank]<=request_pairs[8:0];
@@ -304,7 +311,7 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
         next_source_start<=next_source_start+request_pairs;accepted_pair_count<=accepted_pair_count+request_pairs;accepted_packets<=accepted_packets+1;
        end
       end else if(operation==OP_STOP)begin
-       if(request_epoch!=stream_epoch||request_epoch==0)rejected_transactions<=rejected_transactions+1;
+       if(!r54_equal_1||request_epoch==0)rejected_transactions<=rejected_transactions+1;
        else if(state==STOPPED||state==CLOSING)duplicate_packets<=duplicate_packets+1;
        else begin
         state<=CLOSING;bank_used<=0;bank_remaining[0]<=0;bank_remaining[1]<=0;
@@ -359,6 +366,12 @@ module s10_pcm_transport #(parameter integer COMM_SEPARATE=0, WATCHDOG_CLOCKS=50
   end
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(read_generation),.b(generation),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(request_epoch),.b(stream_epoch),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(32)) r54_equal_2_tree(.a(request_sequence),.b(last_sequence),.equal(r54_equal_2));
+ r54_full_equal #(.WIDTH(64)) r54_equal_3_tree(.a(source_start),.b(last_source_start),.equal(r54_equal_3));
+ r54_full_equal #(.WIDTH(32)) r54_equal_4_tree(.a(footer),.b(last_packet_crc),.equal(r54_equal_4));
+ r54_full_equal #(.WIDTH(64)) r54_equal_5_tree(.a(source_start),.b(next_source_start),.equal(r54_equal_5));
 endmodule
 
 // S10P v1, 50 MHz oversampled shared Mode0 SPI. 4 MHz is a digital

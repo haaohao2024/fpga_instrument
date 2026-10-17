@@ -343,6 +343,14 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  output wire [31:0] rejected_transactions,output reg [31:0] cs_conflicts,
  output wire [31:0] lease_expirations,output reg [31:0] stale_result_updates
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+ wire r54_equal_3;
+ wire r54_equal_4;
+ wire r54_equal_5;
+ wire r54_equal_6;
+
  reg[7:0] read_byte;
  reg[415:0] command_payload;assign command_bytes={1120'd0,command_payload};
  reg[3:0] event_column,event_number;reg event_bad;reg[63:0] checked_next_token;
@@ -351,7 +359,7 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  wire[3:0] assembled_kind=assembled_event[27:24];
  wire assembled_bad=assembled_event[0] || assembled_event[31:28]!=2 || assembled_kind<1 || assembled_kind>4 ||
   (assembled_kind==4?(assembled_event[23:16]!=255 || assembled_event[15:9]!=0):(assembled_event[23:16]>=32 || assembled_event[95:32]==0)) ||
-  (assembled_kind==1 && (checked_exhausted || assembled_event[95:32]!=checked_next_token));
+  (assembled_kind==1 && (checked_exhausted || !r54_equal_0));
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer n;begin v=c^b;for(n=0;n<8;n=n+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
@@ -393,7 +401,7 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
   .management_done(),.management_error(),.opened_count(),.closed_count(),.expired_count(lease_expirations),.rejected_count(management_rejected));
  assign rejected_transactions=physical_rejected+rejected+management_rejected;
  assign result_ready=!rst&&!session_flush&&!result_pending;
- assign config_payload_changed=load_state==3&&op==4&&session_ready&&packet_epoch==epoch&&serial!=0&&serial==accepted_serial+1&&found_free;
+ assign config_payload_changed=load_state==3&&op==4&&session_ready&&r54_equal_1&&serial!=0&&serial==accepted_serial+1&&found_free;
  assign identity_query_prepare=config_payload_changed&&command_bytes[39:32]==39;
  assign identity_prepare_press=command_bytes[127:64];
  // Application QUERY_RESULT/BARRIER are consumed by s9_router on BL616.
@@ -457,7 +465,7 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
    management_valid<=0;lookup_done<=lookup_valid;maps_release<=0;
    if(command_valid&&command_ready)command_valid<=0;
    if(result_valid&&result_ready)begin
-    if(owned[result_slot]&&channels[result_slot]==result_channel&&result_sequence==0&&result_bytes[191:64]==session_id)begin
+    if(owned[result_slot]&&channels[result_slot]==result_channel&&result_sequence==0&&r54_equal_2)begin
      result_hold<={24'd0,result_bytes[63:56],result_bytes[447:224],29'd0,result_slot};
      held_map_mask<=result_channel?9'd0:map_mask;
      result_serial<=result_serial+1'b1;result_pending<=1;
@@ -501,13 +509,13 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
      packet<=0;
      if(op==0)begin end
      else if(op==5)begin
-      if(length==0&&packet_epoch==epoch&&result_pending&&serial==result_serial)begin
+      if(length==0&&r54_equal_1&&result_pending&&r54_equal_3)begin
        result_pending<=0;held_map_mask<=0;if(held_final)owned[result_hold[2:0]]<=0;
        if(!result_hold[32])maps_release<=1;
       end
      end else if(op==2||op==3)begin
-      if(length==0&&packet_epoch==epoch)begin management_valid<=1;management_op<=op==2?8'h91:8'h92;management_session<=session_id;end
-     end else if((op==1&&length==16)||((op==4||op==6)&&length>=8&&length<=116&&packet_epoch==epoch&&session_ready&&found_free))begin
+      if(length==0&&r54_equal_1)begin management_valid<=1;management_op<=op==2?8'h91:8'h92;management_session<=session_id;end
+     end else if((op==1&&length==16)||((op==4||op==6)&&length>=8&&length<=116&&r54_equal_1&&session_ready&&found_free))begin
       cursor<=0;command_payload<=0;load_state<=1;event_column<=0;event_number<=0;event_bad<=0;checked_next_token<=phone_next_token;checked_exhausted<=phone_token_exhausted;
      end else rejected<=rejected+1'b1;
     end
@@ -534,12 +542,12 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
      load_state<=0;
      if(op==6)event_write_abort<=1;
      if(op==1)begin
-      if(packet_epoch!=0&&((link_state==0&&phone_open_ready)||(packet_epoch==epoch&&command_bytes[127:0]==session_id)))begin
+      if(packet_epoch!=0&&((link_state==0&&phone_open_ready)||(r54_equal_1&&r54_equal_4)))begin
        management_valid<=1;management_op<=8'h90;management_session<=command_bytes[127:0];
-       if(link_state==0&&command_bytes[63:0]!=0&&command_bytes[127:64]!=0&&(command_bytes[63:0]!=session_id[63:0]||command_bytes[127:64]>session_id[127:64]))begin epoch<=packet_epoch;accepted_serial<=0;result_serial<=0;end
+       if(link_state==0&&command_bytes[63:0]!=0&&command_bytes[127:64]!=0&&(!r54_equal_5||command_bytes[127:64]>session_id[127:64]))begin epoch<=packet_epoch;accepted_serial<=0;result_serial<=0;end
       end else rejected<=rejected+1'b1;
-     end else if(session_ready&&packet_epoch==epoch)begin
-      if(serial!=0&&serial==accepted_serial)begin end // same stop-and-wait transmission
+     end else if(session_ready&&r54_equal_1)begin
+      if(serial!=0&&r54_equal_6)begin end // same stop-and-wait transmission
       else if(serial!=0&&serial==accepted_serial+1&&found_free&&((op==4&&length>=8&&length<=52&&command_bytes[63:40]==0)||(op==6&&!event_bad&&command_bytes[39:32]>=1&&command_bytes[39:32]<=9&&command_bytes[63:40]==0&&length==8+command_bytes[39:32]*12)))begin
        command_valid<=1;command_event<=op==6;if(op==6)event_write_abort<=0;command_slot<=free_slot;command_length<=length[7:0];accepted_serial<=serial;
        owned[free_slot]<=1;channels[free_slot]<=op==4;accepted_slot<=free_slot;
@@ -557,4 +565,11 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
   if(lookup_valid)$fatal(1,"R20_APPLICATION_LOOKUP_NOT_MIGRATED");
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(assembled_event[95:32]),.b(checked_next_token),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(32)) r54_equal_1_tree(.a(packet_epoch),.b(epoch),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(128)) r54_equal_2_tree(.a(result_bytes[191:64]),.b(session_id),.equal(r54_equal_2));
+ r54_full_equal #(.WIDTH(32)) r54_equal_3_tree(.a(serial),.b(result_serial),.equal(r54_equal_3));
+ r54_full_equal #(.WIDTH(128)) r54_equal_4_tree(.a(command_bytes[127:0]),.b(session_id),.equal(r54_equal_4));
+ r54_full_equal #(.WIDTH(64)) r54_equal_5_tree(.a(command_bytes[63:0]),.b(session_id[63:0]),.equal(r54_equal_5));
+ r54_full_equal #(.WIDTH(32)) r54_equal_6_tree(.a(serial),.b(accepted_serial),.equal(r54_equal_6));
 endmodule

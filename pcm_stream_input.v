@@ -29,6 +29,10 @@ module pcm_stream_input (
     output reg [31:0] backpressure_count,rejected_control_count,
     output reg protocol_error
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+
     localparam STOPPED=0,PREFILL=1,PLAY=2,FADE=3,DRAIN=4;
     reg [63:0] epoch;
     reg epoch_used,track_mode,recover;
@@ -56,7 +60,7 @@ module pcm_stream_input (
     reg [11:0] window_count;
     reg [23:0] window_sum;
     wire command=ctrl_valid && ctrl_ready;
-    wire start_ok=command && ctrl_cmd==0 && ctrl_rate==48000 && (!epoch_used || ctrl_epoch!=epoch);
+    wire start_ok=command && ctrl_cmd==0 && ctrl_rate==48000 && (!epoch_used || !r54_equal_0);
     wire stop_cmd=command && ctrl_cmd==1;
     wire loss_cmd=command && ctrl_cmd==2 && (state==PLAY || state==PREFILL);
     wire [33:0] phase_sum={2'b0,phase_q32}+{1'b0,rate_q32};
@@ -67,8 +71,8 @@ module pcm_stream_input (
     assign observe_generation=generation;
     assign buffered=fifo_count+look_count+read_pending;
     assign pcm_ready=!rst && !command && !missing && (state==PREFILL || state==PLAY)
-                     && (pcm_epoch!=epoch || fifo_ready);
-    wire accepted=pcm_valid && pcm_ready && pcm_epoch==epoch;
+                     && (!r54_equal_1 || fifo_ready);
+    wire accepted=pcm_valid && pcm_ready && r54_equal_1;
     wire take_read=!rst && !flush && !sample_tick && !read_pending && look_count<4
                    && (state==PREFILL || state==PLAY) && read_ready;
     pcm_pair_fifo u_fifo(.clk(clk),.rst(rst),.clear(flush),
@@ -130,12 +134,12 @@ module pcm_stream_input (
         end else begin
             if(rate_result_valid)rate_q32<=rate_result;
             render_pipe<={render_pipe[0],sample_tick};sample_valid<=render_pipe[1];
-            if(stalled && !command && (!pcm_valid || {pcm_l,pcm_r}!=held_data || pcm_epoch!=held_epoch))protocol_error<=1;
+            if(stalled && !command && (!pcm_valid || {pcm_l,pcm_r}!=held_data || !r54_equal_2))protocol_error<=1;
             stalled<=pcm_valid && !pcm_ready && !command;
             held_data<={pcm_l,pcm_r};held_epoch<=pcm_epoch;
             if(pcm_valid && !pcm_ready)backpressure_count<=backpressure_count+1;
             if(pcm_valid && pcm_ready)begin
-                if(pcm_epoch!=epoch)stale_count<=stale_count+1;
+                if(!r54_equal_1)stale_count<=stale_count+1;
                 else accepted_count<=accepted_count+1;
             end
             nlook=look_count;
@@ -217,6 +221,9 @@ module pcm_stream_input (
             end
         end
     end
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(ctrl_epoch),.b(epoch),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(pcm_epoch),.b(epoch),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(64)) r54_equal_2_tree(.a(pcm_epoch),.b(held_epoch),.equal(r54_equal_2));
 endmodule
 
 // One outstanding window, bounded eight-cycle computation. Independent

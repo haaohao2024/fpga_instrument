@@ -4,7 +4,7 @@
 // until tx_done; there is no second copy bank. Only the final RAM write makes
 // the complete transaction available to the transport.
 module s11_event_recorder #(
-    parameter integer VARIABLE_RESPONSE=0,CAPACITY=128,
+    parameter integer TRUSTED_ACK=0,VARIABLE_RESPONSE=0,CAPACITY=128,
     parameter integer MAX_TRANSACTION=40
 ) (
     input wire tx_response_valid,
@@ -34,7 +34,7 @@ module s11_event_recorder #(
     output reg [15:0] block_cell_count,
     input wire [8:0] peek_byte_address,
     output wire [7:0] peek_byte_data,
-    input wire ack_valid,
+    input wire ack_valid,ack_accepted,
     input wire [63:0] ack_record_id,
     input wire [31:0] ack_block_sequence,
     output reg [31:0] stale_ack_count,rejected_start_count
@@ -74,8 +74,8 @@ module s11_event_recorder #(
     assign block_first_frame={read_kind==2?read_word:held_frame_high,
                               read_kind==1?read_word:held_frame_low};
     assign peek_byte_data=peek_owned?read_word[peek_byte_select*8+:8]:8'd0;
-    wire accepted_ack=ack_valid && block_valid &&
-        ack_record_id==record_id && ack_block_sequence==block_sequence;
+    wire checked_ack=ack_valid && block_valid && ack_record_id==record_id && ack_block_sequence==block_sequence;
+    wire accepted_ack=TRUSTED_ACK?ack_accepted:checked_ack;
     wire [8:0] ack_count=accepted_ack?block_cell_count:9'd0;
     wire commit=writer_busy && cell_available && write_word==7 && write_index+1'b1==reserved_count && !clear_valid;
     // The producer holds the accepted batch until tx_done; only the read
@@ -171,6 +171,8 @@ module s11_event_recorder #(
         end
     end
     // synthesis translate_off
+    always @(posedge clk)if(!rst&&TRUSTED_ACK&&accepted_ack!==checked_ack)
+        $fatal(1,"R54_PARENT_ACK_CONTRACT");
     initial if(CAPACITY!=128 || MAX_TRANSACTION>40)$fatal(1,"S11_EVENT_CONFIGURATION");
     always @(posedge clk)if(!rst)begin
         if(block_valid && block_meta_pending)$fatal(1,"S11_EVENT_READ_PHASE_OVERLAP");

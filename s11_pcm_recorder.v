@@ -2,7 +2,7 @@
 // ring; the pinned retransmission prefix remains in that ring until ACK.
 // A START edge excludes a coincident load. STOP excludes a coincident load.
 module s11_pcm_recorder #(
-    parameter integer CAPACITY=3072,
+    parameter integer TRUSTED_ACK=0,CAPACITY=3072,
     parameter integer BLOCK_PAIRS=128
 ) (
     input wire clk, rst, audio_reset,
@@ -24,21 +24,23 @@ module s11_pcm_recorder #(
     output reg [15:0] block_pair_count,
     input wire [8:0] peek_byte_address,
     output wire [7:0] peek_byte_data,
-    input wire ack_valid,
+    input wire ack_valid,ack_accepted,
     input wire [63:0] ack_record_id,
     input wire [31:0] ack_block_sequence,
     output reg [31:0] stale_ack_count, rejected_start_count
 );
+ wire r54_equal_0;
+
     localparam integer PTR_W=(CAPACITY<2)?1:$clog2(CAPACITY);
     reg [31:0] pcm_ram[0:CAPACITY-1];
     reg [PTR_W-1:0] write_pointer, read_pointer;
     reg [63:0] expected_frame;
     reg have_first;
-    wire accepted_ack=ack_valid && block_valid &&
-        ack_record_id==record_id && ack_block_sequence==block_sequence;
+    wire checked_ack=ack_valid && block_valid && ack_record_id==record_id && ack_block_sequence==block_sequence;
+    wire accepted_ack=TRUSTED_ACK?ack_accepted:checked_ack;
     wire capture=active && observe_load && !stop_valid && !clear_valid &&
         !audio_reset;
-    wire frame_matches=!have_first || observe_frame_id==expected_frame;
+    wire frame_matches=!have_first || r54_equal_0;
     wire has_space=(buffered_pairs<CAPACITY) || accepted_ack;
     wire store_pair=capture && frame_matches && has_space;
     wire [12:0] ack_count=accepted_ack?block_pair_count:13'd0;
@@ -126,6 +128,8 @@ module s11_pcm_recorder #(
         end
     end
     // synthesis translate_off
+    always @(posedge clk)if(!rst&&TRUSTED_ACK&&accepted_ack!==checked_ack)
+        $fatal(1,"R54_PARENT_ACK_CONTRACT");
     initial if(CAPACITY<128 || CAPACITY>4096 || BLOCK_PAIRS<1 || BLOCK_PAIRS>128)
         $fatal(1,"S11_PCM_CONFIGURATION");
     always @(posedge clk)if(!rst)begin
@@ -144,4 +148,5 @@ module s11_pcm_recorder #(
             $fatal(1,"S11_PCM_CONSERVATION");
     end
     // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(observe_frame_id),.b(expected_frame),.equal(r54_equal_0));
 endmodule

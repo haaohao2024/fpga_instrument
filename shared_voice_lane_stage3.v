@@ -3606,6 +3606,12 @@ module r18_config_observer #(parameter integer SYNC_READ=1)(
  output reg fault_valid,output reg [63:0] first_missing_frame,
  output wire [7:0] fault_code,output wire idle
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+ wire r54_equal_3;
+ wire r54_equal_4;
+
  localparam TIMBRE=14,GLIDE=15,PAN=16,EFFECTS=17,GAIN=18,KEYMAP=19,MEDIA=20,EXT=21;
  function [255:0] make_cell;
   input [7:0] typ,flags;input [63:0] frame,note,payload;
@@ -3653,9 +3659,9 @@ module r18_config_observer #(parameter integer SYNC_READ=1)(
   fx_version,fx_config,keymap_version,keymap,glide_code,timbre_id};
  wire collect=recording&&!fault_valid&&!capture_fault&&!start;
  wire [6:0] changes={((recording||start)&&!stop&&pan_valid&&(!fault_valid||start)&&(!capture_fault||start)),
-  collect&&(stream_state!=previous_state||stream_generation!=previous_stream||media_epoch!=previous_epoch),
-  collect&&(gain_version!=previous_gain),collect&&(fx_version!=previous_fx),
-  collect&&(keymap_version!=previous_key),collect&&(glide_code!=previous_glide),collect&&(timbre_id!=previous_timbre)};
+  collect&&(stream_state!=previous_state||!r54_equal_0||!r54_equal_1),
+  collect&&(!r54_equal_2),collect&&(!r54_equal_3),
+  collect&&(!r54_equal_4),collect&&(glide_code!=previous_glide),collect&&(timbre_id!=previous_timbre)};
  wire [6:0] front=masks[head];reg [2:0] first;
  always @*begin first=0;for(integer i=6;i>=0;i--)if(front[i])first=i;end
  wire [3:0] current=inflight?selected:initial_pending?4'd7:{1'b0,first};
@@ -3744,6 +3750,11 @@ module r18_config_observer #(parameter integer SYNC_READ=1)(
  end
  // synthesis translate_on
 
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(stream_generation),.b(previous_stream),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(media_epoch),.b(previous_epoch),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(32)) r54_equal_2_tree(.a(gain_version),.b(previous_gain),.equal(r54_equal_2));
+ r54_full_equal #(.WIDTH(32)) r54_equal_3_tree(.a(fx_version),.b(previous_fx),.equal(r54_equal_3));
+ r54_full_equal #(.WIDTH(32)) r54_equal_4_tree(.a(keymap_version),.b(previous_key),.equal(r54_equal_4));
 endmodule
 
 // Stage9 parameter adapter. Frozen parameter engines retain their arithmetic.
@@ -4064,6 +4075,10 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
  output wire [8:0] buffered_event_cells,
  output wire [31:0] published_batches,aborted_batches,applied_items,initial_instances
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+
  wire pcm_start_ready,event_start_ready,observer_idle;
  wire pcm_active,pcm_incomplete,event_active,event_incomplete,exec_active,exec_arming,exec_incomplete;
  wire [7:0] pcm_error,event_error,exec_error;
@@ -4088,15 +4103,15 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
  reg [7:0] previous_opcode;
  reg have_command;
  reg last_was_pcm;
- wire duplicate=have_command && command_record_id==recording_id &&
-   command_sequence==previous_command && record_cmd==previous_opcode &&
+ wire duplicate=have_command && r54_equal_0 &&
+   r54_equal_1 && record_cmd==previous_opcode &&
    (record_cmd!=1 || command_mask==record_mask);
  wire start_eligible=!audio_reset && command_record_id!=0 && command_record_id>recording_id && command_mask!=0 &&
    pcm_start_ready && event_start_ready && observer_idle && tx_owner==0 && cfg_idle;
  wire can_start=start_eligible && (!command_mask[1] || snapshot_ready);
- wire valid_identity=command_record_id==recording_id && recording_id!=0;
+ wire valid_identity=r54_equal_0 && recording_id!=0;
  wire ordered=!have_command || command_sequence==last_command_sequence+1'b1 ||
-   (record_cmd==1 && command_record_id!=recording_id);
+   (record_cmd==1 && !r54_equal_0);
  // QUERY/ACK use independent transport sequencing and do not advance START/
  // STOP command sequence. ACK still checks immutable block identity below.
  // A legal START waits for the shared-state freeze boundary. Invalid or
@@ -4117,7 +4132,7 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
  wire pcm_ack=ack && ack_kind==1;
  wire event_ack=ack && ack_kind==2;
  wire matching_ack=ack && block_valid && ack_kind==block_kind &&
-   ack_block_sequence==block_sequence;
+   r54_equal_2;
  wire pcm_available=record_mask[0] && buffered_pcm_pairs!=0 &&
    (buffered_pcm_pairs>=128 || !pcm_active);
  wire event_available=record_mask[1] && buffered_event_cells!=0;
@@ -4197,7 +4212,7 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
    if(event_tx_done)tx_owner<=0;
   end
  end
- s11_pcm_recorder u_pcm(.clk(clk),.rst(rst),.audio_reset(audio_reset),
+ s11_pcm_recorder #(.TRUSTED_ACK(1)) u_pcm(.clk(clk),.rst(rst),.audio_reset(audio_reset),
   .start_valid(new_start && command_mask[0]),.stop_valid(new_stop),.clear_valid(1'b0),
   .start_record_id(command_record_id),.start_ready(pcm_start_ready),.observe_load(observe_load),
   .observe_l(observe_l),.observe_r(observe_r),.observe_frame_id(observe_frame_id),
@@ -4207,7 +4222,7 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
   .first_missing_frame(first_missing_pcm_frame),.buffered_pairs(buffered_pcm_pairs),
   .block_request(choose_pcm),.block_valid(pcm_block_valid),.block_sequence(pcm_block_sequence),
   .block_first_frame(pcm_block_first),.block_pair_count(pcm_block_items),
-  .peek_byte_address(peek_byte_address),.peek_byte_data(pcm_peek),.ack_valid(pcm_ack),
+  .peek_byte_address(peek_byte_address),.peek_byte_data(pcm_peek),.ack_accepted(matching_ack&&ack_kind==1),.ack_valid(pcm_ack),
   .ack_record_id(command_record_id),.ack_block_sequence(ack_block_sequence),
   .stale_ack_count(pcm_stale_ack),.rejected_start_count(pcm_rejected_start));
  generate if(SERIAL_EVENTS)begin: serial_journal
@@ -4247,7 +4262,7 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
   .published_batches(published_batches),.aborted_batches(aborted_batches),.applied_items(applied_items),.initial_instances(initial_instances),
   .persistent_id_next(persistent_id_next),.observer_idle(observer_idle));
  end endgenerate
- s11_event_recorder #(.VARIABLE_RESPONSE(SERIAL_EVENTS)) u_events(.tx_response_valid(response_pulse),.clk(clk),.rst(rst),
+ s11_event_recorder #(.TRUSTED_ACK(1),.VARIABLE_RESPONSE(SERIAL_EVENTS)) u_events(.tx_response_valid(response_pulse),.clk(clk),.rst(rst),
   .start_valid(new_start && command_mask[1]),.stop_valid(new_stop),.clear_valid(1'b0),
   .start_record_id(command_record_id),.start_ready(event_start_ready),.active(event_active),
   .incomplete(event_incomplete),.error_code(event_error),.record_id(event_id),
@@ -4261,10 +4276,14 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
   .aborted_transaction_cells(event_aborted_cells),.block_request(choose_event),
   .block_valid(event_block_valid),.block_sequence(event_block_sequence),
   .block_first_frame(event_block_first),.block_cell_count(event_block_items),
-  .peek_byte_address(peek_byte_address),.peek_byte_data(event_peek),.ack_valid(event_ack),
+  .peek_byte_address(peek_byte_address),.peek_byte_data(event_peek),.ack_accepted(matching_ack&&ack_kind==2),.ack_valid(event_ack),
   .ack_record_id(command_record_id),.ack_block_sequence(ack_block_sequence),
   .stale_ack_count(event_stale_ack),.rejected_start_count(event_rejected_start));
  // synthesis translate_off
+ always @(posedge clk)if(!rst)begin
+  if(pcm_block_valid&&(block_kind!=1||pcm_id!=recording_id))$fatal(1,"R54_PCM_PREFIX_OWNER");
+  if(event_block_valid&&(block_kind!=2||event_id!=recording_id))$fatal(1,"R54_EVENT_PREFIX_OWNER");
+ end
  always @(posedge clk)if(!rst)begin
   if($isunknown({record_cmd_valid,block_request,cfg_tx_valid,cfg_fault_valid}))
    $fatal(1,"S11_SUBSYSTEM_CONTROL_XZ");
@@ -4274,6 +4293,9 @@ module r18_recording_subsystem #(parameter integer SERIAL_EVENTS=0)(
       command_sequence,ack_kind,ack_block_sequence}))$fatal(1,"S11_SUBSYSTEM_COMMAND_XZ");
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(command_record_id),.b(recording_id),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(32)) r54_equal_1_tree(.a(command_sequence),.b(previous_command),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(32)) r54_equal_2_tree(.a(ack_block_sequence),.b(block_sequence),.equal(r54_equal_2));
 endmodule
 
 // The production controller is also used by the independent clear/reset and
@@ -4384,6 +4406,10 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  output reg result_valid,input wire result_ready,output reg[2:0] result_slot,
  output wire[31:0] result_sequence,output wire[511:0] result_bytes,output reg result_final
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+
  // 0 immediate,1 Glide,2 Pan,3 Effects,4 Gain,5 keymap,6 query/barrier.
  reg[6:0] valid,dirty;
  reg[31:0] frame[0:6],version[0:6];reg[2:0] slot[0:6],phase[0:6];
@@ -4521,12 +4547,12 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
    if(valid[2]&&phase[2]==3&&fact_valid&&(fact_outcome==1||fact_outcome==10)&&fact_slot=={1'b0,held_pan_slot})begin
     phase[2]<=7;error[2]<=-11;dirty[2]<=1;pan_watch_valid<=0;
    end
-   if(valid[3]&&phase[3]==3&&tick_d&&fx_frame_version==version[3])begin phase[3]<=4;frame[3]<=tick_frame;dirty[3]<=1;end
-   if(valid[4]&&phase[4]>=3&&phase[4]<5&&gain_sample&&gain_frame_version==version[4])begin
+   if(valid[3]&&phase[3]==3&&tick_d&&r54_equal_0)begin phase[3]<=4;frame[3]<=tick_frame;dirty[3]<=1;end
+   if(valid[4]&&phase[4]>=3&&phase[4]<5&&gain_sample&&r54_equal_1)begin
     if(phase[4]==3)begin phase[4]<=4;frame[4]<=gain_frame;dirty[4]<=1;end
     if(gain_remaining==0&&gain_l==target_l&&gain_e==target_e)begin phase[4]<=5;frame[4]<=gain_frame;dirty[4]<=1;end
    end
-   if(valid[5]&&phase[5]==3&&sample_tick&&!map_pending&&keymap_version==version[5])begin phase[5]<=4;frame[5]<=sample_time;dirty[5]<=1;end
+   if(valid[5]&&phase[5]==3&&sample_tick&&!map_pending&&r54_equal_2)begin phase[5]<=4;frame[5]<=sample_time;dirty[5]<=1;end
    if(local_glide_code!=previous_local_glide&&local_glide_code<=11)begin
     glide_code<=local_glide_code;
     if(valid[1]&&phase[1]==3)begin phase[1]<=6;dirty[1]<=1;end
@@ -4580,6 +4606,9 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
   if(gain_sample&&(^({gain_frame,gain_frame_version,gain_l,gain_e,gain_remaining}))===1'bx)$fatal(1,"S9_CONFIG_GAIN_XZ");
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(fx_frame_version),.b(version[3]),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(32)) r54_equal_1_tree(.a(gain_frame_version),.b(version[4]),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(32)) r54_equal_2_tree(.a(keymap_version),.b(version[5]),.equal(r54_equal_2));
 endmodule
 
 // Three streaming producers share one 32-bit RAM write port. Committed
@@ -4849,7 +4878,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
  input wire[31:0] audio_reclaim,input wire[543:0] envelope_levels,
  input wire event_valid,output wire event_ready,input wire[95:0] event_item,
  input wire event_last,input wire[2:0] timbre,
- output reg fact_valid,output reg[95:0] fact_item,
+ output reg fact_valid,output wire[95:0] fact_item,
  output reg[7:0] fact_outcome,output reg[5:0] fact_slot,
  output reg fact_steal,output wire[314:0] fact_before,fact_after,
  output reg batch_done,batch_abort,published,
@@ -4861,29 +4890,36 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
  input wire snapshot_valid,output wire snapshot_ready,output reg snapshot_done,
  input wire query_valid,output wire query_ready,input wire[1:0] query_view,
  input wire[4:0] query_slot,output reg query_response_valid,
- output reg[314:0] query_response,
+ output wire[314:0] query_response,
  output reg[31:0] accepted_events,output reg[31:0] max_event_cycles
 );
+ wire r54_equal_0;
+
  localparam[63:0] ID_MAX=64'hffffffffffffffff>>(64-ID_WIDTH);
  localparam[7:0] IDLE=0,SCAN_WORK=1,SCAN_AUDIO=2,SELECT=3,BEFORE=4,
    APPLY=5,FINISH=6,COPY_READ=7,COPY_GOT=8,COPY_NEXT=9,
    QUERY_GOT=10,RECLAIM_AUDIO=11,RECLAIM_WORK=12,RECLAIM_DONE=13,
    PREP_READ=14,PREP_GOT=15,RECLAIM_WRITTEN=16,
    LOOKUP_GOT=17,LOOKUP_REPLY=18,PAN_GOT=19,PAN_APPLY=20,PAN_REPLY=21,
-   RANK_UPDATE=22,READ_WORDS=250,WRITE_WORDS=251;
+   RANK_UPDATE=22,ID_LOW=23,ID_HIGH=24,SELECT_DONE=25,READ_WORDS=250,WRITE_WORDS=251;
  reg[7:0] state,return_state;
  reg[31:0] memory[0:1023] /* synthesis syn_ramstyle="block_ram" */;
  reg[9:0] read_address,write_base;
  reg[31:0] memory_q;
- // READ_WORDS and WRITE_WORDS are exclusive owners. Callers capture any
- // surviving metadata before starting a write; one shift bank serves both.
- reg[191:0] read_buffer;
- reg[2:0] read_cycle,write_cycle;
- wire memory_write=state==WRITE_WORDS&&!rst;
- always @(posedge clk)begin
-  memory_q<=memory[read_address];
-  if(memory_write)memory[write_base]<=read_buffer[31:0];
- end
+ // R46: stream each aligned word. Only valid reply/fact operands are
+ // assembled; scans and bank copies never instantiate a whole-row shifter.
+ reg[186:0] record_q;
+ wire[155:0] old_metadata=record_q[186:31];
+ wire[30:0] old_control=record_q[30:0];
+ assign query_response={128'd0,record_q};
+ reg[30:0] control_q;
+ reg[4:0] read_slot_q;reg[1:0] read_bank_q,write_mode;
+ reg[2:0] read_cycle,write_cycle,write_last;
+ reg meta_equal,id_equal,token_equal,id_carry;
+ reg[15:0] next_generation;
+ wire copying=state==READ_WORDS&&return_state==COPY_GOT&&read_cycle!=0;
+ wire memory_write=!rst&&(state==WRITE_WORDS||copying);
+ reg[31:0] memory_write_data;
  reg[3:0] audible[0:31];
  reg[127:0] prepared_flags;reg[127:0] frozen_flags;reg prepared_valid;reg[4:0] prepare_slot;
  reg[4:0] rank[0:31] /* synthesis syn_ramstyle="distributed_ram" */;
@@ -4908,18 +4944,19 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
  reg[28:0] best;
  reg[4:0] victim,target;
  reg found;
- reg[155:0] old_metadata,reclaim_metadata;
- reg[30:0] old_control,reclaim_control;
+
  reg[63:0] chosen_id,following_id;
  reg[31:0] event_age;
+ // R45: item_q remains owned until the valid fact is consumed.
+ // Reclaim has no input event. Invalid-cycle residue is not consumed.
+ assign fact_item=fact_outcome==10?96'd0:item_q;
  wire[3:0] kind=item_q[27:24];
  wire invalid_item=item_q[0]||kind<1||kind>4||
   (kind==4&&(item_q[23:16]!=255||item_q[15:9]!=0))||
   (kind!=4&&item_q[95:32]==0);
  wire stale=(kind==1&&found)||((kind==2||kind==3)&&!found);
  wire collision_scan=kind==1&&collision_mode;
- wire[155:0] scan_metadata=work_initialized[scan_slot]?read_buffer[186:31]:156'd0;
- wire[30:0] scan_control=work_control(scan_slot,read_buffer[30:0]);
+ wire[30:0] scan_control=work_control(scan_slot,control_q);
  wire[4:0] rank_read_slot=state==RANK_UPDATE?rank_cursor:state==APPLY?selected_slot:scan_slot;
  wire[4:0] rank_read=rank_initialized[rank_read_slot]?rank[rank_read_slot]:rank_read_slot;
  wire rank_we=!rst&&state==RANK_UPDATE;
@@ -4932,32 +4969,60 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
  wire[28:0] candidate={(!scan_control[1]?2'd0:(!scan_control[2]?2'd1:2'd2)),
    (!scan_control[1]||scan_control[2]||scan_control[0])?17'd0:scan_levels[scan_slot*17+:17],
    scan_control[1]?rank_read:5'd0,scan_slot};
- wire matching=scan_control[1]&&scan_control[2]&&scan_metadata[11:8]==item_q[31:28]&&
-   scan_metadata[7:0]==item_q[23:16]&&scan_metadata[155:92]==item_q[95:32];
- wire[63:0] scanning_id=state==SCAN_AUDIO?read_buffer[122:59]:scan_metadata[91:28];
- // The 64-bit counter advances monotonically until wrap. After wrap a
- // single equality comparator scans both live versions. A collision repeats
- // the same RAM scan with the next nonzero ID; there is no parallel window,
- // wide distance subtraction or 65-way priority encoder.
- wire[63:0] following_search_id=search_id==ID_MAX?64'd1:search_id+64'd1;
+ wire matching=scan_control[1]&&scan_control[2]&&meta_equal&&token_equal;
+ // One pair of 32-bit operands serves streaming equality, victim ordering,
+ // generation increment and both halves of identity increment.
+ reg[31:0] alu_a,alu_b;reg alu_sub;
+ always @*begin
+  alu_a=0;alu_b=0;alu_sub=0;
+  if(state==READ_WORDS)begin
+   alu_a=memory_q;
+   case(read_cycle)
+    2:begin
+     if(return_state==LOOKUP_GOT)begin alu_a=memory_q&32'h0fffff00;alu_b={4'd0,control_generation,4'd2,8'd0};end
+     else if(return_state==PAN_GOT)begin alu_a=memory_q&32'h0ffff000;alu_b={4'd0,control_generation,12'd0};end
+     else if(return_state==RECLAIM_DONE)begin alu_a=memory_q&32'h0ffff000;alu_b={4'd0,old_metadata[27:12],12'd0};end
+     else begin alu_a={20'd0,memory_q[11:0]};alu_b={20'd0,item_q[31:28],item_q[23:16]};end
+    end
+    3:alu_b=return_state==RECLAIM_DONE?record_q[90:59]:return_state==PAN_GOT?control_id[31:0]:search_id[31:0];
+    4:alu_b=return_state==RECLAIM_DONE?record_q[122:91]:return_state==PAN_GOT?control_id[63:32]:search_id[63:32];
+    5:alu_b=return_state==LOOKUP_GOT?control_id[31:0]:item_q[63:32];
+    6:alu_b=return_state==LOOKUP_GOT?control_id[63:32]:item_q[95:64];
+    default:begin end
+   endcase
+  end else if(state==SCAN_WORK)begin alu_a={3'd0,candidate};alu_b={3'd0,best};alu_sub=1;end
+  else if(state==ID_LOW)begin alu_a=search_id[31:0];alu_b=1;end
+  else if(state==ID_HIGH)begin alu_a=search_id[63:32];alu_b={31'd0,id_carry};end
+  else if(state==BEFORE)begin alu_a={16'd0,old_metadata[27:12]};alu_b=1;end
+ end
+ wire[32:0] alu_sum={1'b0,alu_a}+{1'b0,alu_b^{32{alu_sub}}}+alu_sub;
+ wire alu_equal=r54_equal_0;
+ wire candidate_less=!alu_sum[32];
+ wire row_initialized=read_bank_q==2?frozen_initialized[read_slot_q]:
+   read_bank_q[0]==work_bank?work_initialized[read_slot_q]:audio_initialized[read_slot_q];
+ wire capture_record=return_state==BEFORE||return_state==QUERY_GOT||return_state==LOOKUP_GOT||return_state==PAN_GOT||return_state==RECLAIM_WORK;
+ wire[31:0] record_data=row_initialized?memory_q:32'd0;
+ wire[30:0] record_control=read_bank_q==2?(row_initialized?memory_q[30:0]:31'd2048):
+   read_bank_q[0]==work_bank?work_control(read_slot_q,memory_q[30:0]):
+   row_initialized?{memory_q[30:4],audible[read_slot_q]}:31'd2048;
  reg[30:0] new_control;reg[155:0] new_metadata;
  // Fact consumers sample only while fact_valid. These operands already stay
  // registered through that edge; a second pair of wide result registers is redundant.
- assign fact_before=fact_outcome==10?{128'd0,reclaim_metadata,reclaim_control[30:2],1'b1,reclaim_control[0]}:
+ assign fact_before=fact_outcome==10?{128'd0,old_metadata,old_control[30:2],1'b1,old_control[0]}:
    {128'd0,old_metadata,old_control};
- assign fact_after=fact_outcome==10?{128'd0,reclaim_metadata,reclaim_control[30:2],1'b0,reclaim_control[0]}:
+ assign fact_after=fact_outcome==10?{128'd0,old_metadata,old_control[30:2],1'b0,old_control[0]}:
    {128'd0,(fact_outcome>=1&&fact_outcome<=3)?new_metadata:old_metadata,
            (fact_outcome>=1&&fact_outcome<=3)?new_control:old_control};
  always @*begin
   new_control=old_control;new_metadata=old_metadata;
   if(kind==1)begin
    new_control={timbre_q,item_q[8:1],item_q[15:9],9'd128,4'b1111};
-   new_metadata={item_q[95:32],chosen_id,16'(old_metadata[27:12]+16'd1),item_q[31:28],item_q[23:16]};
+   new_metadata={item_q[95:32],chosen_id,next_generation,item_q[31:28],item_q[23:16]};
   end else if(kind==2)new_control[2]=0;
   else if(kind==3)begin new_control[27:20]=item_q[8:1];new_control[19:13]=item_q[15:9];end
  end
  function[9:0] row_address(input[1:0] bank,input[4:0] slot);
-  row_address=(bank==2?10'd384:bank[0]?10'd192:10'd0)+({5'd0,slot}<<2)+({5'd0,slot}<<1);
+  row_address={bank,slot,3'd0};
  endfunction
  function[30:0] work_control(input[4:0] slot,input[30:0] raw);
   begin
@@ -4967,11 +5032,13 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
   end
  endfunction
  task read_row(input[1:0] bank,input[4:0] slot,input[7:0] continuation);
-  begin read_address<=row_address(bank,slot);read_cycle<=0;read_buffer<=0;
+  begin read_address<=row_address(bank,slot);read_cycle<=0;read_slot_q<=slot;read_bank_q<=bank;
+   meta_equal<=0;id_equal<=0;token_equal<=0;
+   if(continuation==COPY_GOT)write_base<=row_address(copy_snapshot?2'd2:{1'b0,work_bank},slot);
    return_state<=continuation;state<=READ_WORDS;end
  endtask
- task write_row(input[1:0] bank,input[4:0] slot,input[186:0] data,input[7:0] continuation);
-  begin write_base<=row_address(bank,slot);write_cycle<=0;read_buffer<={5'd0,data};
+ task write_words(input[1:0] mode,input[2:0] last_word,input[7:0] continuation);
+  begin write_base<=row_address({1'b0,work_bank},selected_slot);write_cycle<=0;write_last<=last_word;write_mode<=mode;
    return_state<=continuation;state<=WRITE_WORDS;end
  endtask
  task next_scan;
@@ -4980,6 +5047,27 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
    else begin scan_slot<=scan_slot+1'b1;read_row({1'b0,work_bank},scan_slot+5'd1,SCAN_WORK);end
   end
  endtask
+ always @*begin
+  memory_write_data=0;
+  if(copying)begin
+   memory_write_data=audio_initialized[copy_slot]?memory_q:32'd0;
+   if(read_cycle==1)memory_write_data={1'b0,audio_initialized[copy_slot]?memory_q[30:4]:27'd128,
+     copy_snapshot?frozen_flags[3:0]:audible[copy_slot]};
+  end else if(write_mode==1)memory_write_data={1'b0,old_control[30:13],control_pan,old_control[3:0]};
+  else if(write_mode==2)memory_write_data={1'b0,control_q[30:2],1'b0,control_q[0]};
+  else case(write_cycle)
+   0:memory_write_data={1'b0,new_control};
+   1:memory_write_data={4'd0,next_generation,item_q[31:28],item_q[23:16]};
+   2:memory_write_data=chosen_id[31:0];
+   3:memory_write_data=chosen_id[63:32];
+   4:memory_write_data=item_q[63:32];
+   5:memory_write_data=item_q[95:64];
+  endcase
+ end
+ always @(posedge clk)begin
+  memory_q<=memory[read_address];
+  if(memory_write)memory[write_base]<=memory_write_data;
+ end
  assign event_ready=!rst&&state==IDLE&&
    (in_batch?!(query_valid&&query_view==2):(!snapshot_valid&&!query_valid&&!lookup_valid&&!pan_valid))&&(pending_reclaim==0||in_batch)&&
    !((frame_tick||publish_due)&&dirty&&!in_batch&&(!hold_publication||panic_urgent))&&!panic&&!panic_pending;
@@ -5011,7 +5099,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
   wire[27:0] rc;
   wire[11:0] pc;
   wire[4:0] slot={2'(l),rs},pan_slot={2'(l),ps};
-  wire[30:0] preparing=work_control(prepare_slot,read_buffer[30:0]);
+  wire[30:0] preparing=work_control(prepare_slot,control_q);
   wire directory_write=!rst&&state==PREP_GOT&&prepare_slot[4:3]==l;
   wire[27:0] write_controls={1'b0,preparing[30:4]};
   wire[11:0] write_pan={3'b0,preparing[12:4]};
@@ -5039,7 +5127,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
   fact_valid<=0;batch_done<=0;batch_abort<=0;published<=0;snapshot_done<=0;query_response_valid<=0;
   if(rst)begin
    state<=IDLE;return_state<=IDLE;read_address<=0;write_base<=0;
-   read_buffer<=0;read_cycle<=0;write_cycle<=0;
+   record_q<=0;control_q<=0;read_cycle<=0;write_cycle<=0;write_last<=0;write_mode<=0;read_slot_q<=0;read_bank_q<=0;meta_equal<=0;id_equal<=0;token_equal<=0;id_carry<=0;next_generation<=0;
    prepared_flags<=0;frozen_flags<=0;prepared_valid<=0;prepare_slot<=0;
    work_bank<=0;audio_bank<=1;dirty<=0;in_batch<=0;copy_snapshot<=0;copy_slot<=0;
    panic_pending<=0;panic_urgent<=0;allocated_since_publish<=0;publish_due<=0;
@@ -5050,10 +5138,10 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
    working_vibrato<=0;audio_vibrato<=0;pending_reclaim<=0;scan_levels<=0;
    item_q<=0;last_q<=0;timbre_q<=0;id_cursor<=1;collision_mode<=0;collision_hit<=0;retry_scan<=0;search_id<=1;identity_retries<=0;
    best<={29{1'b1}};victim<=0;target<=0;found<=0;
-   old_metadata<=0;old_control<=0;reclaim_metadata<=0;reclaim_control<=0;
+   
    chosen_id<=1;following_id<=2;event_age<=0;max_event_cycles<=0;accepted_events<=0;
-   fact_item<=0;fact_outcome<=0;fact_slot<=0;fact_steal<=0;
-   protocol_error<=0;query_response<=0;rank_cursor<=0;selected_rank<=0;
+   fact_outcome<=0;fact_slot<=0;fact_steal<=0;
+   protocol_error<=0;rank_cursor<=0;selected_rank<=0;
    for(integer s=0;s<32;s++)begin audible[s]<=4'd0;end
   end else begin
    if(panic)panic_pending<=1;
@@ -5112,38 +5200,60 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
      end
     end
     READ_WORDS:begin
-     if(read_cycle!=0)read_buffer<={memory_q,read_buffer[191:32]};
+     if(read_cycle==1)control_q<=memory_q[30:0];
+     case(read_cycle)
+      2:meta_equal<=alu_equal;
+      3:id_equal<=alu_equal;
+      4:id_equal<=id_equal&&alu_equal;
+      5:token_equal<=alu_equal;
+      6:token_equal<=token_equal&&alu_equal;
+     endcase
+     if(capture_record)case(read_cycle)
+      1:record_q[30:0]<=record_control;
+      2:record_q[58:31]<=record_data[27:0];
+      3:record_q[90:59]<=record_data;
+      4:record_q[122:91]<=record_data;
+      5:record_q[154:123]<=record_data;
+      6:record_q[186:155]<=record_data;
+     endcase
+     if(copying)write_base<=write_base+1'b1;
      if(read_cycle==6)state<=return_state;
      else begin read_cycle<=read_cycle+1'b1;if(read_cycle<5)read_address<=read_address+1'b1;end
     end
     WRITE_WORDS:begin
-     read_buffer<=read_buffer>>32;write_base<=write_base+1'b1;
-     if(write_cycle==5)state<=return_state;else write_cycle<=write_cycle+1'b1;end
+     write_base<=write_base+1'b1;
+     if(write_cycle==write_last)state<=return_state;else write_cycle<=write_cycle+1'b1;
+    end
     SCAN_WORK:begin
-     if(!retry_scan&&candidate<best)begin best<=candidate;victim<=scan_slot;end
+     if(!retry_scan&&candidate_less)begin best<=candidate;victim<=scan_slot;end
      if(!retry_scan&&matching)begin found<=1;target<=scan_slot;end
-     if(collision_scan&&scan_control[1]&&scanning_id==search_id)collision_hit<=1;
+     if(collision_scan&&scan_control[1]&&id_equal)collision_hit<=1;
      if(collision_scan&&audio_initialized[scan_slot])read_row({1'b0,audio_bank},scan_slot,SCAN_AUDIO);
      else next_scan();
     end
     SCAN_AUDIO:begin
      // Even an un-gated audible tail reserves its identity until it retires.
-     if(audible[scan_slot][1]&&scanning_id==search_id)collision_hit<=1;
+     if(audible[scan_slot][1]&&id_equal)collision_hit<=1;
      next_scan();
     end
     SELECT:begin
-     selected_slot<=kind==1?victim:target;chosen_id<=search_id;following_id<=following_search_id;
+     selected_slot<=kind==1?victim:target;chosen_id<=search_id;state<=ID_LOW;
+    end
+    ID_LOW:begin following_id[31:0]<=alu_sum[31:0];id_carry<=alu_sum[32];state<=ID_HIGH;end
+    ID_HIGH:begin
+     following_id[63:32]<=alu_sum[31:0];
+     if(search_id==ID_MAX)following_id<=64'd1;
+     state<=SELECT_DONE;
+    end
+    SELECT_DONE:begin
      if(collision_scan&&collision_hit&&!stale&&!invalid_item)begin
-      search_id<=following_search_id;collision_hit<=0;retry_scan<=1;identity_retries<=identity_retries+1'b1;
+      search_id<=following_id;collision_hit<=0;retry_scan<=1;identity_retries<=identity_retries+1'b1;
       scan_slot<=0;read_row({1'b0,work_bank},0,SCAN_WORK);
-     end else read_row({1'b0,work_bank},kind==1?victim:target,BEFORE);
+     end else read_row({1'b0,work_bank},selected_slot,BEFORE);
     end
-    BEFORE:begin
-     old_metadata<=work_initialized[selected_slot]?read_buffer[186:31]:156'd0;
-     old_control<=work_control(selected_slot,read_buffer[30:0]);state<=APPLY;
-    end
+    BEFORE:begin next_generation<=alu_sum[15:0];state<=APPLY;end
     APPLY:begin
-     fact_valid<=1;fact_item<=item_q;
+     fact_valid<=1;
      fact_outcome<=invalid_item?8'd6:stale?8'd5:{4'd0,kind};
      fact_slot<=kind==4||((kind==2||kind==3)&&!found)?6'd63:{1'b0,selected_slot};
      fact_steal<=kind==1&&!stale&&!invalid_item&&old_control[1];
@@ -5158,8 +5268,8 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
        // Freeze the old rank before updating any slot. Audio reads the
        // published bank; event/query admission stays closed until FINISH.
        selected_rank<=rank_read;rank_cursor<=0;
-       write_row({1'b0,work_bank},selected_slot,{new_metadata,new_control},RANK_UPDATE);
-      end else write_row({1'b0,work_bank},selected_slot,{new_metadata,new_control},FINISH);
+       write_words(0,5,RANK_UPDATE);
+      end else write_words(0,0,FINISH);
      end else begin
       if(!stale&&kind==4)begin working_vibrato<=item_q[8:1];dirty<=1;end
       state<=FINISH;
@@ -5177,58 +5287,48 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
      state<=IDLE;
     end
     COPY_READ:read_row({1'b0,audio_bank},copy_slot,COPY_GOT);
-    COPY_GOT:write_row(copy_snapshot?2'd2:{1'b0,work_bank},copy_slot,
-      {audio_initialized[copy_slot]?read_buffer[186:4]:183'd128,copy_snapshot?frozen_flags[3:0]:audible[copy_slot]},COPY_NEXT);
+    COPY_GOT:state<=COPY_NEXT;
     COPY_NEXT:begin
      if(copy_snapshot)frozen_flags<=frozen_flags>>4;
      if(copy_slot==31)begin state<=IDLE;if(copy_snapshot)snapshot_done<=1;end
      else begin copy_slot<=copy_slot+1'b1;state<=COPY_READ;end
     end
     QUERY_GOT:begin
-     query_response<={128'd0,
-      (query_view_q==2?frozen_initialized[query_slot_q]:query_view_q==1?audio_initialized[query_slot_q]:work_initialized[query_slot_q])?read_buffer[186:31]:156'd0,
-      query_view_q==2?(frozen_initialized[query_slot_q]?read_buffer[30:0]:31'd2048):query_view_q==1?(audio_initialized[query_slot_q]?{read_buffer[30:4],audible[query_slot_q]}:31'd2048):work_control(query_slot_q,read_buffer[30:0])};
+     if(query_view_q==1&&audio_initialized[query_slot_q])record_q[3:0]<=audible[query_slot_q];
      query_response_valid<=1;state<=IDLE;
     end
     LOOKUP_GOT:begin
-     old_metadata<=work_initialized[selected_slot]?read_buffer[186:31]:156'd0;
-     old_control<=work_control(selected_slot,read_buffer[30:0]);
      lookup_found_q<=lookup_key_q<32&&phone_owned[selected_slot]&&work_initialized[selected_slot]&&
-      read_buffer[1]&&!panic_urgent&&read_buffer[42:39]==2&&read_buffer[186:123]==control_id&&
-      read_buffer[58:43]==control_generation;
+      control_q[1]&&!panic_urgent&&meta_equal&&token_equal;
      state<=LOOKUP_REPLY;
     end
     LOOKUP_REPLY:state<=IDLE;
-    PAN_GOT:begin
-     old_metadata<=work_initialized[selected_slot]?read_buffer[186:31]:156'd0;
-     old_control<=work_control(selected_slot,read_buffer[30:0]);state<=PAN_APPLY;
-    end
+    PAN_GOT:state<=PAN_APPLY;
     PAN_APPLY:begin
-     pan_status<=control_pan>256?2'd1:!old_control[1]||old_metadata[91:28]!=control_id||old_metadata[27:12]!=control_generation?2'd2:2'd0;
-     if(control_pan<=256&&old_control[1]&&old_metadata[91:28]==control_id&&old_metadata[27:12]==control_generation)begin
+     pan_status<=control_pan>256?2'd1:!old_control[1]||!id_equal||!meta_equal?2'd2:2'd0;
+     if(control_pan<=256&&old_control[1]&&id_equal&&meta_equal)begin
       dirty<=1;prepared_valid<=0;
-      write_row({1'b0,work_bank},selected_slot,{old_metadata,old_control[30:13],control_pan,old_control[3:0]},PAN_REPLY);
+      write_words(1,0,PAN_REPLY);
      end else state<=PAN_REPLY;
     end
     PAN_REPLY:state<=IDLE;
     RECLAIM_AUDIO:read_row({1'b0,audio_bank},selected_slot,RECLAIM_WORK);
     RECLAIM_WORK:begin
-     reclaim_metadata<=audio_initialized[selected_slot]?read_buffer[186:31]:156'd0;
-     reclaim_control<=audio_initialized[selected_slot]?{read_buffer[30:4],audible[selected_slot]}:31'd2048;
+     if(audio_initialized[selected_slot])record_q[3:0]<=audible[selected_slot];
      read_row({1'b0,work_bank},selected_slot,RECLAIM_DONE);
     end
     RECLAIM_DONE:begin
      prepared_valid<=0;
-     fact_valid<=1;fact_item<=0;fact_outcome<=10;fact_slot<={1'b0,selected_slot};fact_steal<=0;
-     if(work_initialized[selected_slot]&&read_buffer[122:43]==reclaim_metadata[91:12]&&!read_buffer[2])begin
+     fact_valid<=1;fact_outcome<=10;fact_slot<={1'b0,selected_slot};fact_steal<=0;
+     if(work_initialized[selected_slot]&&id_equal&&meta_equal&&!control_q[2])begin
       phone_owned[selected_slot]<=0;
-      write_row({1'b0,work_bank},selected_slot,{read_buffer[186:2],1'b0,read_buffer[0]},RECLAIM_WRITTEN);
+      write_words(2,0,RECLAIM_WRITTEN);
      end else state<=RECLAIM_WRITTEN;
     end
     RECLAIM_WRITTEN:begin pending_reclaim[selected_slot]<=0;state<=IDLE;end
     PREP_READ:read_row({1'b0,work_bank},prepare_slot,PREP_GOT);
     PREP_GOT:begin
-     prepared_flags<={4'(work_control(prepare_slot,read_buffer[30:0])),prepared_flags[127:4]};
+     prepared_flags<={4'(work_control(prepare_slot,control_q)),prepared_flags[127:4]};
      if(prepare_slot==31)begin prepared_valid<=1;state<=IDLE;end
      else begin prepare_slot<=prepare_slot+1'b1;state<=PREP_READ;end
     end
@@ -5248,6 +5348,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64)(
   if(fact_valid&&fact_outcome==1&&(fact_after[122:59]==0))$fatal(1,"R28_ZERO_ID");
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(alu_a),.b(alu_b),.equal(r54_equal_0));
 endmodule
 
 module r28_narrow_voice_lane #(parameter integer LANE=0)(
@@ -5499,105 +5600,273 @@ module r28_narrow_stereo_sum #(parameter integer COMPLETION_LIMIT=192)(
   end
  end
 endmodule
-module r28_frame_audio(
+module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0)(
+ input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
+ output wire signed[53:0] fx_mac_q,
  input wire clk,rst,start,
  input wire[127:0] flags,input wire[123:0] read_controls,input wire[35:0] read_pans,
  output wire[11:0] read_slots,pan_slots,
- input wire [7:0] vibrato_depth,input wire [3:0] glide_code,
- output reg busy,output wire mix_valid,
- output wire signed [31:0] mix_l_q8,mix_r_q8,
- output wire [543:0] envelope_levels,output wire [95:0] envelope_states,
- output reg [31:0] reclaim_pending,output reg [575:0] voice_samples,
- output wire [3:0] completion_valid,completion_accept,
- output wire [11:0] completion_slot,output wire [71:0] completion_sample,
- output wire protocol_error,output wire deadline_error,output wire [7:0] last_complete_cycle
+ input wire[7:0] vibrato_depth,input wire[3:0] glide_code,
+ output reg busy,output wire mix_valid,output reg control_retire,
+ output wire signed[31:0] mix_l_q8,mix_r_q8,
+ output wire[543:0] envelope_levels,output wire[95:0] envelope_states,
+ output reg[31:0] reclaim_pending,output reg[575:0] voice_samples,
+ output reg[3:0] completion_valid,completion_accept,
+ output reg[11:0] completion_slot,output reg[71:0] completion_sample,
+ output wire protocol_error,output reg deadline_error,output wire[8:0] last_complete_cycle
 );
- wire[279:0] timbre_requests;wire[81:0] timbre_response;
- r28_shared_timbre_lfo timbre_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),
-  .requests(timbre_requests),.response(timbre_response));
- wire[3:0] context_we;wire[11:0] context_ws;
- wire[1167:0] context_wd;wire[583:0] context_rd;
- reg[7:0] context_age;
- always @(posedge clk)if(rst||start)context_age<=0;else if(busy)context_age<=context_age+1'b1;
- generate for(genvar pair=0;pair<2;pair++)begin: context_banks
-  // Lanes 0/1 and 2/3 read on distinct clocks; the read word is broadcast.
-  // Their writes are likewise staggered, at offsets 6/7 and 8/9.
-  wire odd=context_we[pair*2+1];
-  wire[3:0] wa=odd?{1'b1,context_ws[(pair*2+1)*3+:3]}:{1'b0,context_ws[pair*6+:3]};
-  wire[291:0] wd=odd?context_wd[(pair*2+1)*292+:292]:context_wd[pair*584+:292];
-  wire[3:0] ra={context_age[0],context_age[6:4]};
-  for(genvar nibble=0;nibble<73;nibble++)begin: words
-   RAM16SDP4 memory(.CLK(clk),.WRE(context_we[pair*2]||context_we[pair*2+1]),.WAD(wa),.RAD(ra),
-    .DI(wd[nibble*4+:4]),.DO(context_rd[pair*292+nibble*4+:4]));
-  end
-  // synthesis translate_off
-  always @(posedge clk)if(!rst&&context_we[pair*2]&&context_we[pair*2+1])$fatal(1,"R28_CONTEXT_WRITE_COLLISION");
-  // synthesis translate_on
- end endgenerate
- // Fixed lane slots: pressure difference at 3..6, gain at 6..9.
- // These two independent units serve all four lanes without moving edges.
- wire[291:0] pressure_requests;
- wire[1:0] difference_lane=context_age[3:0]-4'd3,gain_lane=context_age[3:0]-4'd6;
- wire[72:0] difference_request=pressure_requests[difference_lane*73+:73];
- wire[72:0] gain_request=pressure_requests[gain_lane*73+:73];
- wire signed[17:0] pressure_delta=$signed({1'b0,difference_request[67:51]})-$signed({1'b0,difference_request[50:34]});
+ localparam integer EW=13,CW=292,EPW=89;
+ reg[8:0] age;
+ reg[127:0] frame_flags;
+ reg[11:0] expression_q;
+ reg[31:0] initialized,visible_initialized;
+ reg[16:0] levels[0:31];reg[2:0] states[0:31];
+ wire early_read=busy&&age<128&&age[3:0]<4;
+ wire early_commit=busy&&age<128&&age[3:0]>=6&&age[3:0]<=9;
+ wire[1:0] early_lane=age[1:0],commit_lane=age[1:0]-2'd2;
+ wire[4:0] early_slot={early_lane,age[6:4]},commit_slot={commit_lane,age[6:4]};
+ wire work_active=busy&&age>=4&&age<=258;
+ wire[8:0] work_age=age-9'd4;
+ wire[2:0] work_step=work_age[2:0];
+ wire[4:0] work_slot={work_age[4:3],work_age[7:5]};
+ wire[4:0] read_slot=early_read?early_slot:work_slot;
+ wire[1:0] read_lane=read_slot[4:3];
+ wire[3:0] read_flags=age==0?flags[read_slot*4+:4]:frame_flags[read_slot*4+:4];
+ // Select one complete Lane field. Constant slices avoid a general barrel
+ // selection network for the non-power-of-two 31-bit Lane stride.
+ reg[26:0] selected_control;
+ always @*begin
+  case(read_lane)
+   2'd0:selected_control=read_controls[4+:27];
+   2'd1:selected_control=read_controls[35+:27];
+   2'd2:selected_control=read_controls[66+:27];
+   2'd3:selected_control=read_controls[97+:27];
+   default:selected_control=27'bx;
+  endcase
+ end
+ wire[30:0] read_control={selected_control,read_flags};
+ assign read_slots={4{read_slot[2:0]}};
+ assign pan_slots=completion_slot;
+ reg[4:0] captured_slot;
+ reg captured_valid,captured_gate,captured_trigger,new_owner;
+ reg[6:0] captured_note;reg[7:0] captured_pressure;reg[2:0] captured_timbre;
+ reg[31:0] phase_q;reg[CW-1:0] state_q;
+ wire[CW-1:0] state_read;
+ reg[CW-1:0] captured_state;
+ always @*begin
+  captured_state=initialized[read_slot]?state_read:292'd0;
+  if(read_control[0]||!initialized[read_slot])captured_state[153+:EPW]={3'd0,17'd0,17'd0,13'd0,13'd1,13'd0,13'd0};
+ end
+ wire[90:0] envelope_request;wire[88:0] envelope_response;
+ wire[113:0] glide_request;wire[124:0] glide_response;
+ wire[124:0] advance_request;wire[101:0] advance_response;
+ wire[72:0] pressure_request;
+ wire[16:0] pressure_gain_response;
+ wire[69:0] timbre_request;wire[81:0] timbre_response;
+  wire [31:0] old_lfo;
+ wire [6:0] old_note,old_target;
+ wire [7:0] old_pressure;
+ wire [2:0] old_timbre,old_env_state;
+ wire [16:0] old_level,old_quotient,old_glide_remaining,old_glide_base,old_glide_error;
+ wire [EW-1:0] old_remaining,old_duration,old_remainder,old_error;
+ wire [22:0] old_pitch;
+ wire [15:0] old_glide_remainder;
+ wire old_up;wire [3:0] old_code;
+ wire [16:0] old_gain,old_transient,old_body;
+ assign {old_lfo,old_note,old_pressure,old_timbre,old_env_state,old_level,old_quotient,
+ old_remaining,old_duration,old_remainder,old_error,old_pitch,old_target,
+ old_glide_remaining,old_glide_base,old_glide_remainder,old_glide_error,old_up,old_code,
+ old_gain,old_transient,old_body}=state_q;
+ wire [2:0] env_state_result;
+ wire [16:0] env_level_result,env_quotient_result;
+ wire [31:0] env_remaining_result,env_duration_result,env_remainder_result,env_error_result;
+ assign envelope_request={old_env_state,old_level,old_quotient,old_remaining,old_duration,old_remainder,old_error,captured_gate,captured_trigger};
+ reg [EPW-1:0] env_q;
+ wire [2:0] next_state;wire [16:0] next_level,next_quotient;
+ wire [EW-1:0] next_remaining,next_duration,next_remainder,next_error;
+ assign {next_state,next_level,next_quotient,next_remaining,next_duration,next_remainder,next_error}=env_q;
+ wire [6:0] effective_note=next_state==4?(new_owner?7'd0:old_note):captured_note;
+ wire [124:0] prepared;
+ reg [124:0] prepared_q;
+ assign glide_request={new_owner,effective_note,expression_q[3:0],old_pitch,old_target,old_glide_remaining,
+   old_glide_base,old_glide_remainder,old_glide_error,old_up,old_code};
+ assign prepared=glide_response;
+ wire [22:0] next_pitch;wire [6:0] next_target;
+ wire [16:0] next_glide_remaining,next_glide_base,next_glide_error;
+ wire [15:0] next_glide_remainder;wire next_up;wire [3:0] next_code;
+ assign advance_request=prepared_q;
+ assign {next_pitch,next_target,next_glide_remaining,next_glide_base,next_glide_remainder,next_glide_error,next_up,next_code}=advance_response;
+ // Fixed preparation edges break target -> difference -> rounded step -> add.
+ // Release holds the gain; a new instance takes its exact initial pressure.
+ wire [7:0] effective_pressure=next_state==4?(new_owner?8'd0:old_pressure):captured_pressure;
+ reg [16:0] pressure_target,pressure_difference,pressure_step;
+ reg pressure_up;
+ assign pressure_request={new_owner,next_state,pressure_up,pressure_target,old_gain,pressure_difference,pressure_step};
+ wire [16:0] next_gain=pressure_gain_response;
+ wire [2:0] timbre=new_owner?captured_timbre:old_timbre;
+ wire[16:0] next_transient,next_body;wire[31:0] next_lfo;wire signed[15:0] lfo_sine;
+ assign timbre_request={new_owner,timbre,old_transient,old_body,(new_owner?32'd0:old_lfo)};
+ assign {next_lfo,lfo_sine,next_transient,next_body}=timbre_response;
+ wire [16:0] depth=expression_q[11:4]==255?17'd65536:{1'b0,expression_q[11:4],expression_q[11:4]};
+ wire [CW-1:0] state_next={next_lfo,
+  7'((captured_trigger||captured_gate)?captured_note:(next_state==0?7'd0:old_note)),
+  8'((captured_trigger||captured_gate)?captured_pressure:(next_state==0?8'd0:old_pressure)),
+  timbre,next_state,next_level,next_quotient,next_remaining,next_duration,next_remainder,next_error,
+  next_pitch,next_target,next_glide_remaining,next_glide_base,next_glide_remainder,next_glide_error,next_up,next_code,
+  next_gain,next_transient,next_body};
+
+ wire context_write=!rst&&work_active&&work_step==6&&captured_valid;
+ // R45-B: 32 independent contexts, one scheduled read and one write.
+ // Issue each read one edge before its unchanged consumer edge.
+ wire[8:0] prefetch_age=age+9'd1;
+ wire[8:0] prefetch_work_age=prefetch_age-9'd4;
+ wire prefetch_observer=prefetch_age<128&&prefetch_age[3:0]<4;
+ wire prefetch_main=prefetch_age>=4&&prefetch_age<=252&&prefetch_work_age[2:0]==0;
+ wire context_read_issue=!rst&&(start||(busy&&(prefetch_observer||prefetch_main)));
+ wire[4:0] context_ra=start?5'd0:prefetch_observer?
+   {prefetch_age[1:0],prefetch_age[6:4]}:{prefetch_work_age[4:3],prefetch_work_age[7:5]};
+ wire[323:0] context_di={32'd0,state_next};
+ wire[323:0] context_do;
+ for(genvar word=0;word<9;word++)begin: context_wide
+  SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) memory(
+   .CLKA(clk),.CLKB(clk),.CEA(context_write),.CEB(context_read_issue),
+   .ADA({4'd0,captured_slot,5'b01111}),.ADB({4'd0,context_ra,5'b00000}),
+   .DI(context_di[word*36+:36]),.DO(context_do[word*36+:36]),
+   .BLKSELA(3'd0),.BLKSELB(3'd0),.OCE(1'b1),.RESET(1'b0));
+ end
+ assign state_read=context_do[291:0];
+ // synthesis translate_off
+ reg[4:0] context_response_address;reg context_response_valid;
+ always @(posedge clk)begin
+  if(rst)context_response_valid<=0;
+  else if(context_read_issue)begin context_response_address<=context_ra;context_response_valid<=1;end
+  if(!rst&&!start&&busy&&(early_read||(work_active&&work_step==0)))
+   if(!context_response_valid||context_response_address!==read_slot)
+    $fatal(1,"R45_CONTEXT_WRONG_PREFETCH");
+  if(context_read_issue&&context_write&&context_ra==captured_slot)
+   $fatal(1,"R45_CONTEXT_READ_WRITE_COLLISION");
+ end
+ // synthesis translate_on
+ reg[90:0] observe_request;reg observe_valid;reg[1:0] observe_lane;
+ reg[19:0] observe_result[0:3];
+ wire main_envelope=work_active&&work_step==1;
+ wire[90:0] selected_envelope=main_envelope?envelope_request:observe_request;
+ r28_shared_envelope_glide frontend(.clk(clk),.rst(rst),.start(start),.busy(busy),
+  .envelope_requests({4{selected_envelope}}),.envelope_response(envelope_response),
+  .glide_requests({4{glide_request}}),.glide_response(glide_response),
+  .advance_requests({4{advance_request}}),.advance_response(advance_response));
+ r28_shared_timbre_lfo timbre_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),.requests({4{timbre_request}}),.response(timbre_response));
+ wire signed[17:0] pressure_delta=$signed({1'b0,pressure_request[67:51]})-$signed({1'b0,pressure_request[50:34]});
  wire[16:0] pressure_magnitude=pressure_delta[17]?-pressure_delta:pressure_delta;
  wire[17:0] pressure_difference_response={!pressure_delta[17]&&pressure_delta!=0,pressure_magnitude};
- wire[16:0] gain_target=gain_request[67:51],gain_old=gain_request[50:34],gain_difference=gain_request[33:17],gain_step=gain_request[16:0];
- wire[16:0] gain_adjusted=gain_old+(gain_step^{17{!gain_request[68]}})+!gain_request[68];
- wire[16:0] pressure_gain_response=gain_request[72]?gain_target:
-  (gain_request[71:69]==4||gain_target==gain_old)?gain_old:
-  gain_step>=gain_difference?gain_target:gain_adjusted;
- wire[499:0] advance_requests;wire[101:0] advance_response;
- wire[363:0] envelope_requests;wire[88:0] envelope_response;
- wire[455:0] glide_requests;wire[124:0] glide_response;
- r28_shared_envelope_glide frontend(.advance_requests(advance_requests),.advance_response(advance_response),.clk(clk),.rst(rst),.start(start),.busy(busy),
-  .envelope_requests(envelope_requests),.envelope_response(envelope_response),
-  .glide_requests(glide_requests),.glide_response(glide_response));
- wire[91:0] prepare_pitches;wire[255:0] prepared_steps;wire[67:0] prepared_tapers;
- r28_shared_pitch_prepare pitch_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),
-  .pitches(prepare_pitches),.steps(prepared_steps),.tapers(prepared_tapers));
- wire [3:0] lane_busy,lane_error;
- wire[31:0] slot_valid,slot_gate;
- assign pan_slots=completion_slot;
- generate for(genvar s=0;s<32;s++)begin: flag_view
- assign slot_valid[s]=flags[s*4+1];assign slot_gate[s]=flags[s*4+2];
- end endgenerate
- wire [31:0] done_mask;wire mixer_deadline;
- generate for(genvar l=0;l<4;l++)begin: lanes
-  r28_narrow_voice_lane #(.LANE(l)) lane(.pressure_request(pressure_requests[l*73+:73]),.pressure_difference_response(pressure_difference_response),.pressure_gain_response(pressure_gain_response),.timbre_request(timbre_requests[l*70+:70]),.timbre_response(timbre_response),.context_write_enable(context_we[l]),.context_write_slot(context_ws[l*3+:3]),
-   .context_write_data(context_wd[l*292+:292]),.context_read_data(context_rd[(l/2)*292+:292]),.advance_request(advance_requests[l*125+:125]),.advance_response(advance_response),.envelope_request(envelope_requests[l*91+:91]),.envelope_response(envelope_response),
-   .glide_request(glide_requests[l*114+:114]),.glide_response(glide_response),.prepare_pitch(prepare_pitches[l*23+:23]),
-   .prepared_lo(prepared_steps[l*64+:32]),.prepared_hi(prepared_steps[l*64+32+:32]),.prepared_taper(prepared_tapers[l*17+:17]),.clk(clk),.rst(rst),.start(start),
-   .slot_valid(slot_valid[l*8+:8]),.slot_gate(slot_gate[l*8+:8]),
-   .read_control(read_controls[l*31+:31]),.control_read_slot(read_slots[l*3+:3]),
-   .vibrato_depth(vibrato_depth),.glide_code(glide_code),.busy(lane_busy[l]),
-   .completion_valid(completion_valid[l]),.completion_accept(completion_accept[l]),
-   .completion_slot(completion_slot[l*3+:3]),.completion_sample(completion_sample[l*18+:18]),.completion_phase(),
-   .envelope_levels(envelope_levels[l*136+:136]),.envelope_states(envelope_states[l*24+:24]),
-   .done_mask(done_mask[l*8+:8]),.deadline_error(lane_error[l]));
- end endgenerate
- r28_narrow_stereo_sum stereo(.clk(clk),.rst(rst),.sample_tick(start),
-  .completion_valid(completion_valid),.completion_accept(completion_accept),.completion_slot(completion_slot),
-  .completion_sample(completion_sample),.completion_pan(read_pans),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
+ wire[16:0] gain_target=pressure_request[67:51],gain_old=pressure_request[50:34],gain_difference=pressure_request[33:17],gain_step=pressure_request[16:0];
+ wire[16:0] gain_adjusted=gain_old+(gain_step^{17{!pressure_request[68]}})+!pressure_request[68];
+ assign pressure_gain_response=pressure_request[72]?gain_target:
+  (pressure_request[71:69]==4||gain_target==gain_old)?gain_old:gain_step>=gain_difference?gain_target:gain_adjusted;
+ reg[193:0] pending_job;reg[4:0] pending_tag;reg pending;
+ wire[63:0] prepared_steps;wire[16:0] prepared_taper;
+ r40_pitch_prepare pitch_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),.pitch(pending_job[160:138]),.steps(prepared_steps),.taper_out(prepared_taper));
+ wire[BACKENDS-1:0] backend_ready,backend_valid;
+ wire[BACKENDS*5-1:0] backend_tags;wire[BACKENDS*18-1:0] backend_samples;wire[BACKENDS*32-1:0] backend_phases;
+ wire[1:0] selected_backend=BACKENDS==1?2'd0:BACKENDS==4?pending_tag[4:3]:{1'b0,pending_tag[3]};
+ wire launch=pending&&backend_ready[selected_backend];
+ for(genvar b=0;b<BACKENDS;b++)begin: engines
+  r46_ii8_backend #(.INITIAL_CYCLE(0),.SHARE_FX(SHARE_FX)) backend(.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst||start),
+   .prepared_lo(prepared_steps[31:0]),.prepared_hi(prepared_steps[63:32]),.prepared_taper(prepared_taper),
+   .in_valid(launch&&selected_backend==b),.in_ready(backend_ready[b]),.in_tag(pending_tag),.job_in(pending_job),
+   .out_valid(backend_valid[b]),.out_tag(backend_tags[b*5+:5]),.out_sample(backend_samples[b*18+:18]),.out_phase(backend_phases[b*32+:32]));
+ end
+ reg result_valid;reg[4:0] result_slot;reg[31:0] result_phase;reg[17:0] result_sample;
+ always @*begin
+  result_valid=0;result_slot=0;result_phase=0;result_sample=0;
+  for(integer b=0;b<BACKENDS;b++)if(backend_valid[b])begin
+   result_valid=1;result_slot=backend_tags[b*5+:5];result_phase=backend_phases[b*32+:32];result_sample=backend_samples[b*18+:18];
+  end
+  completion_valid=0;completion_accept=0;completion_slot=0;completion_sample=0;
+  if(result_valid)begin
+   completion_valid[result_slot[4:3]]=1;completion_accept[result_slot[4:3]]=frame_flags[result_slot*4+1];
+   completion_slot[result_slot[4:3]*3+:3]=result_slot[2:0];completion_sample[result_slot[4:3]*18+:18]=result_sample;
+  end
+ end
+ wire[127:0] phase_reads;wire[31:0] phase_read=phase_reads[read_lane*32+:32];
+ for(genvar l=0;l<4;l++)begin: phase_banks
+  s3_private_context_store #(.WIDTH(32)) phase_store(.clk(clk),.write_enable(!rst&&result_valid&&frame_flags[result_slot*4+1]&&result_slot[4:3]==l),
+   .write_slot(result_slot[2:0]),.read_slot(read_slot[2:0]),.write_value(result_phase),.read_value(phase_reads[l*32+:32]));
+ end
+ for(genvar s=0;s<32;s++)begin: visible
+  assign envelope_levels[s*17+:17]=(visible_initialized[s]&&flags[s*4+1])?levels[s]:17'd0;
+  assign envelope_states[s*3+:3]=(visible_initialized[s]&&flags[s*4+1])?states[s]:3'd0;
+ end
+ wire mixer_deadline;
+ r40_stereo_sum stereo(.clk(clk),.rst(rst),.sample_tick(start),.completion_valid(completion_valid),.completion_accept(completion_accept),
+  .completion_slot(completion_slot),.completion_sample(completion_sample),.completion_pan(read_pans),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
   .mix_valid(mix_valid),.protocol_error(protocol_error),.deadline_error(mixer_deadline),.last_complete_cycle(last_complete_cycle));
- assign deadline_error=(|lane_error)||mixer_deadline;
+ wire original_completion=busy&&age>=52&&age<=164&&age[3:0]==4;
+ wire[2:0] retire_group=3'((age-9'd52)>>4);
  always @(posedge clk)begin
-  if(rst)begin busy<=0;reclaim_pending<=0;voice_samples<=0;end
-  else begin
-   if(start)begin busy<=1;reclaim_pending<=0;end
-   else reclaim_pending<=reclaim_pending|done_mask;
+  if(rst)begin
+   busy<=0;age<=0;frame_flags<=0;expression_q<=0;initialized<=0;visible_initialized<=0;
+   captured_slot<=0;captured_valid<=0;captured_gate<=0;captured_trigger<=0;new_owner<=0;captured_note<=0;captured_pressure<=0;captured_timbre<=0;
+   phase_q<=0;state_q<=0;env_q<=0;prepared_q<=0;pressure_target<=0;pressure_difference<=0;pressure_step<=0;pressure_up<=0;
+   pending_job<=0;pending_tag<=0;pending<=0;observe_request<=0;observe_valid<=0;observe_lane<=0;
+   reclaim_pending<=0;voice_samples<=0;control_retire<=0;deadline_error<=0;
+  end else begin
+   control_retire<=busy&&age==169;
+   observe_valid<=early_read;
+   if(start)begin
+    if(busy)deadline_error<=1;
+    busy<=1;age<=0;pending<=0;observe_valid<=0;reclaim_pending<=0;control_retire<=0;expression_q<={vibrato_depth,glide_code};
+   end else if(busy)begin
+    age<=age+1'b1;
+    if(age==0)frame_flags<=flags;
+    if(early_read)begin observe_request<={captured_state[153+:EPW],read_control[2],read_control[3]&&read_control[1]};observe_lane<=early_lane;end
+    if(observe_valid)observe_result[observe_lane]<=envelope_response[88:69];
+    if(early_commit&&frame_flags[commit_slot*4+1])begin
+     visible_initialized[commit_slot]<=1;{states[commit_slot],levels[commit_slot]}<=observe_result[commit_lane];
+    end
+    if(original_completion)for(integer l=0;l<4;l++)begin
+     if(frame_flags[(l*8+retire_group)*4+1]&&!frame_flags[(l*8+retire_group)*4+2]&&states[l*8+retire_group]==0)
+      reclaim_pending[l*8+retire_group]<=1;
+    end
+    if(launch)pending<=0;
+    if(work_active)case(work_step)
+     0:begin
+      captured_slot<=read_slot;captured_valid<=read_control[1];captured_gate<=read_control[2];captured_trigger<=read_control[3]&&read_control[1];
+      new_owner<=read_control[0]||!initialized[read_slot];captured_note<=read_control[19:13];captured_pressure<=read_control[27:20];captured_timbre<=read_control[30:28];
+      state_q<=captured_state;phase_q<=initialized[read_slot]?phase_read:32'd0;
+     end
+     1:env_q<=envelope_response;
+     2:begin prepared_q<=prepared;pressure_target<=effective_pressure==255?17'd65536:{1'b0,effective_pressure,effective_pressure};end
+     3:begin pressure_up<=pressure_difference_response[17];pressure_difference<=pressure_difference_response[16:0];end
+     4:pressure_step<=pressure_difference==0?17'd1:((pressure_difference+17'd3)>>2);
+     6:begin
+      pending_job<={32'(new_owner?0:phase_q),captured_trigger,next_pitch,lfo_sine,depth,next_level,next_gain,next_transient,next_body,17'd0,17'd0,timbre};
+      pending_tag<=captured_slot;pending<=1;if(captured_valid)initialized[captured_slot]<=1;
+     end
+     default:begin end
+    endcase
+    if(age>=399)deadline_error<=1;
+   end
+   if(result_valid&&frame_flags[result_slot*4+1])voice_samples[result_slot*18+:18]<=result_sample;
    if(mix_valid)busy<=0;
-   for(integer l=0;l<4;l++)if(completion_valid[l] && completion_accept[l])
-    voice_samples[(l*8+completion_slot[l*3+:3])*18+:18]<=completion_sample[l*18+:18];
+   if(mixer_deadline)deadline_error<=1;
   end
  end
  // synthesis translate_off
- always @(posedge clk)if(!rst&&start&&busy)$fatal(1,"R28_OVERLAPPING_AUDIO");
+ always @(posedge clk)if(!rst)begin
+  if(start&&busy)$fatal(1,"R40_OVERLAPPING_FRAME");
+  if(work_active&&work_step==6&&pending&&!launch)$fatal(1,"R40_PENDING_OVERWRITE");
+  if(observe_valid&&main_envelope)$fatal(1,"R40_ADSR_COLLISION");
+  if((backend_valid&(backend_valid-1'b1))!=0)$fatal(1,"R40_BACKEND_COLLISION");
+  if(result_valid&&frame_flags[result_slot*4+1]&&states[result_slot]==0&&result_sample!=0)$fatal(1,"R40_RECLAIM_PROOF_BROKEN");
+ end
  // synthesis translate_on
 endmodule
 
-module r28_control_audio_probe #(parameter integer ID_WIDTH=64)(
+
+module r28_control_audio_probe #(parameter integer ID_WIDTH=64,parameter integer SHARE_FX=0)(
+ input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
+ output wire signed[53:0] fx_mac_q,
  input wire clk,rst,frame_tick,hold_publication,panic,
  input wire session_flush,session_ready,
  input wire lookup_valid,input wire[7:0] lookup_key,input wire[63:0] lookup_identity,
@@ -5632,9 +5901,9 @@ module r28_control_audio_probe #(parameter integer ID_WIDTH=64)(
 
  wire[11:0] audio_read_slots,audio_pan_slots;
  wire[123:0] audio_read_controls;wire[35:0] audio_read_pans;
- wire audio_retire=mix_valid;
+ wire audio_retire;
  r28_serial_control #(.ID_WIDTH(ID_WIDTH)) controller(.*);
- r28_frame_audio audio(.clk(clk),.rst(rst),.start(frame_tick),.flags(audio_flags),
+ r28_frame_audio #(.SHARE_FX(SHARE_FX)) audio(.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.control_retire(audio_retire),.clk(clk),.rst(rst),.start(frame_tick),.flags(audio_flags),
  .read_controls(audio_read_controls),.read_pans(audio_read_pans),.read_slots(audio_read_slots),.pan_slots(audio_pan_slots),
  .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(audio_busy),.mix_valid(mix_valid),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
  .envelope_levels(envelope_levels),.envelope_states(envelope_states),.reclaim_pending(audio_reclaim),.voice_samples(voice_samples),
@@ -5820,7 +6089,9 @@ module r28_execution_observer(
  // synthesis translate_on
 endmodule
 
-module r28_instrument_engine #(parameter integer NO_UNDO=0,INDEXED_INPUT=0,ID_WIDTH=64,PHONE_LOOKUP=0,CLK_FREQ_HZ=50_000_000)(
+module r28_instrument_engine #(parameter integer LEASED_ITEM=0,NO_UNDO=0,INDEXED_INPUT=0,ID_WIDTH=64,PHONE_LOOKUP=0,CLK_FREQ_HZ=50_000_000,parameter integer SHARE_FX=0)(
+ input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
+ output wire signed[53:0] fx_mac_q,
  input wire hold_publication,output wire audible_publish,
  input wire[95:0] indexed_item,input wire[2:0] indexed_occupancy,output wire[3:0] indexed_item_index,
  input wire session_flush,session_ready,input wire[575:0] event_phone_presses,
@@ -5884,7 +6155,7 @@ module r28_instrument_engine #(parameter integer NO_UNDO=0,INDEXED_INPUT=0,ID_WI
    case(delivery)
     0:if(event_valid&&event_ready)begin mask<=event_packet[872:864];stamp<=event_packet[904:873];source_q<=event_packet[31:28];index<=next_item(event_packet[872:864],0);delivery<=1;end
     1:delivery<=2;
-    2:begin item_q<=indexed_item;delivery<=3;end
+    2:begin if(!LEASED_ITEM)item_q<=indexed_item;delivery<=3;end
     3:if(controller_ready)begin delivery<=4;started<=1;end
     4:if(fact_valid&&fact_outcome!=10)begin
      if(following==9)delivery<=5;else begin index<=following;delivery<=1;end
@@ -5895,7 +6166,15 @@ module r28_instrument_engine #(parameter integer NO_UNDO=0,INDEXED_INPUT=0,ID_WI
    if(batch_done||batch_abort)begin delivery<=0;started<=0;end
   end
  end
- r28_control_audio_probe #(.ID_WIDTH(ID_WIDTH)) core(.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
+ // synthesis translate_off
+ reg[95:0] leased_reference;
+ always @(posedge clk)begin
+  if(!rst&&delivery==2)leased_reference<=indexed_item;
+  if(!rst&&LEASED_ITEM&&delivery==3&&controller_ready&&indexed_item!==leased_reference)
+   $fatal(1,"R45_EVENT_LEASE_CHANGED");
+ end
+ // synthesis translate_on
+ r28_control_audio_probe #(.ID_WIDTH(ID_WIDTH),.SHARE_FX(SHARE_FX)) core(.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
  .session_flush(PHONE_LOOKUP?session_flush:1'b0),.session_ready(PHONE_LOOKUP?session_ready:1'b1),.lookup_valid(PHONE_LOOKUP?lookup_valid:1'b0),.lookup_key(lookup_key),.lookup_identity(lookup_identity),
  .lookup_generation(lookup_generation),.lookup_tag(lookup_tag),.lookup_ready(lookup_ready),.lookup_response_valid(lookup_response_valid),
  .lookup_found(lookup_found),.lookup_response_slot(lookup_response_slot),.lookup_response_word(lookup_response_word),.lookup_response_tag(lookup_response_tag),
@@ -5903,7 +6182,7 @@ module r28_instrument_engine #(parameter integer NO_UNDO=0,INDEXED_INPUT=0,ID_WI
  .pan_response_valid(pan_response_valid),.pan_result(pan_result),.pan_response_slot(pan_response_slot),.pan_before(pan_before),.pan_after(pan_after),
  .audio_reclaim(audio_reclaim),.envelope_levels(envelope_levels),.glide_code(glide_code),.mix_valid(mix_valid),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
  .audio_busy(audio_busy),.audio_protocol_error(audio_protocol),.audio_deadline_error(deadline_error),.voice_samples(voice_samples),.envelope_states(envelope_states),
- .event_valid(delivery==3),.event_ready(controller_ready),.event_item(item_q),.event_last(following==9),.timbre(timbre_id),
+ .event_valid(delivery==3),.event_ready(controller_ready),.event_item(LEASED_ITEM?indexed_item:item_q),.event_last(following==9),.timbre(timbre_id),
  .fact_valid(fact_valid),.fact_item(fact_item),.fact_outcome(fact_outcome),.fact_slot(fact_slot),.fact_steal(fact_steal),.fact_before(fact_before),.fact_after(fact_after),
  .batch_done(batch_done),.batch_abort(controller_abort),.published(audible_publish),.audio_flags(audio_flags),.audio_vibrato(audio_vibrato),.control_state(control_state),
  .busy(controller_busy),.protocol_error(controller_error),.snapshot_valid(snapshot_valid),.snapshot_ready(snapshot_ready),.snapshot_done(snapshot_done),
@@ -5911,7 +6190,7 @@ module r28_instrument_engine #(parameter integer NO_UNDO=0,INDEXED_INPUT=0,ID_WI
  .accepted_events(),.max_event_cycles());
 endmodule
 
-module r28_prepared_backend #(parameter DERIVE_FM=1)(
+module r28_prepared_backend #(parameter DERIVE_FM=1,parameter integer INITIAL_CYCLE=0)(
  input wire[31:0] prepared_lo,prepared_hi,input wire[16:0] prepared_taper,
  input wire clk,rst,in_valid,output wire in_ready,
  input wire [4:0] in_tag,input wire [193:0] job_in,
@@ -6039,7 +6318,7 @@ module r28_prepared_backend #(parameter DERIVE_FM=1)(
   end
  end
  always @(posedge clk)begin
-  if(rst)begin cycle<=0;occupied<=0;tail_valid<=0;tail_tag<=0;tail_phase<=0;out_valid<=0;out_tag<=0;out_sample<=0;out_phase<=0;end
+  if(rst)begin cycle<=5'(INITIAL_CYCLE);occupied<=0;tail_valid<=0;tail_tag<=0;tail_phase<=0;out_valid<=0;out_tag<=0;out_sample<=0;out_phase<=0;end
   else begin
    cycle<=cycle+1'b1;out_valid<=0;
    case(step)
@@ -6235,3 +6514,316 @@ module r28_shared_timbre_lfo(input wire clk,rst,start,busy,input wire[279:0] req
  end
 endmodule
 
+
+module r40_pitch_prepare(
+ input wire clk,rst,start,busy,input wire[22:0] pitch,
+ output reg[63:0] steps,output reg[16:0] taper_out
+);
+ reg[8:0] age;reg[22:0] pitch_q;reg request_valid;
+ wire[22:0] selected_pitch=pitch;
+ wire[6:0] selected_note=selected_pitch[22:16];
+ wire rom_issue=busy&&age>=11&&age<=260&&(age[2:0]==3||age[2:0]==4);
+ wire upper=age[2:0]==4;
+ wire[6:0] rom_note=upper&&selected_note!=127?selected_note+1'b1:selected_note;
+ wire[31:0] rom_data;reg rom_valid,upper_q;
+ wire[16:0] taper=pitch_q<=23'd7077888 ? 17'd65536:
+   pitch_q>=23'd7864320 ? 17'd0:(23'd7864320-pitch_q)/12;
+ // Four lower-note requests at7..10, four upper requests at11..14.
+ // Their one-cycle responses finish at15, before all four launches at16.
+ pROM #(
+  .BIT_WIDTH(32),
+  .READ_MODE(1'b0),
+  .RESET_MODE("SYNC"),
+  .INIT_RAM_00(256'h0010b9a3000fc953000ee681000e1069000d4656000c879a000bd393000b29a6),
+  .INIT_RAM_01(256'h001a8cac00190f340017a7260016534c001512860013e3c00012c5f90011b83c),
+  .INIT_RAM_02(256'h002a250c0027c78100258bf20023707800217345001f92a7001dcd02001c20d3),
+  .INIT_RAM_03(256'h0042e68b003f254e003b9a04003841a60035195800321e69002f4e4b002ca698),
+  .INIT_RAM_04(256'h006a32b100643cd2005e9c9600594d3100544a17004f8f01004b17e50046e0f0),
+  .INIT_RAM_05(256'h00a8942e009f1e0300962fc9008dc1e10085cd15007e4a9b007734070070834c),
+  .INIT_RAM_06(256'h010b9a2b00fc953600ee680f00e1069700d4656200c879a300bd392d00b29a62),
+  .INIT_RAM_07(256'h01a8cac30190f347017a725a016534c30151285d013e3c06012c5f93011b83c2),
+  .INIT_RAM_08(256'h02a250ba027c780b0258bf26023707830217345601f92a6d01dcd01d01c20d2f),
+  .INIT_RAM_09(256'h042e68ac03f254d903b9a03a03841a5d035195860321e68d02f4e4b402ca6987),
+  .INIT_RAM_0A(256'h06a32b0d0643cd1b05e9c9680594d30d0544a17304f8f01704b17e4b046e0f07),
+  .INIT_RAM_0B(256'h0a8942e709f1e02d0962fc9608dc1e0d085cd15707e4a9b207734075070834ba),
+  .INIT_RAM_0C(256'h10b9a2af0fc953640ee680e90e1069740d46561a0c879a350bd392d00b29a61a),
+  .INIT_RAM_0D(256'h1a8cac34190f346a17a725a016534c35151285ce13e3c05a12c5f92c11b83c1a),
+  .INIT_RAM_0E(256'h2a250b9c27c780b5258bf259237078352173455e1f92a6c81dcd01d31c20d2e8),
+  .INIT_RAM_0F(256'h42e68abc3f254d913b9a03a63841a5d135195868321e68d42f4e4b3f2ca6986a)) frequency_table(.CLK(clk),.CE(rom_issue),.OCE(1'b1),.RESET(rst),
+  .AD({2'b0,rom_note,5'b0}),.DO(rom_data));
+
+ always @(posedge clk)begin
+  if(rst||start)begin age<=0;pitch_q<=0;request_valid<=0;steps<=0;taper_out<=0;rom_valid<=0;upper_q<=0;end
+  else begin
+   if(busy)age<=age+1'b1;
+   request_valid<=busy&&age>=11&&age<=259&&age[2:0]==3;
+   if(busy&&age>=11&&age<=259&&age[2:0]==3)begin pitch_q<=selected_pitch;end
+   rom_valid<=rom_issue;
+   if(rom_issue)begin upper_q<=upper;end
+   if(request_valid)taper_out<=taper;
+   if(rom_valid)begin
+    if(upper_q)steps[63:32]<=rom_data;else steps[31:0]<=rom_data;
+   end
+  end
+ end
+endmodule
+module r40_stereo_sum #(parameter integer COMPLETION_LIMIT=400)(
+ input wire clk,rst,sample_tick,
+ input wire[3:0] completion_valid,completion_accept,
+ input wire[11:0] completion_slot,input wire[71:0] completion_sample,
+ input wire[35:0] completion_pan,
+ output reg signed[31:0] mix_l_q8,mix_r_q8,output reg mix_valid,
+ output reg protocol_error,deadline_error,output reg[8:0] last_complete_cycle
+);
+ // Four simultaneous results are consumed as two fixed pairs. Products
+ // enter the accumulator at +3/+4; final output remains at +5 clocks.
+ reg signed[17:0] samples[0:3];reg[8:0] pans[0:3];
+ reg[1:0] phase;
+ reg signed[17:0] operand[0:1];reg[8:0] coefficient[0:1];
+ reg[1:0] right_unity;
+ reg op_valid,op_second,product_valid,product_second,last_group,mix_pending;
+ reg signed[27:0] product_l[0:1],product_r[0:1];
+ wire signed[27:0] variable_product[0:1],unity_product[0:1];
+ reg signed[31:0] sum_l,sum_r;
+ reg busy;reg[8:0] age;reg[7:0] seen[0:3];
+ wire [1:0] pair_base=phase==2?2'd2:2'd0;
+ for(genvar k=0;k<2;k++)begin: multiply
+  assign variable_product[k]=$signed(operand[k])*$signed({1'b0,coefficient[k]});
+  assign unity_product[k]=$signed({{10{operand[k][17]}},operand[k]})<<<8;
+ end
+ always @(posedge clk)begin
+  if(rst)begin
+   phase<=0;right_unity<=0;op_valid<=0;op_second<=0;product_valid<=0;product_second<=0;
+   last_group<=0;mix_pending<=0;sum_l<=0;sum_r<=0;busy<=0;age<=0;
+   mix_l_q8<=0;mix_r_q8<=0;mix_valid<=0;protocol_error<=0;deadline_error<=0;last_complete_cycle<=0;
+   for(integer k=0;k<4;k++)begin samples[k]<=0;pans[k]<=128;seen[k]<=0;end
+   for(integer k=0;k<2;k++)begin operand[k]<=0;coefficient[k]<=256;product_l[k]<=0;product_r[k]<=0;end
+  end else begin
+   op_valid<=phase!=0;op_second<=phase==2;
+   product_valid<=op_valid;product_second<=op_second;
+   mix_pending<=product_valid&&product_second&&last_group;mix_valid<=mix_pending;
+   if(busy)begin age<=age+1'b1;if(age>=399)deadline_error<=1;end
+   if(sample_tick)begin
+    if(busy||phase!=0||op_valid||product_valid||completion_valid!=0)deadline_error<=1;
+    busy<=1;age<=0;sum_l<=0;sum_r<=0;
+    for(integer k=0;k<4;k++)seen[k]<=0;
+   end
+   if(completion_valid!=0)begin
+    if((completion_valid&(completion_valid-1'b1))!=0||phase!=0)protocol_error<=1;
+    if(completion_valid[3])begin phase<=1;last_group<=completion_slot[11:9]==7;end
+    for(integer k=0;k<4;k++)if(completion_valid[k])begin
+     if(!busy||seen[k][completion_slot[k*3+:3]])protocol_error<=1;
+     if(completion_slot[k*3+:3]==7&&seen[k]!=8'h7f)protocol_error<=1;
+
+     seen[k][completion_slot[k*3+:3]]<=1;
+     if(completion_pan[k*9+:9]>256)protocol_error<=1;
+     samples[k]<=completion_accept[k]?$signed(completion_sample[k*18+:18]):18'sd0;
+     pans[k]<=completion_pan[k*9+:9];
+    end
+   end
+   if(phase!=0)begin
+    phase<=phase==1?2:0;
+    
+     operand[0]<=samples[pair_base+0];right_unity[0]<=pans[pair_base+0]>128;
+     coefficient[0]<=pans[pair_base+0]>128?((9'd256-pans[pair_base+0])<<1):(pans[pair_base+0]<<1);
+    
+     operand[1]<=samples[pair_base+1];right_unity[1]<=pans[pair_base+1]>128;
+     coefficient[1]<=pans[pair_base+1]>128?((9'd256-pans[pair_base+1])<<1):(pans[pair_base+1]<<1);
+    
+   end
+   if(op_valid)for(integer k=0;k<2;k++)begin
+    product_l[k]<=right_unity[k]?variable_product[k]:unity_product[k];
+    product_r[k]<=right_unity[k]?unity_product[k]:variable_product[k];
+   end
+   if(product_valid)begin
+    sum_l<=sum_l+{{4{product_l[0][27]}},product_l[0]}+{{4{product_l[1][27]}},product_l[1]};
+    sum_r<=sum_r+{{4{product_r[0][27]}},product_r[0]}+{{4{product_r[1][27]}},product_r[1]};
+   end
+   if(mix_pending)begin
+    mix_l_q8<=sum_l;mix_r_q8<=sum_r;busy<=0;last_complete_cycle<=age+1'b1;
+    if(!busy||age>=COMPLETION_LIMIT)deadline_error<=1;
+   end
+  end
+ end
+endmodule
+
+// R46: one II8 arithmetic backend; each voice keeps its independent context.
+// Lifetimes and same-edge read-before-write cases: BACKEND_BOUNDARY_PROOF.txt.
+module r46_ii8_backend #(parameter DERIVE_FM=1,parameter integer INITIAL_CYCLE=0,parameter integer SHARE_FX=0)(
+ input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
+ output wire signed[53:0] fx_mac_q,
+ input wire[31:0] prepared_lo,prepared_hi,input wire[16:0] prepared_taper,
+ input wire clk,rst,in_valid,output wire in_ready,
+ input wire[4:0] in_tag,input wire[193:0] job_in,
+ output reg out_valid,output reg[4:0] out_tag,
+ output reg signed[17:0] out_sample,output reg[31:0] out_phase
+);
+ reg[5:0] cycle;
+ wire[2:0] step=cycle[2:0],j0=cycle[5:3];
+ wire[2:0] j1=j0-3'd1,j2=j0-3'd2,j3=j0-3'd3,j4=j0-3'd4;
+ reg[7:0] occupied;reg[4:0] tag[0:7];
+ reg[32:0] input_phase[0:1];reg[48:0] early_pitch;reg[33:0] early_timbre;
+ reg[53:0] late_job[0:3];reg[16:0] supplied_index[0:1];
+ reg[31:0] low_step,delta_step,base_step,adjusted,phase[0:3],carrier_phase;
+ reg signed[17:0] modulation;
+ reg[16:0] taper,raw_index,fm_index,amplitude[0:1],w1[0:1],w2[0:1],w3[0:1];
+ reg signed[15:0] h1[0:1],h2,h3,carrier,fm_sine;
+ reg signed[53:0] term1,term3,pressure_product;
+ reg signed[35:0] term2,env_product;
+ reg signed[35:0] wa,wa_q;reg signed[17:0] wb,wb_q,na,nb,na_q,nb_q;
+ reg signed[53:0] wp,wq;reg signed[35:0] np,nq;
+ reg[7:0] sine_address;wire signed[15:0] sine_value;
+ wire[31:0] phase1=phase[j1[1:0]],phase2=phase[j2[1:0]];
+ wire[31:0] harmonic2_phase=phase1<<1;
+ wire[31:0] harmonic3_phase=phase2+(phase2<<1);
+ always @*begin
+  case(step)
+   5:sine_address=late_job[j1[1:0]][2:0]==1 ? harmonic2_phase[31:24]:phase1[31:24];
+   6:sine_address=phase1[31:24];
+   7:sine_address=harmonic2_phase[31:24];
+   0:sine_address=harmonic3_phase[31:24];
+   2:sine_address=carrier_phase[31:24];
+   default:sine_address=0;
+  endcase
+ end
+ sine_rom shared_sine(.address(sine_address),.sample(sine_value));
+ assign in_ready=!rst&&step==0;
+ function signed [17:0] round_mod(input signed [51:0] value);
+  round_mod=(value>>>31)+((value[30]&&(!value[51]||(|value[29:0])))?52'sd1:52'sd0);
+ endfunction
+ function signed [34:0] round_delta(input signed [50:0] value);
+  round_delta=(value>>>16)+((value[15]&&(!value[50]||(|value[14:0])))?51'sd1:51'sd0);
+ endfunction
+ function signed [17:0] round_audio(input signed [53:0] value);
+  reg signed [22:0] shifted;
+  begin
+   shifted=(value>>>32)+((value[31]&&(!value[53]||(|value[30:0])))?54'sd1:54'sd0);
+   if(shifted>23'sd131071)round_audio=18'sh1ffff;
+   else if(shifted < -23'sd131072)round_audio=18'h20000;
+   else round_audio=shifted[17:0];
+  end
+ endfunction
+
+ wire signed[17:0] carrier_wide={{2{carrier[15]}},carrier};
+ wire signed[17:0] shaped=carrier>16'sd16384 ?
+  18'sd16384+((carrier_wide-18'sd16384)>>>1):
+  carrier< -16'sd16384 ? -18'sd16384+((carrier_wide+18'sd16384)>>>1):carrier_wide;
+ wire signed[35:0] shape_delta=$signed(shaped)-$signed(carrier_wide);
+ wire signed[63:0] harmonic_total=$signed(term1)+$signed(term2)+$signed(term3);
+ wire signed[63:0] shaped_total=$signed(carrier_wide)+($signed(term1)>>>16);
+ wire[48:0] interpolated={17'd0,low_step}+(({1'b0,wq[47:0]}+49'd32768)>>16);
+ wire signed[35:0] adjusted_wide=$signed({4'b0,base_step})+$signed(round_delta(wq[50:0]));
+ reg signed[17:0] wave_value;
+ always @*begin
+  case(late_job[j3[1:0]][2:0])
+   1:wave_value=$signed(term1)>>>16;
+   2,3:wave_value=(harmonic_total+64'sd16384)>>>15;
+   4:wave_value=shaped_total;
+   default:wave_value=h1[j3[0]];
+  endcase
+ end
+ always @*begin
+  wa=0;wb=0;na=0;nb=0;
+  case(step)
+   1:begin wa=$signed({4'd0,delta_step});wb=$signed({2'd0,early_pitch[48:33]});end
+   4:begin wa=$signed(nq[33:0]);wb=18'sd655;end
+   0:begin wa=$signed({4'd0,base_step});wb=modulation;end
+   3:begin
+    case(late_job[j2[1:0]][2:0])
+     1:begin wa=$signed(carrier);wb=$signed({1'b0,amplitude[j2[0]]});end
+     2,3:begin wa=$signed(h1[j2[0]]);wb=$signed({1'b0,w1[j2[0]]});end
+     4:begin wa=shape_delta;wb=$signed({1'b0,late_job[j2[1:0]][19:3]});end
+     default:begin end
+    endcase
+   end
+   5:begin wa=$signed(h3);wb=$signed({1'b0,w3[j2[0]]});end
+   2:begin wa=$signed(wave_value);wb=$signed({1'b0,late_job[j3[1:0]][53:37]});end
+   7:begin wa=$signed(env_product);wb=$signed({1'b0,late_job[j3[1:0]][36:20]});end
+   default:begin end
+  endcase
+  case(step)
+   1:begin na=$signed(early_pitch[32:17]);nb=$signed({1'b0,early_pitch[16:0]});end
+   2:begin
+    na=$signed({1'b0,late_job[j0[1:0]][2:0]==1 ? early_timbre[33:17]:early_timbre[16:0]});
+    nb=late_job[j0[1:0]][2:0]==1 ? 18'sd20000:18'sd24000;
+   end
+   3:begin na=$signed({1'b0,early_timbre[33:17]});nb=late_job[j0[1:0]][2:0]==1 ? 18'sd52429:18'sd5000;end
+   5:begin na=$signed({1'b0,early_timbre[33:17]});nb=18'sd2500;end
+   7:begin na=$signed({1'b0,raw_index});nb=$signed({1'b0,taper});end
+   6:begin na=fm_sine;nb=$signed({1'b0,DERIVE_FM ? fm_index:supplied_index[j1[0]]});end
+   4:begin na=$signed(h2);nb=$signed({1'b0,w2[j2[0]]});end
+   default:begin end
+  endcase
+ end
+ always @(posedge clk)begin
+  if(rst)begin wa_q<=0;wb_q<=0;na_q<=0;nb_q<=0;wp<=0;wq<=0;np<=0;nq<=0;end
+  else begin
+   wa_q<=(SHARE_FX&&fx_mac_use)?fx_mac_a:wa;wb_q<=(SHARE_FX&&fx_mac_use)?fx_mac_b:wb;na_q<=na;nb_q<=nb;
+   wp<=wa_q*wb_q;wq<=wp;np<=na_q*nb_q;nq<=np;
+  end
+ end
+ always @(posedge clk)begin
+  if(rst)begin cycle<=6'(INITIAL_CYCLE);occupied<=0;out_valid<=0;out_tag<=0;out_sample<=0;out_phase<=0;end
+  else begin
+   cycle<=cycle+1'b1;out_valid<=0;
+   case(step)
+    0:begin
+     occupied[j0]<=in_valid;h3<=sine_value;term3<=wq;
+     w3[j1[0]]<=base_step<32'd715827882 ? (late_job[j1[1:0]][2:0]==2 ? 17'd4000:nq[32:16]):17'd0;
+     if(in_valid)begin
+      input_phase[j0[0]]<={job_in[193:162],job_in[161]};
+      early_pitch<=job_in[153:105];early_timbre<=job_in[70:37];
+      late_job[j0[1:0]]<={job_in[104:71],job_in[19:0]};tag[j0]<=in_tag;
+      low_step<=prepared_lo;delta_step<=prepared_hi-prepared_lo;taper<=prepared_taper;
+      if(DERIVE_FM)late_job[j0[1:0]][19:3]<=prepared_taper;
+      else supplied_index[j0[0]]<=job_in[36:20];
+     end
+    end
+    1:carrier_phase<=phase[j2[1:0]]+(nq[31:0]<<1);
+    2:begin if(DERIVE_FM)fm_index<=nq[32:16];carrier<=sine_value;pressure_product<=wq;end
+    3:begin
+     adjusted<=adjusted_wide[31:0];
+     if(occupied[j4])begin out_valid<=1;out_tag<=tag[j4];out_sample<=round_audio(pressure_product);out_phase<=phase[j4[1:0]];end
+    end
+    4:begin base_step<=interpolated[31:0];phase[j1[1:0]]<=input_phase[j1[0]][0] ? 32'd0:input_phase[j1[0]][32:1]+adjusted;end
+    5:begin
+     raw_index<=late_job[j0[1:0]][2:0]==1 ? nq[31:16]:late_job[j0[1:0]][2:0]==4 ? 17'd10000:17'd0;
+     w1[j0[0]]<=late_job[j0[1:0]][2:0]==2 ? 17'd18000:17'd1000+nq[32:16];
+     fm_sine<=sine_value;env_product<=wq[35:0];
+    end
+    6:begin
+     amplitude[j0[0]]<=17'd13107+nq[32:16];
+     w2[j0[0]]<=base_step<32'h40000000 ? (late_job[j0[1:0]][2:0]==2 ? 17'd10000:nq[32:16]):17'd0;
+     h1[j1[0]]<=sine_value;term1<=wq;
+    end
+    7:begin modulation<=round_mod(wq[51:0]);h2<=sine_value;term2<=nq;end
+   endcase
+  end
+ end
+ assign fx_mac_q=wq;
+ // synthesis translate_off
+ always @(posedge clk)if(!rst&&in_valid&&!in_ready)$fatal(1,"R46_UNSCHEDULED_INPUT");
+ reg[5:0] live_count;
+ always @(posedge clk)begin
+  if(rst)live_count<=0;
+  else begin
+   if(in_valid)live_count<=35;else if(live_count!=0)live_count<=live_count-1'b1;
+   if(SHARE_FX&&fx_mac_use&&(live_count!=0||in_valid))$fatal(1,"R46_FX_VOICE_OVERLAP");
+  end
+ end
+ // synthesis translate_on
+endmodule
+
+// Full-width combinational equality. Each LUT4 compares exactly two bits;
+// all bits participate. Equality and inequality consumers share one tree.
+module r54_full_equal #(parameter integer WIDTH=32)(
+ input wire [WIDTH-1:0] a,b,output wire equal);
+ localparam integer PAIRS=(WIDTH+1)/2;
+ wire [2*PAIRS-1:0] pa={{(2*PAIRS-WIDTH){1'b0}},a};
+ wire [2*PAIRS-1:0] pb={{(2*PAIRS-WIDTH){1'b0}},b};
+ wire [PAIRS-1:0] pairs;
+ for(genvar g=0;g<PAIRS;g=g+1)begin: compare_pairs
+  LUT4 #(.INIT(16'h9009)) eq_pair(.I0(pa[2*g]),.I1(pb[2*g]),.I2(pa[2*g+1]),.I3(pb[2*g+1]),.F(pairs[g]));
+ end
+ assign equal=&pairs;
+endmodule

@@ -12,6 +12,9 @@ module s9_session_control #(parameter integer LEASE_MS=500, PREDICTIVE_LEASE=0)(
  output reg management_done,output reg signed[15:0] management_error,
  output reg[31:0] opened_count,closed_count,expired_count,rejected_count
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+
  localparam DOWN=0,OPENING=1,READY=2,CLOSING=3;
  reg[31:0] renewed_ms;
  wire reference_expired=link_state==READY&&(now_ms-renewed_ms>=LEASE_MS);
@@ -33,9 +36,9 @@ module s9_session_control #(parameter integer LEASE_MS=500, PREDICTIVE_LEASE=0)(
     else if(management_session[63:0]==0||management_session[127:64]==0)begin end
     else if(management_op==8'h90)begin
      if(link_state==DOWN&&phone_open_ready&&
-       (management_session[63:0]!=session_id[63:0]||management_session[127:64]>session_id[127:64]))next_link=OPENING;
-     else if(management_session==session_id&&(link_state==READY||link_state==OPENING)&&!lease_expired)next_renewed=now_ms;
-    end else if(management_session!=session_id)begin end
+       (!r54_equal_0||management_session[127:64]>session_id[127:64]))next_link=OPENING;
+     else if(r54_equal_1&&(link_state==READY||link_state==OPENING)&&!lease_expired)next_renewed=now_ms;
+    end else if(!r54_equal_1)begin end
     else if(management_op==8'h91&&link_state==READY&&!lease_expired)next_renewed=now_ms;
     else if(management_op==8'h92&&(link_state==READY||link_state==OPENING))next_link=CLOSING;
    end
@@ -73,14 +76,14 @@ module s9_session_control #(parameter integer LEASE_MS=500, PREDICTIVE_LEASE=0)(
      management_error<=-5;rejected_count<=rejected_count+1'b1;
     end else if(management_op==8'h90)begin
      if(link_state==DOWN&&phone_open_ready&&
-        (management_session[63:0]!=session_id[63:0]||management_session[127:64]>session_id[127:64]))begin
+        (!r54_equal_0||management_session[127:64]>session_id[127:64]))begin
       session_id<=management_session;phone_open<=1;flush<=1;link_state<=OPENING;
       opened_count<=opened_count+1'b1;
-     end else if(management_session==session_id&&(link_state==READY||link_state==OPENING)&&!lease_expired)begin
+     end else if(r54_equal_1&&(link_state==READY||link_state==OPENING)&&!lease_expired)begin
       // Repeated OPEN acknowledges this same session, without touching ledger.
       renewed_ms<=now_ms;
      end else begin management_error<=-7;rejected_count<=rejected_count+1'b1;end
-    end else if(management_session!=session_id)begin management_error<=-5;rejected_count<=rejected_count+1'b1;end
+    end else if(!r54_equal_1)begin management_error<=-5;rejected_count<=rejected_count+1'b1;end
     else if(management_op==8'h91&&link_state==READY&&!lease_expired)renewed_ms<=now_ms;
     else if(management_op==8'h92&&(link_state==READY||link_state==OPENING))begin
      phone_close<=1;flush<=1;link_state<=CLOSING;
@@ -96,4 +99,6 @@ module s9_session_control #(parameter integer LEASE_MS=500, PREDICTIVE_LEASE=0)(
   if(management_valid&&(^({management_op,management_session}))===1'bx)$fatal(1,"S9_SESSION_PAYLOAD_XZ");
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(management_session[63:0]),.b(session_id[63:0]),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(128)) r54_equal_1_tree(.a(management_session),.b(session_id),.equal(r54_equal_1));
 endmodule

@@ -180,7 +180,7 @@ module instrument_core_stage11 #(
   else if(observe_load)begin dac_load_count<=dac_load_count+1'b1;since_load<=0;end
   else if(since_load!=65535)since_load<=since_load+1'b1;
  end
- instrument_core_stage10 #(.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage10 #(.PINNED_RECORD_PREFIX(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),

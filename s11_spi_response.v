@@ -1,7 +1,7 @@
 // Response CRC preparation reads the pinned recorder prefix in place. No
 // retransmission RAM is copied here. A payload becomes advertised only after
 // its complete 512-byte CRC has been scanned; a new CS freezes its identity.
-module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0)(
+module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0,PINNED_PREFIX=0)(
  input wire comm_clk,fast_fall,fast_start,clk,rst,select_start,transaction,short_transaction,input wire [12:0] tx_bit_index,
  input wire [1:0] media_state,input wire [63:0] media_epoch,
  input wire [31:0] media_last_sequence,input wire [8:0] media_credit,
@@ -23,6 +23,7 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  localparam [31:0] ZERO_PACKET_RAW=32'h538d84e8; // raw CRC residue continued through 512 zeros
  localparam [31:0] SHORT_PACKET_CRC=32'h2144df1c; // complement of header64 raw residue DEBB20E3
  reg [1:0] scan_state;reg [9:0] scan_index;reg [31:0] scan_crc,payload_crc;
+ reg scan_owned;
  reg prepared;reg [63:0] scan_id;
  reg [31:0] scan_sequence;reg [15:0] scan_bytes;
  reg [7:0] scan_kind;reg [15:0] scan_items;
@@ -33,16 +34,17 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  reg [511:0] header,header_snapshot;reg [31:0] hcrc,packet_crc_snapshot;
  reg payload_snapshot;reg [15:0] payload_bytes_snapshot;
  reg [31:0] header_crc;reg [5:0] header_crc_index;reg header_crc_busy;
- wire payload_crc_step=!select_start&&(!transaction||!payload_snapshot||short_transaction)&&scan_state==2&&
-  block_valid&&scan_id==recorder_id&&scan_sequence==block_sequence&&scan_kind==block_kind&&
+ wire full_context_match=scan_id==recorder_id&&scan_sequence==block_sequence&&scan_kind==block_kind&&
   scan_bytes==block_bytes&&scan_items==block_items&&scan_first_frame==block_first_frame;
+ wire same_context=PINNED_PREFIX?scan_owned:full_context_match;
+ wire payload_crc_step=!select_start&&(!transaction||!payload_snapshot||short_transaction)&&scan_state==2&&
+  block_valid&&same_context;
  // The existing payload scan uses at most alternate clocks. Its priority
  // leaves60 header updates within120 clocks, before original bit480.
  wire [31:0] shared_crc_next=crcbyte(payload_crc_step?scan_crc:header_crc,
   payload_crc_step?(scan_index<scan_bytes?peek_byte_data:8'd0):header_snapshot[header_crc_index*8+:8]);
  integer j;
- wire match_payload=block_valid&&prepared&&scan_id==recorder_id&&scan_sequence==block_sequence&&
-  scan_kind==block_kind&&scan_bytes==block_bytes&&scan_items==block_items&&scan_first_frame==block_first_frame;
+ wire match_payload=block_valid&&prepared&&same_context;
  assign payload_ready=match_payload;
  wire [9:0] wire_byte=tx_bit_index>>3;
  // At bit4 request the following byte; capture at bit7's falling edge.
@@ -76,13 +78,14 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
   header[511:480]=~hcrc;end
  end
  always @(posedge clk)begin
-  if(rst)begin scan_state<=0;scan_index<=0;scan_crc<=0;payload_crc<=0;prepared<=0;
+  if(rst)begin scan_owned<=0;scan_state<=0;scan_index<=0;scan_crc<=0;payload_crc<=0;prepared<=0;
    scan_id<=0;scan_sequence<=0;scan_bytes<=0;
    scan_kind<=0;scan_items<=0;
    scan_first_frame<=0;
    header_snapshot<=0;packet_crc_snapshot<=0;payload_snapshot<=0;payload_bytes_snapshot<=0;
    header_crc<=32'hffffffff;header_crc_index<=0;header_crc_busy<=0;end
   else begin
+   if(!block_valid)scan_owned<=0;
    if(!match_payload)prepared<=0;
    if(select_start)begin
     header_snapshot<=header;payload_snapshot<=match_payload;payload_bytes_snapshot<=match_payload?block_bytes:16'd0;
@@ -97,11 +100,10 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
    // finish preparation for the next CS. Polling cannot starve the scanner.
    if(!select_start&&(!transaction||!payload_snapshot||short_transaction))begin
     if(scan_state==0)begin
-     if(block_valid&&!match_payload)begin scan_id<=recorder_id;scan_sequence<=block_sequence;
+     if(block_valid&&!match_payload)begin scan_owned<=1;scan_id<=recorder_id;scan_sequence<=block_sequence;
       scan_kind<=block_kind;scan_bytes<=block_bytes;scan_items<=block_items;scan_first_frame<=block_first_frame;
       scan_index<=0;scan_crc<=0;scan_state<=1;end
-    end else if(!block_valid||scan_id!=recorder_id||scan_sequence!=block_sequence||scan_kind!=block_kind||
-      scan_bytes!=block_bytes||scan_items!=block_items||scan_first_frame!=block_first_frame)scan_state<=0;
+    end else if(!block_valid||!same_context)scan_state<=0;
     else if(scan_state==1)scan_state<=2; // synchronous RAM read has completed
     else begin
      scan_crc<=STREAM_HEADER_CRC?shared_crc_next:crcbyte(scan_crc,scan_index<scan_bytes?peek_byte_data:8'd0);
@@ -115,6 +117,8 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
   end
  end
  // synthesis translate_off
+ always @(posedge clk)if(!rst&&PINNED_PREFIX&&block_valid&&scan_owned&&!full_context_match)
+  $fatal(1,"R54_PREFIX_METADATA_CHANGED_WITHOUT_RELEASE");
  always @(posedge clk)if(!rst)begin
   if(STREAM_HEADER_CRC&&transaction&&tx_bit_index>=480&&tx_bit_index<512&&header_crc_busy)$fatal(1,"S11_HEADER_CRC_NOT_READY_AT_BIT");
   if($isunknown({select_start,transaction,block_valid,recorder_incomplete}))$fatal(1,"S11_RESPONSE_CONTROL_XZ");

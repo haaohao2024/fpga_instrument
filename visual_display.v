@@ -11,6 +11,8 @@ module visual_display #(
  output wire [31:0] snapshots_published,snapshots_presented,
  output wire [18:0] last_processing_cycles,output wire display_error
 );
+ wire r54_equal_0;
+
  wire process_rst,pixel_rst,sv;wire signed [15:0] sl,sr;wire [63:0] sid;
  visual_reset_bridge rb(.audio_clk(clk),.pixel_clk(pixel_clk),.reset_request(audio_rst||display_reset),.pll_locked(pll_locked),
   .process_rst(process_rst),.pixel_rst(pixel_rst));
@@ -39,7 +41,7 @@ module visual_display #(
  end
  always @(posedge pixel_clk or posedge pixel_rst)begin
   if(pixel_rst)begin age_frames<=0;last_sequence<=0;fresh_snapshot<=1;end
-  else if(!fv||metadata[159:128]!=last_sequence)begin
+  else if(!fv||!r54_equal_0)begin
    age_frames<=0;last_sequence<=metadata[159:128];fresh_snapshot<=1;
   end else if(frame_start)begin
    if(fresh_snapshot)fresh_snapshot<=0;
@@ -50,4 +52,5 @@ module visual_display #(
   .test_pattern(test_latched),.front_valid(fv),.metadata(metadata),.age_frames(age_frames),.wave_re(wre),.xy_re(xre),.spectrum_re(sre),
   .wave_addr(wa),.xy_addr(xa),.spectrum_addr(sa),.wave_data(wd),.xy_data(xd),.spectrum_data(sd),.rgb(rgb),.out_de(tx_de),.out_hs(tx_hs),.out_vs(tx_vs));
  video_dvi_tx tx(.pixel_clk(pixel_clk),.serial_clk(serial_clk),.rst(pixel_rst),.rgb(rgb),.de(tx_de),.hs(tx_hs),.vs(tx_vs),.tmds_p(tmds_p),.tmds_n(tmds_n));
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(metadata[159:128]),.b(last_sequence),.equal(r54_equal_0));
 endmodule

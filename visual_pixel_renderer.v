@@ -7,6 +7,8 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
  input wire [15:0] wave_data,xy_data,spectrum_data,
  output reg [23:0] rgb,output reg out_de,out_hs,out_vs
 );
+ wire r54_equal_0;
+
  wire wave_region=x>=32&&x<544&&((y>=64&&y<144)||(y>=176&&y<256));
  wire xy_region=x>=624&&x<752&&y>=80&&y<208;
  wire spectrum_region=x>=32&&x<544&&y>=320&&y<544;
@@ -110,7 +112,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
  endfunction
  // A published pixel snapshot remains immutable during this bounded scan.
  // 32 voices, one tail count, then eight decimal conversions: 41 clocks.
- wire statistics_changed=front_valid&&(!statistics_valid||metadata[159:128]!=statistics_sequence);
+ wire statistics_changed=front_valid&&(!statistics_valid||!r54_equal_0);
  always @(posedge pixel_clk)begin
   if(rst)begin
    statistics_valid<=0;statistics_sequence<=0;statistics_phase<=0;
@@ -336,4 +338,5 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
    rgb<=de_pipe[3]?color:24'd0;out_de<=de_pipe[3];out_hs<=hs_pipe[3];out_vs<=vs_pipe[3];
   end
  end
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(metadata[159:128]),.b(statistics_sequence),.equal(r54_equal_0));
 endmodule

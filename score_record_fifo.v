@@ -6,6 +6,8 @@ module score_record_fifo(
  output wire [8:0] occupancy,visible_records,output reg [31:0] inserted,consumed,
  output reg preview_valid,output wire [63:0] preview_time,output wire [127:0] preview_notes
 );
+ wire r54_equal_0;
+
  reg [31:0] memory[0:1023];
  reg [31:0] committed;reg [8:0] open_count;
  reg [7:0] wr_slot,rd_slot;reg writing;reg [1:0] wi;reg [127:0] write_record;
@@ -69,7 +71,7 @@ module score_record_fifo(
      end
    endcase
    case(read_state)
-    0: if(!m_valid&&committed!=consumed)begin ri<=0;read_state<=1;end
+    0: if(!m_valid&&!r54_equal_0)begin ri<=0;read_state<=1;end
     1: begin read_state<=2;end
     2: begin
      m_record[ri*32+:32]<=ram_read_data;
@@ -79,4 +81,5 @@ module score_record_fifo(
    endcase
   end
  end
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(committed),.b(consumed),.equal(r54_equal_0));
 endmodule

@@ -116,6 +116,11 @@ module r28_borrowed_score_parser(
  output reg header_valid,eof_seen,output reg [63:0] end_time,last_verified_time,
  output reg [31:0] total_records,parsed_records,output reg [7:0] error_code
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+ wire r54_equal_3;
+
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
@@ -157,7 +162,7 @@ module r28_borrowed_score_parser(
   ((op==1&&key<32&&note<128&&value!=0&&!logical_held[key[4:0]])||
    (op==2&&key<32&&note==0&&value==0&&logical_held[key[4:0]])||
    (op==3&&key<32&&note<128&&logical_held[key[4:0]])||
-   (op==4&&key==0&&note==0&&value==0&&flags==1&&t==end_time&&parsed_records+1==total_records));
+   (op==4&&key==0&&note==0&&value==0&&flags==1&&r54_equal_0&&parsed_records+1==total_records));
  assign page_ready=!rst&&!clear&&enable&&state==0&&error_code==0&&!eof_seen;
  always @(posedge clk)begin
   page_done<=0;
@@ -190,8 +195,8 @@ module r28_borrowed_score_parser(
       if(header_valid||head[31:0]!=32'h56453753||head[63:32]!=1||head[95:64]!=48000||
        head[127:96]==0||head[127:96]>1000000||head[223:192]>1)begin error_code<=2;state<=8;end
       else begin header_valid<=1;total_records<=head[127:96];end_time<=head[191:128];page_ok<=1;page_done<=1;state<=0;end
-     end else if(!header_valid||head[31:0]!=seq||head[47:32]==0||head[47:32]>30||
-       seq!=expected_data_page||head[47:32]!=((total_records-parsed_records>=30)?30:total_records-parsed_records))begin error_code<=3;state<=8;end
+     end else if(!header_valid||!r54_equal_1||head[47:32]==0||head[47:32]>30||
+       !r54_equal_2||head[47:32]!=((total_records-parsed_records>=30)?30:total_records-parsed_records))begin error_code<=3;state<=8;end
      else begin page_count<=head[47:32];record_index<=0;record_byte<=0;candidate<=0;read_addr<=16;state<=4;end
     end
     4: state<=5;
@@ -209,7 +214,7 @@ module r28_borrowed_score_parser(
     12:state<=13;
     13:begin
      recent_ptr<=recent_ptr+1'b1;
-     if(parsed_records==total_records&&op!=4)begin error_code<=5;state<=8;end
+     if(r54_equal_3&&op!=4)begin error_code<=5;state<=8;end
      else if(record_index+1==page_count)begin if(page_count==30)expected_data_page<=expected_data_page+1;page_ok<=1;page_done<=1;state<=0;end
      else begin record_index<=record_index+1;record_byte<=0;read_addr<=16+(record_index+1)*16;state<=4;end
     end
@@ -236,4 +241,8 @@ module r28_borrowed_score_parser(
    $fatal(1,"PARSER_PAGE_FRONTIER_ORACLE");
  end
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(t),.b(end_time),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(32)) r54_equal_1_tree(.a(head[31:0]),.b(seq),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(32)) r54_equal_2_tree(.a(seq),.b(expected_data_page),.equal(r54_equal_2));
+ r54_full_equal #(.WIDTH(32)) r54_equal_3_tree(.a(parsed_records),.b(total_records),.equal(r54_equal_3));
 endmodule

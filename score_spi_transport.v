@@ -16,6 +16,10 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
  output reg link_timeout
  ,input wire field_busy,input wire [540:0] shared_score_rx
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+ wire r54_equal_2;
+
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
@@ -114,7 +118,7 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
    if(page_valid&&page_ready)page_valid<=0;
    if(page_done&&page_busy)begin
     page_busy<=0;
-    if(page_ok&&pending_epoch==active_epoch)begin last_sequence<=pending_sequence;accepted_pages<=accepted_pages+1;end
+    if(page_ok&&r54_equal_0)begin last_sequence<=pending_sequence;accepted_pages<=accepted_pages+1;end
     else rejected_transactions<=rejected_transactions+1;
    end
    if(select_start)begin
@@ -160,13 +164,13 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
     else if(ENABLE_FIELD&&field_busy)rejected_transactions<=rejected_transactions+1;
     else if(command==2)begin
      watchdog<=0;
-     if(epoch!=active_epoch||active_epoch==0)rejected_transactions<=rejected_transactions+1;
-     else if(request_sequence==last_sequence&&accepted_pages!=0)begin end // ACK-only retry
+     if(!r54_equal_1||active_epoch==0)rejected_transactions<=rejected_transactions+1;
+     else if(r54_equal_2&&accepted_pages!=0)begin end // ACK-only retry
      else if(request_sequence!=last_sequence+1||!ram_available||page_busy)rejected_transactions<=rejected_transactions+1;
      else begin page_valid<=1;page_busy<=1;page_sequence<=request_sequence;pending_epoch<=epoch;pending_sequence<=request_sequence;end
     end else if(command>=1&&command<=7&&!ctrl_valid&&
-       ((command==1&&epoch!=0&&epoch!=active_epoch&&player_state==0&&argument<4)||
-        (command!=1&&epoch==active_epoch&&active_epoch!=0)))begin
+       ((command==1&&epoch!=0&&!r54_equal_1&&player_state==0&&argument<4)||
+        (command!=1&&r54_equal_1&&active_epoch!=0)))begin
      ctrl_valid<=1;ctrl_cmd<=command;ctrl_epoch<=epoch;ctrl_arg<=argument;watchdog<=0;
     end else rejected_transactions<=rejected_transactions+1;
    end
@@ -177,6 +181,9 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
      tx_index>=224 && tx_index<256 && response_crc_busy)
   $fatal(1,"SCORE_STATUS_CRC_DEADLINE");
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(pending_epoch),.b(active_epoch),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(epoch),.b(active_epoch),.equal(r54_equal_1));
+ r54_full_equal #(.WIDTH(32)) r54_equal_2_tree(.a(request_sequence),.b(last_sequence),.equal(r54_equal_2));
 endmodule
 
 module r24_spi_edges #(parameter integer COMM_SEPARATE=0)(

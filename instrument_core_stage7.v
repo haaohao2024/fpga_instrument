@@ -192,8 +192,8 @@ module instrument_core_stage7 #(
     reg[10:0] r18_audio_age;
     always @(posedge clk)begin
      if(rst)r18_audio_age<=0;else if(frame_pulse)r18_audio_age<=0;else if(r18_audio_age<1041)r18_audio_age<=r18_audio_age+1'b1;
-     // Before NBA the counter still names C170; the consumer edge is C171.
-     if(!rst && mix_valid && r18_audio_age!=170)$fatal(1,"R18_CORE_AUDIO_COMPLETION_EDGE age=%0d",r18_audio_age);
+     // R40: internal PCM ready C306; controller retirement remains C170. DAC deadline is unchanged.
+     if(!rst && mix_valid && r18_audio_age!=306)$fatal(1,"R18_CORE_AUDIO_COMPLETION_EDGE age=%0d",r18_audio_age);
     end
     // synthesis translate_on
     wire [3:0] completion_valid,completion_accept;
@@ -356,7 +356,8 @@ module instrument_core_stage7 #(
     end endgenerate
     wire[991:0] r18_controls;wire r18_identity_stable,r18_audio_busy,r18_event_busy,r18_deadline;
     wire[7:0] r18_outcome;wire[5:0] r18_slot;wire[95:0] r18_item;wire[3:0] r18_lane;wire r18_steal;
-    r28_instrument_engine #(.NO_UNDO(1),.INDEXED_INPUT(1),.PHONE_LOOKUP(ENABLE_REMOTE?2:0),.CLK_FREQ_HZ(CLK_FREQ_HZ)) engine(.hold_publication(score_dispatch_active),.audible_publish(audible_publish),.indexed_item(pool_item),.indexed_occupancy(pool_occupancy),.indexed_item_index(pool_item_index),.clk(clk),.rst(rst),.sample_tick(frame_pulse),.panic(event_fault),
+    wire fx_mac_use;wire signed[35:0] fx_mac_a;wire signed[17:0] fx_mac_b;wire signed[53:0] fx_mac_q;
+    r28_instrument_engine #(.SHARE_FX(0),.LEASED_ITEM(STREAM_PHONE || !ENABLE_REMOTE),.NO_UNDO(1),.INDEXED_INPUT(1),.PHONE_LOOKUP(ENABLE_REMOTE?2:0),.CLK_FREQ_HZ(CLK_FREQ_HZ)) engine(.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.hold_publication(score_dispatch_active),.audible_publish(audible_publish),.indexed_item(pool_item),.indexed_occupancy(pool_occupancy),.indexed_item_index(pool_item_index),.clk(clk),.rst(rst),.sample_tick(frame_pulse),.panic(event_fault),
      .event_valid(queue_source_valid),.event_ready(queue_source_ready),.event_packet(queue_source_packet),.timbre_id(timbre_id),.glide_code(glide_code),
      .frame_id(r18_clock_frame),.subcycle(r18_clock_subcycle),.allocated_persistent_id(r18_allocated_pid),
      .session_flush(phone_session_flush),.session_ready(phone_session_ready),.event_phone_presses(phone_presses),
@@ -399,7 +400,7 @@ module instrument_core_stage7 #(
     assign observe_fx_bypass=fx_bypass;
     wire [31:0] fx_frames,fx_cfg_accepted,fx_cfg_rejected;
     assign observe_fx_accepted=fx_cfg_accepted;
-    stereo_effects #(.MIX_SHIFT(MIX_SHIFT),.SCHEDULED_CONTROL(1)) u_effects(
+    r46_serial_effects #(.MIX_SHIFT(MIX_SHIFT),.SCHEDULED_CONTROL(1),.SHARED_MAC(0)) u_effects(.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),
         .clk(clk),.rst(rst),.sample_tick(frame_pulse),
         .in_l_q8(mix_l_q8),.in_r_q8(mix_r_q8),.in_valid(mix_valid),
         .cfg_valid(fx_cfg_valid),.cfg_data(fx_cfg_data),

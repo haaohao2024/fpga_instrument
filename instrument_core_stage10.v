@@ -1,7 +1,7 @@
 // Stage10 SPI PCM composition only; no change to the frozen audio/video algorithms.
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage10 #(
-    parameter integer COMM_SEPARATE=0,
+    parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
     parameter integer PRESSURE_PRENORMALIZED=0,
@@ -165,7 +165,7 @@ module instrument_core_stage10 #(
  // Its front 32 bytes are the same score snapshot as the legacy response.
  assign spi_miso=(!score_cs_n&&route_s10)?media_miso:legacy_miso;
  assign spi_miso_oe=(!score_cs_n&&route_s10)?media_oe:legacy_oe;
- s10_pcm_transport #(.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/100),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.shared_score_rx(shared_score_rx),.comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
+ s10_pcm_transport #(.PINNED_RECORD_PREFIX(PINNED_RECORD_PREFIX),.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/100),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.shared_score_rx(shared_score_rx),.comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
   .control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .legacy_status_bytes(observe_score_status),.stream_buffered(observe_stream_buffered),
   .stream_generation(observe_stream_generation),.stream_state(observe_stream_state),.cancel(1'b0),

@@ -21,6 +21,9 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
  output wire observe_dispatch_active,
  output wire observe_teach,observe_loop
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+
  localparam [63:0] TOKEN_MAX=(TOKEN_WIDTH==64)?64'hffffffffffffffff:((64'd1<<TOKEN_WIDTH)-1);
  reg wait_audible;
  reg [63:0] token_counter;
@@ -83,13 +86,13 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
        (record_valid && rec_time<=music_time&&!wait_audible))) ||
      (state==4 && (stop_phase!=2 || build_count!=0 || event_valid || outstanding!=0))) :
     (state==2 && window_open && (group_active || build_count!=0 || event_valid || outstanding!=0 ||
-      (record_valid && rec_time==music_time))));
+      (record_valid && r54_equal_0))));
  wire append_ready=!SHARED_STORE||!event_write_valid;
  wire destructive_control=ctrl_valid&&ctrl_ready&&(ctrl_cmd==3||ctrl_cmd==6||ctrl_cmd==7);
  assign ctrl_ready=!rst;
  assign parser_enable=state==1||state==2||state==3;
  assign record_ready=append_ready&&!rst&&!sample_tick&&state==2&&window_open&&!resuming&&!event_valid&&
-  outstanding<2&&!local_backlog&&(!SERIAL_CONTROL||!wait_audible)&&(SERIAL_CONTROL?rec_time<=music_time:rec_time==music_time)&&!destructive_control&&!parser_error;
+  outstanding<2&&!local_backlog&&(!SERIAL_CONTROL||!wait_audible)&&(SERIAL_CONTROL?rec_time<=music_time:r54_equal_0)&&!destructive_control&&!parser_error;
  wire [6:0] resume_notes[0:31];wire [7:0] resume_pressures[0:31];
  wire [63:0] next_token=token_counter+64'd1;
  generate for(genvar s=0;s<32;s=s+1)begin: resume_word
@@ -238,7 +241,7 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
    end
    if(parser_error!=0&&(state==1||state==2||state==3))begin_stop(0,parser_error+16);
    if(ctrl_valid&&ctrl_ready)case(ctrl_cmd)
-    1:if(state==0&&ctrl_epoch!=0&&ctrl_epoch!=epoch&&ctrl_arg<4)begin
+    1:if(state==0&&ctrl_epoch!=0&&!r54_equal_1&&ctrl_arg<4)begin
      state<=1;epoch<=ctrl_epoch;teach<=ctrl_arg[0];loop_mode<=ctrl_arg[1];music_time<=0;error_code<=0;
      logical_held<=0;sound_held<=0;guide_held<=0;guide_notes<=0;parser_clear<=1;reload_request<=0;natural_end<=0;resume_pending<=0;
     end
@@ -278,4 +281,6 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
  // synthesis translate_off
  initial if(TOKEN_WIDTH<2||TOKEN_WIDTH>64)$fatal(1,"SCORE_TOKEN_WIDTH");
  // synthesis translate_on
+ r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(rec_time),.b(music_time),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(ctrl_epoch),.b(epoch),.equal(r54_equal_1));
 endmodule

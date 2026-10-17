@@ -34,6 +34,9 @@ module digital_audio_output_master #(
     output wire [6:0] observe_gain_remaining,
     output wire [103:0] observe_gain_state
 );
+ wire r54_equal_0;
+ wire r54_equal_1;
+
     wire signed [15:0] pcm_l,pcm_r;
     wire pcm_valid,pcm_ready;
     wire [31:0] pcm_frame,clip_l_count,clip_r_count;
@@ -103,7 +106,7 @@ module digital_audio_output_master #(
                 have_external<=0;have_local<=0;have_pcm<=0;
             end
             if(external_sample_valid)begin
-                if(!frame_active || external_frame!=active_frame || have_external)deadline_error<=1;
+                if(!frame_active || !r54_equal_0 || have_external)deadline_error<=1;
                 cached_l<=external_l_q16;cached_r<=external_r_q16;
                 cached_local_gain<=local_gain;cached_external_gain<=combined_gain>>15;have_external<=1;
             end
@@ -112,10 +115,12 @@ module digital_audio_output_master #(
                 have_local<=1;
             end
             if(pcm_valid && pcm_ready)begin
-                if(!frame_active || pcm_frame!=active_frame || have_pcm)deadline_error<=1;
+                if(!frame_active || !r54_equal_1 || have_pcm)deadline_error<=1;
                 have_pcm<=1;
             end
             if(frame_active && age==999 && !have_pcm)deadline_error<=1;
         end
     end
+ r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(external_frame),.b(active_frame),.equal(r54_equal_0));
+ r54_full_equal #(.WIDTH(32)) r54_equal_1_tree(.a(pcm_frame),.b(active_frame),.equal(r54_equal_1));
 endmodule
