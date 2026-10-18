@@ -321,7 +321,7 @@ endmodule
 module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_000)(
  output reg event_write_valid,output reg[3:0] event_write_index,output reg[95:0] event_write_data,
  input wire event_write_ready,output reg event_write_abort,
- output reg[3:0] map_address,input wire[95:0] map_data,input wire[8:0] map_mask,
+ output wire[3:0] map_address,input wire[95:0] map_data,input wire[8:0] map_mask,
  output reg maps_release,
  input wire comm_clk,clk,rst,input wire [31:0] now_ms,now_ms_next,
  input wire spi_sck,control_cs_n,score_cs_n,sd_cs_n,spi_mosi,
@@ -343,6 +343,14 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  output wire [31:0] rejected_transactions,output reg [31:0] cs_conflicts,
  output wire [31:0] lease_expirations,output reg [31:0] stale_result_updates
 );
+ reg [3:0] fast_map_address;
+ generate if(COMM_SEPARATE)begin: map_handoff
+  reg [3:0] half_cycle;
+  always @(negedge comm_clk)half_cycle<=fast_map_address;
+  assign map_address=half_cycle;
+ end else begin: map_direct_crossing
+  assign map_address=fast_map_address;
+ end endgenerate
  wire r54_equal_0;
  wire r54_equal_1;
  wire r54_equal_2;
@@ -364,11 +372,11 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
   reg [31:0] v;integer n;begin v=c^b;for(n=0;n<8;n=n+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
  reg [1:0] score_sync,sd_sync;
- wire rise,fall,start,finish,phy_selected,phy_bit,fast_start,fast_fall;
+ wire rise,fall,start,finish,phy_selected,phy_bit,fast_start,fast_fall,fast_selected;
  wire serial_clk=COMM_SEPARATE?comm_clk:clk;
  r24_spi_edges #(.COMM_SEPARATE(COMM_SEPARATE)) phy(.clk(clk),.comm_clk(comm_clk),.rst(rst),
  .sck(spi_sck),.cs_n(control_cs_n),.mosi(spi_mosi),.rise(rise),.fall(fall),.start(start),.finish(finish),
- .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall));
+ .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall),.fast_selected(fast_selected));
  reg transaction,bad,capacity,packet;
  reg [127:0] header,packet_header;
  reg [8:0] rx_count,wire_length,expected;
@@ -413,7 +421,7 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  for(genvar m=0;m<12;m=m+1)assign map_bytes[m]=map_data[m*8+:8];
  wire[6:0] next_header_index=tx_index[6:0]+7'd1;
  wire[7:0] next_byte=tx_index<91?response[{next_header_index,3'b000}+:8]:
-  tx_index<199?(tx_map_mask[map_address]?map_bytes[map_column]:8'd0):
+  tx_index<199?(tx_map_mask[fast_map_address]?map_bytes[map_column]:8'd0):
   tx_index<203?~(tx_crc >> ((tx_index-199)*8)):8'd0;
  always @*begin
   status=0;status[31:0]=32'h53303252;status[39:32]=3;status[47:40]={5'd0,link_state};
@@ -421,15 +429,17 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
   status[63:56]={7'd0,result_pending};status[95:64]=epoch;status[127:96]=accepted_serial;
   status[159:128]=result_serial;status[447:160]=result_hold;status[575:448]=session_id;status[639:576]=phone_next_token;status[640]=phone_token_exhausted;status[656:648]=held_map_mask;status[671:664]={5'd0,accepted_slot};
  end
- assign spi_miso_oe=!rst&&!control_cs_n&&score_cs_n&&sd_cs_n&&transaction&&!bad;
+ // TX starts on the original fast CS edge. RX validation must not
+ // postpone the first response bit. Raw CS/conflict/reset still gate I/O.
+ assign spi_miso_oe=!rst&&!control_cs_n&&score_cs_n&&sd_cs_n&&fast_selected;
  assign spi_miso=tx_index<204?tx_shift[7-tx_bit]:1'b0;
  always @(posedge serial_clk)begin
-  if(rst)begin response<=0;tx_shift<=0;tx_bit<=0;tx_crc<=32'hffffffff;tx_index<=0;map_address<=0;map_column<=0;tx_map_mask<=0; end
+  if(rst)begin response<=0;tx_shift<=0;tx_bit<=0;tx_crc<=32'hffffffff;tx_index<=0;fast_map_address<=0;map_column<=0;tx_map_mask<=0; end
   else if(fast_start)begin
     response<=status;tx_shift<=status[7:0];tx_index<=0;tx_bit<=0;
     tx_crc<=crcbyte(32'hffffffff,status[7:0]);tx_map_mask<=held_map_mask;
-    map_address<=0;map_column<=0;
-  end else if(phy_selected)begin
+    fast_map_address<=0;map_column<=0;
+  end else if(fast_selected)begin
     if(fast_fall&&tx_index<204)begin
      tx_bit<=tx_bit+1'b1;
      if(tx_bit==7)begin
@@ -437,7 +447,7 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
       if(tx_index<199)tx_crc<=crcbyte(tx_crc,next_byte);
       // Header snapshot remains frozen until the next transaction.
       if(tx_index>=91&&tx_index<199)begin
-       if(map_column==11)begin map_column<=0;map_address<=map_address+1'b1;end
+       if(map_column==11)begin map_column<=0;fast_map_address<=fast_map_address+1'b1;end
        else map_column<=map_column+1'b1;
       end
      end

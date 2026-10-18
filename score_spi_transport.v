@@ -24,14 +24,17 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
   reg [31:0] v;integer i;begin v=c^b;for(i=0;i<8;i=i+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
  reg [1:0] ds;
- wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall;
+ wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall,fast_selected;
  wire serial_clk=COMM_SEPARATE?comm_clk:clk;
  generate if(!EXTERNAL_SCORE_RX)begin: own_front
  r24_spi_edges #(.COMM_SEPARATE(COMM_SEPARATE)) phy(.clk(clk),.comm_clk(comm_clk),.rst(rst),
  .sck(spi_sck),.cs_n(fpga_cs_n),.mosi(spi_mosi),.rise(rise),.fall(fall),.start(select_start),.finish(select_end),
- .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall));
+ .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall),.fast_selected(fast_selected));
  end else begin: shared_front
-  assign {fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fall,rise}=shared_score_rx[7:0];
+  // Shared bit1 was an unused slow-fall indication; it now carries
+  // the original fast-domain select for TX. All payload bit offsets stay.
+  assign {fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fast_selected,rise}=shared_score_rx[7:0];
+  assign fall=1'b0;
  end endgenerate
 
  reg [7:0] memory[0:511];
@@ -58,8 +61,12 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
  wire [31:0] request_sequence=header[159:128];
  wire [15:0] length=header[175:160];
  assign observe_status_bytes=status_tmp;
- assign spi_miso_oe=!rst&&!fpga_cs_n&&sd_cs_n&&in_transaction&&!bad&&tx_index<256;
- assign spi_miso=(tx_index<256)?response[~tx_index[7:0]]:1'b0;
+ assign spi_miso_oe=!rst&&!fpga_cs_n&&sd_cs_n&&fast_selected&&tx_index<256;
+ // The actual protocol first byte is fixed magic; capture it at fast CS
+ // so even a zero-extra-setup master sees the first bit on time.
+ reg [7:0] first_tx_byte;
+ always @(posedge serial_clk)if(rst)first_tx_byte<=0;else if(fast_start)first_tx_byte<=status_tmp[7:0];
+ assign spi_miso=tx_index<8?first_tx_byte[~tx_index[2:0]]:(tx_index<256?response[~tx_index[7:0]]:1'b0);
  always @(*)begin
   status_tmp=0;status_tmp[31:0]=32'h54533753;status_tmp[39:32]=1;
   status_tmp[47:40]=player_error;status_tmp[55:48]={6'd0,reload_request,(!page_busy&&page_ready)};
@@ -85,7 +92,7 @@ module score_spi_transport # (parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARAT
  wire [31:0] completed_response_crc=~scheduled_crc_next;
  always @(posedge serial_clk)begin
   if(rst||fast_start)tx_index<=0;
-  else if(phy_selected&&fast_fall&&tx_index<256)tx_index<=tx_index+1'b1;
+  else if(fast_selected&&fast_fall&&tx_index<256)tx_index<=tx_index+1'b1;
  end
  integer j;
  always @(posedge clk)begin
@@ -189,7 +196,7 @@ endmodule
 module r24_spi_edges #(parameter integer COMM_SEPARATE=0)(
  input wire clk,comm_clk,rst,sck,cs_n,mosi,
  output wire rise,fall,start,finish,selected,bit_data,
- output wire fast_start,fast_fall);
+ output wire fast_start,fast_fall,fast_selected);
  wire fclk=COMM_SEPARATE?comm_clk:clk;
  (* syn_preserve=1 *) reg [2:0] ss,cs; reg [1:0] ms;
  wire fr=ss[2:1]==2'b01, ff=ss[2:1]==2'b10;
@@ -205,11 +212,25 @@ module r24_spi_edges #(parameter integer COMM_SEPARATE=0)(
    if(fe)toggles[3]<=~toggles[3];
   end
  end
- always @(posedge clk)if(rst)seen<=0;else seen<=toggles;
- assign rise=COMM_SEPARATE?(toggles[0]^seen[0]):fr;
- assign fall=COMM_SEPARATE?(toggles[1]^seen[1]):ff;
- assign start=COMM_SEPARATE?(toggles[2]^seen[2]):fs;
- assign finish=COMM_SEPARATE?(toggles[3]^seen[3]):fe;
- assign selected=!cs[2];assign bit_data=COMM_SEPARATE?captured_bit:ms[1];
- assign fast_start=fs;assign fast_fall=ff;
+ wire [5:0] crossing;
+ generate if(COMM_SEPARATE)begin: related_handoff
+  // Opposite-edge capture provides a half-cycle on both sides of this
+  // related-clock crossing. No new clock net or frequency is introduced.
+  // This stage needs no reset: while rst is asserted, the source PHY is
+  // cleared and the resettable system stage below suppresses all events.
+  reg [5:0] half_cycle;
+  reg [5:0] system_copy;
+  always @(negedge comm_clk)half_cycle<={cs[2],captured_bit,toggles};
+  always @(posedge clk)if(rst)system_copy<=6'b100000;else system_copy<=half_cycle;
+  assign crossing=system_copy;
+ end else begin: direct_crossing
+  assign crossing={cs[2],captured_bit,toggles};
+ end endgenerate
+ always @(posedge clk)if(rst)seen<=0;else seen<=crossing[3:0];
+ assign rise=COMM_SEPARATE?(crossing[0]^seen[0]):fr;
+ assign fall=COMM_SEPARATE?(crossing[1]^seen[1]):ff;
+ assign start=COMM_SEPARATE?(crossing[2]^seen[2]):fs;
+ assign finish=COMM_SEPARATE?(crossing[3]^seen[3]):fe;
+ assign selected=!crossing[5];assign bit_data=COMM_SEPARATE?crossing[4]:ms[1];
+ assign fast_start=fs;assign fast_fall=ff;assign fast_selected=!cs[2];
 endmodule

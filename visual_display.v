@@ -13,9 +13,9 @@ module visual_display #(
 );
  wire r54_equal_0;
 
- wire process_rst,pixel_rst,sv;wire signed [15:0] sl,sr;wire [63:0] sid;
+ wire process_rst,pixel_rst,serializer_rst,serial_clock_disable,sv;wire signed [15:0] sl,sr;wire [63:0] sid;
  visual_reset_bridge rb(.audio_clk(clk),.pixel_clk(pixel_clk),.reset_request(audio_rst||display_reset),.pll_locked(pll_locked),
-  .process_rst(process_rst),.pixel_rst(pixel_rst));
+  .process_rst(process_rst),.pixel_rst(pixel_rst),.serializer_rst(serializer_rst),.serial_clock_disable(serial_clock_disable));
  visual_dac_observer observer(.clk(clk),.audio_rst(audio_rst),.observe_load(observe_load),.observe_l(observe_l),.observe_r(observe_r),
   .sample_valid(sv),.sample_l(sl),.sample_r(sr),.sample_id(sid),.observed_count(dac_observed_count));
  wire [10:0] x;wire [9:0] y;wire de,hs,vs,vblank,frame_start;
@@ -51,6 +51,6 @@ module visual_display #(
  visual_pixel_renderer #(.FONT_FILE(FONT_FILE)) renderer(.pixel_clk(pixel_clk),.rst(pixel_rst),.x(x),.y(y),.de(de),.hs(hs),.vs(vs),
   .test_pattern(test_latched),.front_valid(fv),.metadata(metadata),.age_frames(age_frames),.wave_re(wre),.xy_re(xre),.spectrum_re(sre),
   .wave_addr(wa),.xy_addr(xa),.spectrum_addr(sa),.wave_data(wd),.xy_data(xd),.spectrum_data(sd),.rgb(rgb),.out_de(tx_de),.out_hs(tx_hs),.out_vs(tx_vs));
- video_dvi_tx tx(.pixel_clk(pixel_clk),.serial_clk(serial_clk),.rst(pixel_rst),.rgb(rgb),.de(tx_de),.hs(tx_hs),.vs(tx_vs),.tmds_p(tmds_p),.tmds_n(tmds_n));
+ video_dvi_tx #(.SEPARATE_PHY_RESET(1),.GATE_PHY_CLOCK(1)) tx(.pixel_clk(pixel_clk),.serial_clk(serial_clk),.rst(pixel_rst),.phy_rst(serializer_rst),.phy_clock_disable(serial_clock_disable),.rgb(rgb),.de(tx_de),.hs(tx_hs),.vs(tx_vs),.tmds_p(tmds_p),.tmds_n(tmds_n));
  r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(metadata[159:128]),.b(last_sequence),.equal(r54_equal_0));
 endmodule

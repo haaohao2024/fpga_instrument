@@ -51,11 +51,11 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  reg [31:0] generation,read_generation;reg [63:0] read_epoch;
  reg [7:0] ram_q,part0,part1,part2;reg stop_pending;
  reg [1:0] sd_sync,control_sync;
- wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall;
+ wire rise,fall,select_start,select_end,phy_selected,phy_bit,fast_start,fast_fall,fast_selected;
  wire serial_clk=COMM_SEPARATE?comm_clk:clk;
  r24_spi_edges #(.COMM_SEPARATE(COMM_SEPARATE)) phy(.clk(clk),.comm_clk(comm_clk),.rst(rst),
  .sck(spi_sck),.cs_n(score_cs_n),.mosi(spi_mosi),.rise(rise),.fall(fall),.start(select_start),.finish(select_end),
- .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall));
+ .selected(phy_selected),.bit_data(phy_bit),.fast_start(fast_start),.fast_fall(fast_fall),.fast_selected(fast_selected));
 
  reg transaction,bad,capacity,receive_bank;
  reg [511:0] header;
@@ -68,7 +68,7 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  reg [9:0] byte_count,expected_bytes,wire_length;
  reg [2:0] bit_count;reg [7:0] rx_shift;reg [12:0] tx_index;
  assign shared_score_rx={legacy_snapshot,header[255:0],byte_count,bit_count,rx_shift,
-   fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fall,rise};
+   fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fast_selected,rise};
  wire [1:0] footer_lane=byte_count[1:0]-expected_bytes[1:0];
  wire [7:0] next_byte={rx_shift[6:0],phy_bit};
  wire [7:0] operation=header[47:40];wire [15:0] request_pairs=header[63:48];
@@ -100,25 +100,30 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  end else begin: s11_response_disabled
   assign s11_serial_bit=0;assign s11_snapshot=0;assign s11_payload_ready=0;assign record_peek_address=0;
  end endgenerate
- assign spi_miso_oe=!rst&&!score_cs_n&&control_cs_n&&sd_cs_n&&transaction&&!bad
+ assign spi_miso_oe=!rst&&!score_cs_n&&control_cs_n&&sd_cs_n&&fast_selected
                      &&(tx_index<256||(route_s10&&tx_index<512)||(route_s11&&tx_index<(short_s11?544:4640)));
  // First byte keeps the original CS snapshot edge. Subsequent bytes are
  // loaded on their preceding byte's final falling edge; only 8 bits shift.
  reg[7:0] media_tx_byte;
+ reg[7:0] first_tx_byte;
+ always @(posedge serial_clk)if(rst)first_tx_byte<=0;else if(fast_start)first_tx_byte<=legacy_status_bytes[7:0];
+ // Every transaction begins with the common legacy magic word. A stale
+ // RX route from the previous transaction must not select its first bits.
+ wire tx_route_s11=route_s11&&(tx_index>=32);
  wire[5:0] media_next_index=tx_index[8:3]+6'd1;
  wire[7:0] media_next_byte=response[{~media_next_index,3'b111}-:8];
- assign spi_miso=route_s11?s11_serial_bit:(tx_index<8?
-  legacy_snapshot[{5'b11111,~tx_index[2:0]}]:(tx_index<512?media_tx_byte[7]:1'b0));
+ assign spi_miso=tx_route_s11?s11_serial_bit:(tx_index<8?
+  first_tx_byte[~tx_index[2:0]]:(tx_index<512?media_tx_byte[7]:1'b0));
  always @(posedge serial_clk)begin
   if(rst||fast_start)media_tx_byte<=0;
-  else if(phy_selected&&fast_fall&&tx_index<512)begin
+  else if(fast_selected&&fast_fall&&tx_index<512)begin
    if(tx_index[2:0]==7)media_tx_byte<=media_next_byte;
    else media_tx_byte<={media_tx_byte[6:0],1'b0};
   end
  end
  always @(posedge serial_clk)begin
   if(rst||fast_start)tx_index<=0;
-  else if(phy_selected&&fast_fall&&tx_index<4640)tx_index<=tx_index+1'b1;
+  else if(fast_selected&&fast_fall&&tx_index<4640)tx_index<=tx_index+1'b1;
  end
  always @(*)begin
   status_tmp=0;status_tmp[31:0]=32'h53303153;status_tmp[39:32]=1;
