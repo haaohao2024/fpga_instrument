@@ -249,7 +249,6 @@ void bl_show_component_version(void)
 {
     const char *version_str;
     const char **ctx = NULL;
-    bflb_verinf_t version = { 0 };
 
     puts("Version of used components:\r\n");
     while ((version_str = bl_sys_version(&ctx))) {
@@ -275,8 +274,7 @@ void bl_show_component_version(void)
         puts("\tBoot2 maybe not exist!\r\n");
     } else {
         puts("\tVersion: ");
-        bflb_get_boot2_info_from_flash(&version);
-        printf("component_version_boot2: %d.%d.%d\r\n", version.x, version.y, version.z);
+        puts("Sipeed NEO secondary application (no Bouffalo boot2 table)\r\n");
     }
 }
 
@@ -314,8 +312,8 @@ static void console_init()
     struct bflb_device_s *uart0;
 
     gpio = bflb_device_get_by_name("gpio");
-    bflb_gpio_uart_init(gpio, GPIO_PIN_21, GPIO_UART_FUNC_UART0_TX);
-    bflb_gpio_uart_init(gpio, GPIO_PIN_22, GPIO_UART_FUNC_UART0_RX);
+    bflb_gpio_uart_init(gpio, GPIO_PIN_28, GPIO_UART_FUNC_UART0_TX);
+    bflb_gpio_uart_init(gpio, GPIO_PIN_27, GPIO_UART_FUNC_UART0_RX);
 
     struct bflb_uart_config_s cfg = { 0 };
     cfg.baudrate = CONFIG_CONSOLE_UART_BAUDRATE;

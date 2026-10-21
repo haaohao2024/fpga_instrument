@@ -1,5 +1,5 @@
 // Dock31004 Rev1.4: GPIO12 SD-CS,13 SCK,14 MOSI,15 MISO,10 STE1.
-// Candidate application HAL. Application startup/flash/debugger integration is NOT qualified.
+// NEO secondary application HAL; physical board validation remains required.
 #include "score_hal.h"
 #include "score_service.h"
 #include "bflb_gpio.h"
@@ -13,6 +13,9 @@ static struct bflb_spi_config_s config={.freq=400000,.role=SPI_ROLE_MASTER,.mode
 static int selected;
 int hal_platform_init(void){
  board_init();gpio=bflb_device_get_by_name("gpio");spi=bflb_device_get_by_name("spi0");if(!gpio||!spi)return -1;
+ for(unsigned pin=0;pin<4;pin++)bflb_gpio_init(gpio,pin,GPIO_INPUT|GPIO_PULL_NONE|GPIO_SMT_EN);
+ for(unsigned pin=0;pin<4;pin++)bflb_gpio_init(gpio,pin,GPIO_INPUT|GPIO_PULL_NONE|GPIO_SMT_EN);
+ for(unsigned pin=0;pin<4;pin++)bflb_gpio_init(gpio,pin,GPIO_INPUT|GPIO_PULL_NONE|GPIO_SMT_EN);
  bflb_gpio_init(gpio,10,GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
  bflb_gpio_init(gpio,11,GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
  bflb_gpio_init(gpio,12,GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);

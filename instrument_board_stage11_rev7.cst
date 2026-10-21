@@ -4,7 +4,8 @@
 // Top: instrument_board_stage11_rev7. BL616 is the sole shared-SPI master.
 // External encoder/SPI pull-ups: NONE here. EX_KEY.2: LVCMOS15 + pull-up.
 // Enable CPU pins as GPIO in the project for AA19/AB20.
-// MISO tri-state and WS2812 inversion are RTL functions, not CST options.
+// REV8 LED: J13-1 / E14, direct non-inverted data, eight external LEDs.
+// Encoder2 B=AB21 and switch=AB22 follow the confirmed board test, not DOCX encoder rows.
 
 IO_LOC "adc_cs_n" R18;
 IO_PORT "adc_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
@@ -22,12 +23,12 @@ IO_LOC "enc1_sw_n" AA20;
 IO_PORT "enc1_sw_n" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
 IO_LOC "enc2_a" AA21;
 IO_PORT "enc2_a" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
-IO_LOC "enc2_b" AB22;
+IO_LOC "enc2_b" AB21;
 IO_PORT "enc2_b" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
-IO_LOC "enc2_sw_n" AB21;
+IO_LOC "enc2_sw_n" AB22;
 IO_PORT "enc2_sw_n" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
-IO_LOC "ws2812_inv" J16;
-IO_PORT "ws2812_inv" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
+IO_LOC "ws2812_data" E14;
+IO_PORT "ws2812_data" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
 IO_LOC "mcu_spi_sck" V15;
 IO_PORT "mcu_spi_sck" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
 IO_LOC "mcu_spi_mosi" Y16;

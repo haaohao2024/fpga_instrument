@@ -1,5 +1,5 @@
 // Tang Mega 60K NEO Dock 31004, REV7 physical board binding.
-// E1 rotation: Vibrato (500 us). E2 rotation: Glide (1000 us).
+// E1 rotation: Vibrato (500 us). E2 rotation: release duration (1000 us).
 // E1 press: octave up. E2 press: octave down. KEY2: reset.
 // The complete, frozen Stage11 system remains the sole instrument instance.
 module instrument_board_stage11_rev7 #(
@@ -18,7 +18,7 @@ module instrument_board_stage11_rev7 #(
     input wire mcu_spi_sck, mcu_spi_mosi,
     input wire mcu_sd_cs_n, mcu_cs1_n, mcu_cs2_n,
     output wire mcu_spi_miso,
-    output wire ws2812_inv,
+    output wire ws2812_data,
     output wire audio_bclk, audio_lrck, audio_din,
     output wire pa_disable,
     output wire [3:0] video_p, video_n
@@ -68,11 +68,9 @@ module instrument_board_stage11_rev7 #(
                    (mcu_cs1_n ^ mcu_cs2_n) && protocol_oe;
     assign mcu_spi_miso = miso_oe ? reply_bit : 1'bz;
 
-    // Dock Q16 inverts J16 before U15. Invert exactly once at the board edge.
-    // The existing guide reset default sends the U15 prefix plus eight key LEDs.
-    // Existing WS2812B-2020 candidate timing is retained; WS2812C compatibility
-    // still requires the purchased part's timing specification and hardware QA.
-    assign ws2812_inv = (!rst_n || rst) ? 1'b1 : ~guide_wave;
+    // REV8 J13-1 / E14 drives eight external LEDs directly.
+    // No Dock Q16 inversion or U15 prefix on this connection.
+    assign ws2812_data = (!rst_n || rst) ? 1'b0 : guide_wave;
 
     instrument_io_stage11 #(
         .CLK_FREQ_HZ(SYSTEM_CLK_HZ), .SPI_CLK_HZ(ADC_SPI_CLK_HZ), .EXTERNAL_VIDEO_REFERENCE(1), .COMM_SEPARATE(1),
@@ -90,7 +88,7 @@ module instrument_board_stage11_rev7 #(
         .sd_cs_n(mcu_sd_cs_n), .score_cs_n(mcu_cs1_n),
         .control_cs_n(mcu_cs2_n), .spi_miso(reply_bit),
         .spi_miso_oe(protocol_oe), .guide_led_dout(guide_wave),
-        .guide_cfg_valid(1'b0), .guide_cfg_prefix(1'b1),
+        .guide_cfg_valid(1'b1), .guide_cfg_prefix(1'b0),
         .guide_cfg_order(24'hfac688), .guide_cfg_lead(14'd4800),
         .display_reset(1'b0), .display_scale(2'd0),
         .display_test_pattern(1'b0), .video_p(video_p), .video_n(video_n),

@@ -6448,17 +6448,19 @@ module r28_shared_envelope_glide(
  wire[113:0] g=glide_requests[glide_lane*114+:114];
  wire[2:0] state;wire[16:0] level,quotient;wire[12:0] remaining,duration,remainder,error_acc;wire gate,retrigger;
  assign {state,level,quotient,remaining,duration,remainder,error_acc,gate,retrigger}=e;
+ wire new_owner,up;wire[6:0] note,target;wire[3:0] code,stored_code;wire[22:0] pitch;
  wire[2:0] state_next;wire[16:0] level_next,quotient_next;
  wire[31:0] remaining_next,duration_next,remainder_next,error_next;
- voice_adsr_step adsr(.state(state),.level(level),.quotient(quotient),.remaining({19'd0,remaining}),.duration({19'd0,duration}),
+ voice_release_adsr_step adsr(.release_code(code),.state(state),.level(level),.quotient(quotient),.remaining({19'd0,remaining}),.duration({19'd0,duration}),
   .remainder({19'd0,remainder}),.error_acc({19'd0,error_acc}),.gate(gate),.retrigger(retrigger),
   .state_next(state_next),.level_next(level_next),.quotient_next(quotient_next),.remaining_next(remaining_next),
   .duration_next(duration_next),.remainder_next(remainder_next),.error_next(error_next));
  assign envelope_response={state_next,level_next,quotient_next,remaining_next[12:0],duration_next[12:0],remainder_next[12:0],error_next[12:0]};
- wire new_owner,up;wire[6:0] note,target;wire[3:0] code,stored_code;wire[22:0] pitch;
+ // code is now release time; pitch changes are direct, with continuous phase.
+
  wire[16:0] rem,base,err;wire[15:0] fraction;
  assign {new_owner,note,code,pitch,target,rem,base,fraction,err,up,stored_code}=g;
- glide_pitch_prepare glide(.new_owner(new_owner),.note_target(note),.glide_code(code),.current_pitch(pitch),.stored_target(target),
+ glide_pitch_prepare glide(.new_owner(new_owner),.note_target(note),.glide_code(4'd0),.current_pitch(pitch),.stored_target(target),
   .remaining(rem),.base_step(base),.remainder(fraction),.error_acc(err),.direction_up(up),.stored_code(stored_code),.prepared(glide_response));
  wire[1:0] advance_lane=step[1:0]-2'd3;
  r28_glide_pipeline advance(.clk(clk),.rst(rst),.prepared(advance_requests[advance_lane*125+:125]),.result(advance_response));

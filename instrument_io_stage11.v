@@ -91,14 +91,15 @@ module instrument_io_stage11 #(
         .ready(),.step_pulse(glide_step_pulse),.step_dir(glide_step_dir),
         .position(),.invalid_pulse()
     );
-    glide_parameter_control u_glide_parameter (
+    // Legacy glide_code transport now carries the release-time setting.
+    release_parameter_control u_release_parameter (
         .clk(clk),.rst(rst),.step_pulse(glide_step_pulse),
         .step_dir(glide_step_dir),.glide_code(local_glide_code)
     );
  wire video_pixel_clk,video_serial_clk,video_pll_locked;
  video_pll_800x600 video_pll(.clkin(EXTERNAL_VIDEO_REFERENCE ? video_ref_clk : clk),.reset(rst),.lock(video_pll_locked),
  .clkout0(video_serial_clk),.clkout1(video_pixel_clk));
- instrument_core_stage11 #(.COMM_SEPARATE(COMM_SEPARATE),.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1)) u_core(
+ instrument_core_stage11 #(.COMM_SEPARATE(COMM_SEPARATE),.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1),.VIBRATO_STEP(8)) u_core(
  .spi_sck(spi_sck),
  .score_cs_n(score_cs_n),
  .sd_cs_n(sd_cs_n),

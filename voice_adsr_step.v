@@ -79,3 +79,61 @@ module voice_adsr_step #(
         end
     end
 endmodule
+
+// Adjustable release with unchanged attack/decay/sustain. Persistent envelope
+// state remains per oscillator. Duration is latched only on the gate-off edge.
+// 7-bit constant divisions replace a wide run-time divider. For c=1..7,
+// floor(level/(1024*c)) == floor(floor(level/1024)/c).
+module voice_release_adsr_step (
+ input wire [3:0] release_code,
+ input wire [2:0] state,input wire [16:0] level,quotient,
+ input wire [31:0] remaining,duration,remainder,error_acc,
+ input wire gate,retrigger,
+ output wire [2:0] state_next,output wire [16:0] level_next,quotient_next,
+ output wire [31:0] remaining_next,duration_next,remainder_next,error_next
+);
+ wire [2:0] bs;wire [16:0] bl,bq;wire [31:0] bn,bd,br,be;
+ voice_adsr_step #(.RELEASE_MS(0)) base(.state(state),.level(level),.quotient(quotient),
+  .remaining(remaining),.duration(duration),.remainder(remainder),.error_acc(error_acc),
+  .gate(gate),.retrigger(retrigger),.state_next(bs),.level_next(bl),.quotient_next(bq),
+  .remaining_next(bn),.duration_next(bd),.remainder_next(br),.error_next(be));
+ wire [2:0] c=release_code>7?3'd7:release_code[2:0];
+ wire [6:0] high_level=level[16:10];
+ reg [6:0] q;
+ always @*begin
+  case(c)
+   1:q=high_level;
+   2:q=high_level>>1;
+   3:q=high_level/7'd3;
+   4:q=high_level>>2;
+   5:q=high_level/7'd5;
+   6:q=high_level/7'd6;
+   7:q=high_level/7'd7;
+   default:q=0;
+  endcase
+ end
+ // Keep this tiny product in logic; an inferred DSP adds unnecessary routing.
+ reg [6:0] whole_blocks;
+ always @*begin
+  case(c)
+   1:whole_blocks=q;
+   2:whole_blocks=q<<1;
+   3:whole_blocks=(q<<1)+q;
+   4:whole_blocks=q<<2;
+   5:whole_blocks=(q<<2)+q;
+   6:whole_blocks=(q<<2)+(q<<1);
+   7:whole_blocks=(q<<3)-q;
+   default:whole_blocks=0;
+  endcase
+ end
+ wire [16:0] residual=level-{whole_blocks,10'd0};
+ wire [12:0] samples={c,10'd0};
+ wire begin_release=!retrigger&&!gate&&state!=0&&state!=4&&level!=0&&c!=0;
+ assign state_next=begin_release?3'd4:bs;
+ assign level_next=begin_release?level:bl;
+ assign quotient_next=begin_release?{10'd0,q}:bq;
+ assign remaining_next=begin_release?{19'd0,samples}:bn;
+ assign duration_next=begin_release?{19'd0,samples}:bd;
+ assign remainder_next=begin_release?{15'd0,residual}:br;
+ assign error_next=begin_release?32'd0:be;
+endmodule
