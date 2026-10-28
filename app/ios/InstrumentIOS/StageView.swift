@@ -40,9 +40,10 @@ struct StageView: View {
         .fileImporter(isPresented:$importing,allowedContentTypes:[.data]) { result in uploadScore(result) }
         .onChange(of:model.guideNote) { n in if let n=n { follow(n) } }
         .onChange(of:octaves) { _ in startWhite=KeyLayout.clampStart(startWhite,visibleWhites:visibleWhites) }
-        // Leaving a second-level page drops the notes the phone still holds in the
-        // instrument, so nothing keeps sounding on the stage behind the sheet.
-        .onChange(of:sheet) { s in if s == nil { model.releaseAll() } }
+        // Like Android's openPage()/closePage(): opening or leaving a second-level page
+        // drops the notes the phone still holds in the instrument, so no note can stay
+        // stuck under a finger while the sheet covers the keyboard.
+        .onChange(of:sheet) { _ in model.releaseAll() }
         // Same as Android: a successful connection closes the connection page by itself.
         .onChange(of:link.ready) { ready in if ready, sheet == .connection { sheet = nil } }
         .onAppear {
