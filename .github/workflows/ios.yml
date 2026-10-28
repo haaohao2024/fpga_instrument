@@ -2,7 +2,7 @@ name: iOS device IPA
 on:
   push:
     branches: [main]
-    paths: ['ios_app/**', '.github/workflows/ios.yml']
+    paths: ['app/ios/**', '.github/workflows/ios.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 defaults:
   run:
-    working-directory: ios_app
+    working-directory: app/ios
 jobs:
   build:
     # Xcode 26 SDK: Liquid Glass (glassEffect) on iOS 26, classic fallback below.
@@ -69,6 +69,6 @@ jobs:
         if: always()
         with:
           name: FPGA-Instrument-iOS-${{ github.run_number }}
-          path: ios_app/artifacts/
+          path: app/ios/artifacts/
           retention-days: 14
           if-no-files-found: error
