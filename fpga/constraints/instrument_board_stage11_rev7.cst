@@ -81,4 +81,4 @@ IO_PORT "video_p[3]" PULL_MODE=NONE DRIVE=3.5 BANK_VCCIO=3.3;
 // Retain the audio-frame global distribution used by the routed128k baseline.
 // This is a control enable/data net, not an additional clock domain.
 // Gowin SUG1018-1.7E section2.7: CLOCK_LOC BUFG accepts CE|LOGIC sinks.
-CLOCK_LOC "u_instrument/u_core/base/base_0/frame_pulse_Z" BUFG = CE|LOGIC;
+CLOCK_LOC "u_instrument/u_core/base/base_0/frame_pulse" BUFG = CE|LOGIC;
