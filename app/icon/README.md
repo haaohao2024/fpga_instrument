@@ -16,7 +16,7 @@
 python make_icons.py
 ```
 
-需要 Pillow。脚本会写回：
+需要 Pillow 和 numpy。脚本会写回：
 
 - `../ios/InstrumentIOS/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`
   （Xcode 14 起的单尺寸 App Icon，`Contents.json` 里是 `universal` + `ios` + `1024x1024`）
@@ -30,6 +30,7 @@ python make_icons.py
 - iOS 图标必须**不透明**，不能带 alpha 通道；原图是 RGB，脚本不做透明处理。
 - 安卓 minSdk 是 26，只用自适应图标：`mipmap-anydpi-v26/ic_launcher.xml` 引用
   `@color/ic_launcher_background`（`#000C2C`，与原图边缘同色）和前景位图。
-  原图中的芯片连同引脚约占画面 66%，正好落在自适应图标 108dp 画布中 72dp 的
-  安全区内，因此前景位图铺满整个画布即可，不需要额外留白。
+- 原图里的芯片连同引脚约占画面 66%，引脚正好顶到自适应图标 72dp 安全区边缘，
+  圆形遮罩会切掉上下引脚。所以脚本把前景按画布的 86% 绘制、居中，并把外圈 6%
+  羽化到背景色，引脚就完整落在遮罩内，接缝也看不出来。
 - 改图时请同时更新 `res/values/ic_launcher_background.xml` 里的取色，保持边缘无缝。
