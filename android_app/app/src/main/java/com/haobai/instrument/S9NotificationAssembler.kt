@@ -45,7 +45,7 @@ class S9NotificationAssembler {
         require(total <= bytes.size && used <= total)
         if (used != total) return null
         val msg = S9Protocol.decode(bytes.copyOf(used))
-        require(msg.channel == S9Constants.CH_STATUS && msg.opcode in listOf(S9Constants.OP_RESULT,S11Protocol.DOWNLOAD_DATA,S11Protocol.RECORD_INFO) && msg.sequence == sequence)
+        require(msg.channel == S9Constants.CH_STATUS && msg.opcode in listOf(S9Constants.OP_RESULT,S11Protocol.DOWNLOAD_DATA,S11Protocol.RECORD_INFO,131,132) && msg.sequence == sequence)
         reset()
         return msg
     }

@@ -39,4 +39,12 @@ class S9NotificationTest {
         try {a.push(f[1],300);fail("Expired prefix accepted")}catch(_:IllegalArgumentException) {}
         assertEquals(1L,a.discarded)
     }
+    @Test fun loopAndEnsembleNoticesReachTheClientAtBothMtuSizes() {
+        for(op in listOf(131,132))for(mtu in listOf(23,247)) {
+            val a=S9NotificationAssembler();val m=S9Message(3,op,sid,7,ByteArray(64).also{it[0]=1})
+            var decoded:S9Message?=null
+            S9Protocol.fragments(m,mtu).forEachIndexed {i,f->decoded=a.push(f,i*10L)}
+            assertEquals(op,decoded!!.opcode);assertArrayEquals(m.payload,decoded!!.payload);assertEquals(0L,a.discarded)
+        }
+    }
 }

@@ -28,6 +28,9 @@ object S9RequestRules {
             return 0
         }
         if(m.channel==1)return when(m.opcode) {
+            41,97,98,99,100,101,102,105,106 -> if(n==0)0 else -1
+            96 -> range(n==1&&u8(0)<=5)
+            104 -> range(n==8&&u8(0)==1&&u8(1)<=2&&u8(2)<=11&&u8(3)<=1&&u16(4) in 50..180&&u8(6)<=2&&u8(7)==0)
             1,2,3 -> if(n==0)0 else -1
             4 -> range(n==5&&u8(0)<=2&&u32(1)!=0L)
             40 -> range(n==8&&u8(0)<=1&&u8(1) in 3..5&&zero(2,4)&&u32(4)!=0L)

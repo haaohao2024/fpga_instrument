@@ -28,7 +28,7 @@ object S11Protocol {
             .putLong(id).putLong(offset).putShort(length.toShort()).put(kind.toByte()).put(0).array()
     }
     fun field(voices:Int):ByteArray {
-        require(voices in listOf(0,1,8,16,32))
+        require(voices in listOf(0,1,8,16,32,48))
         return ByteArray(8).also {it[0]=(if(voices==0)2 else 1).toByte();it[1]=voices.toByte()}
     }
     fun requestError(m:S9Message):Int? {
@@ -43,7 +43,7 @@ object S11Protocol {
             DOWNLOAD -> ok(m.channel==2 && p.size==20 && b.getLong(0)!=0L && b.getLong(8)>=0 &&
                 (b.getShort(16).toInt() and 65535) in 1..480 && (p[18].toInt() and 255) in 1..2 && p[19]==0.toByte())
             FIELD_TEST -> ok(m.channel==1 && p.size==8 && zero(2) &&
-                ((p[0]==1.toByte() && (p[1].toInt() and 255) in listOf(1,8,16,32)) || (p[0]==2.toByte() && p[1]==0.toByte())))
+                ((p[0]==1.toByte() && (p[1].toInt() and 255) in listOf(1,8,16,32,48)) || (p[0]==2.toByte() && p[1]==0.toByte())))
             else -> null
         }
     }
@@ -55,9 +55,11 @@ data class S11RecordInfo(val id:Long,val phase:Int,val wireState:Int,val mask:In
     fun downloadable(kind:Int)=phase==5 && flags and 4==0 && mask and kind!=0 && flags and kind!=0
     fun bytes(kind:Int)=if(kind==1)pcmBytes else eventBytes
     fun crc(kind:Int)=if(kind==1)pcmCrc else eventCrc
+    val pcmChannels:Int? get()=if(flags and 1==0 || pcmPairs==0L)null else if(pcmBytes==512+2*pcmPairs)1 else 2
     fun description():String {
         val names=listOf("空闲","正在采集","正在排空","已关闭","等待停止伴奏后回读校验","已验证保存","不完整","错误")
-        return "记录 $id：${names[phase]}；PCM $pcmPairs 对，事件 $eventCells 单元；错误 $error"
+        val format=when(pcmChannels){1->"（单声道）";2->"（双声道）";else->""}
+        return "记录 $id：${names[phase]}；PCM $pcmPairs 帧$format，事件 $eventCells 单元；错误 $error"
     }
     companion object {
         fun decode(m:S9Message):S11RecordInfo {
@@ -66,7 +68,7 @@ data class S11RecordInfo(val id:Long,val phase:Int,val wireState:Int,val mask:In
             val id=b.long;val phase=b.get().toInt() and 255;val wire=b.get().toInt() and 255
             val mask=b.get().toInt() and 255;val flags=b.get().toInt() and 255
             require(phase in 0..7 && wire in 0..6 && mask in 0..3 && flags and 248==0)
-            val error=b.int.toLong() and 0xffffffffL
+            val error=b.int.toLong()
             val pairs=b.long;val cells=b.long;val pcm=b.long;val event=b.long
             val pc=b.int.toLong() and 0xffffffffL;val ec=b.int.toLong() and 0xffffffffL
             val first=b.long;val last=b.long
@@ -74,7 +76,10 @@ data class S11RecordInfo(val id:Long,val phase:Int,val wireState:Int,val mask:In
             require(event<=0xffffffffL && ((flags and 3) and mask.inv())==0)
             if(phase==5)require(error==0L && flags and 4==0)
             if(flags and 3!=0)require(phase==5 && flags and 4==0)
-            if(flags and 1!=0)require(pcm==512+4*pairs)
+            // Current firmware writes one Int16 per FPGA stereo pair;
+            // legacy WAVs write two. Keep both without changing the protocol.
+            if(flags and 1!=0)require(pairs<=536870912L &&
+                (pcm==512+2*pairs || pcm==512+4*pairs)) {"WAV长度不符"}
             return S11RecordInfo(id,phase,wire,mask,flags,error,pairs,cells,pcm,event,pc,ec,first,last)
         }
     }

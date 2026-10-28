@@ -1,0 +1,165 @@
+import Foundation
+import Combine
+import InstrumentCore
+
+final class InstrumentModel: ObservableObject {
+    let link=BluetoothLink()
+    @Published var feedback="请先连接乐器"
+    @Published var metrics: VoiceMetrics?
+    @Published var loop: LoopInfo?
+    @Published var ensemble: EnsembleInfo?
+    @Published var record: RecordInfo?
+    @Published var velocity=160.0
+    @Published var octave=0
+    @Published var fileStatus="文件操作需要保持App在前台"
+    @Published var exportedFile: URL?
+    @Published var fileBusy=false
+    @Published var spectrumState: SpectrumTest.State = .idle
+    private var nextSpectrumPoll: UInt64=0
+    private var nativeTestExpires: UInt64=0
+    lazy var spectrum = SpectrumTest(client:client)
+    private var timer: AnyCancellable?
+    private var log: [String]=[]
+    private var recordID: UInt64
+    private var transfer: FileTransfer?
+    private(set) lazy var client=ClientSession(send:{[weak self] in self?.link.send($0) ?? false},terminate:{[weak self] in self?.link.disconnect($0)},show:{[weak self] in self?.show($0)},clock:{BluetoothLink.now})
+    static let timbres=["基础正弦","FM电钢琴","风琴","拨弦","Lead","简易鼓组"]
+    init() {
+        recordID=UInt64(UserDefaults.standard.string(forKey:"lastRecordID") ?? "0") ?? 0
+        spectrum.changed = {[weak self] state in
+            self?.spectrumState=state
+            self?.nativeTestExpires = state == .submitted(48) ? BluetoothLink.now+31_000 : 0
+        }
+        link.onReady={[weak self] sid in
+            guard let self=self else{return}
+            do { try self.client.ready(sid);self.command(1,"读取设备参数",target:3);self.refresh() }
+            catch { self.link.disconnect(error.localizedDescription) }
+        }
+        link.onMessage={[weak self] m in self?.receive(m)}
+        link.onDisconnected={[weak self] in
+            guard let self=self else{return};self.client.disconnected();self.metrics=nil;self.loop=nil;self.ensemble=nil;self.record=nil
+            self.spectrum.disconnected()
+            self.transfer=nil;self.fileBusy=false;self.fileStatus="连接已断开；未完成的文件不发布"
+        }
+        timer=Timer.publish(every:0.1,on:.main,in:.common).autoconnect().sink{[weak self] _ in self?.tick()}
+    }
+    private func tick() {
+        client.tick()
+        if nativeTestExpires != 0, BluetoothLink.now>=nativeTestExpires { spectrum.disconnected() }
+        if spectrumState != .idle, link.ready, BluetoothLink.now>=nextSpectrumPoll {
+            nextSpectrumPoll=BluetoothLink.now+500
+            command(41,"读取测试硬件统计",target:3)
+        }
+        guard let t=transfer,t.awaitingData,!t.awaitingResult,BluetoothLink.now-t.requestedAt>=5000 else{return}
+        if t.attempts>=4 { cancelFile("文件数据通知超时，未发布下载文件") }
+        else { nextBlock() }
+    }
+    private func show(_ text: String) {
+        // Keepalive must not replace the user's last operation result.
+        if text.hasPrefix("会话保活") { return };feedback=text
+        log.append(text);if log.count>100 { log.removeFirst() }
+    }
+    func diagnostics() -> String { link.diagnostics()+"\n"+log.joined(separator:"\n") }
+    @discardableResult func command(_ op: Int,_ label: String,_ payload: [UInt8]=[],target: Int=4) -> Ticket? {
+        client.command(opcode:op,payload:payload,label:label,target:target)
+    }
+    func press(_ key: Int) -> Bool { spectrumState == .idle && client.press(key:key,note:60+octave*12+key,pressure:Int(velocity)) }
+    func release(_ key: Int) { client.release(key:key) }
+    func releaseAll() { if spectrumState != .idle { spectrum.stop() } else { client.releaseAll() } }
+    func startSpectrumTest(_ voices: Int) {
+        metrics=nil
+        if !spectrum.start(voices) { show("测试未开始：请先停止当前测试并等待连接和声音设置完成") }
+    }
+    func stopSpectrumTest() { spectrum.stop();show("已请求松开测试音符；请按硬件统计确认尾音结束") }
+    func nativeFieldTest(_ voices: Int) {
+        if voices==0, spectrumState != .idle { stopSpectrumTest();return }
+        releaseAll()
+        if let payload=try? SpectrumTest.nativeCommand(voices) {
+            command(86,voices==0 ? "停止固件短测试" : "固件短测试\(voices)路",payload,target:4)
+        }
+    }
+    func background() { releaseAll();link.stopScan();link.disconnect("App已进入后台，连接与手机持音已清理；回到前台后重新连接") }
+    func sound(_ timbre: Int,tail: Int) {
+        releaseAll();_ = client.pitchParameter(opcode:32,value:timbre);_ = client.pitchParameter(opcode:33,value:tail)
+    }
+    func startLoop(_ timbre: Int) {
+        if !client.beginLoop(timbre:timbre) { show("录制未开始：请等待声音设置完成并确认连接") }
+    }
+    func vibrato(_ v: Int) { _ = client.vibrato(v) }
+    func gain(_ local: Double,_ external: Double,_ ml: Bool,_ me: Bool) {
+        if let p=try? Commands.gain(local:Int(local*32768),external:Int(external*32768),muteLocal:ml,muteExternal:me) { command(36,"应用音量",p,target:5) }
+    }
+    func effects(delay: Bool,chorus: Bool,reverb: Bool,bypass: Bool) {
+        let flags: UInt32=(delay ? 1 : 0)|(chorus ? 2 : 0)|(reverb ? 4 : 0)|(bypass ? 8 : 0)
+        if let p=try? Commands.effects([flags,11520,12288,576,192,71583,24576,16384,6144,4096,4096]) { command(35,"应用效果器",p) }
+    }
+    func keymap(_ notes: [Int]) { if let p=try? Commands.keymap(notes) { command(37,"应用实体键音高",p,target:3) } }
+    func refresh() {
+        command(41,"读取硬件统计",target:3);command(101,"读取循环状态",target:3);command(106,"读取合奏状态",target:3)
+        if recordID != 0 { queryRecord() }
+    }
+    func startEnsemble(level: Int,root: Int,minor: Bool,bpm: Int,style: Int) {
+        if let p=try? Commands.ensemble(level:level,root:root,minor:minor,bpm:bpm,style:style) { command(104,"启动智能合奏",p) }
+    }
+    func startRecord(mask: UInt8) {
+        guard !fileBusy else{return}
+        recordID=max(UInt64(Date().timeIntervalSince1970*1000),recordID+1)
+        UserDefaults.standard.set(String(recordID),forKey:"lastRecordID")
+        guard let p=try? Commands.recordingStart(id:recordID,mask:mask) else{return}
+        _ = client.command(channel:2,opcode:80,payload:p,label:"开始SD录音",target:3)
+    }
+    func stopRecord() { guard recordID != 0 else{return};_ = client.command(channel:2,opcode:81,payload:LE.bytes(recordID),label:"停止SD录音",target:3) }
+    func queryRecord() { guard recordID != 0 else{return};_ = client.command(channel:2,opcode:82,payload:LE.bytes(recordID),label:"读取录音状态",target:3) }
+    func exportEvents() { guard let r=record,r.downloadable(2),!fileBusy else{return};_ = client.command(channel:2,opcode:85,payload:LE.bytes(r.id),label:"将事件录音转成曲谱",target:3) }
+    func download(_ kind: UInt8) {
+        guard let r=record,r.downloadable(kind),!fileBusy else{return}
+        do {
+            let t=try FileTransfer(record:r,kind:kind);transfer=t;fileBusy=true;exportedFile=nil;nextBlock()
+        } catch { fileStatus=error.localizedDescription }
+    }
+    private func nextBlock() {
+        guard let t=transfer else{return}
+        if t.finished {
+            do { exportedFile=try t.publish();fileStatus="下载完成，整文件CRC校验通过" }
+            catch { fileStatus=error.localizedDescription }
+            transfer=nil;fileBusy=false;return
+        }
+        guard let payload=try? Commands.fileBlock(id:t.id,offset:t.offset,length:t.nextLength,kind:t.kind) else{return}
+        t.awaitingResult=true;t.awaitingData=true;t.requestedAt=BluetoothLink.now;t.attempts+=1
+        let ticket=client.command(channel:2,opcode:83,payload:payload,label:"读取文件分块",target:3,completed:{[weak self,weak t] _ in
+            guard let self=self,let t=t,self.transfer === t else{return};t.awaitingResult=false;self.advanceDownload()
+        },rejected:{[weak self] _ in self?.cancelFile("设备拒绝文件读取")})
+        if ticket==nil { cancelFile("文件通道忙，请稍后重试") }
+    }
+    private func advanceDownload() { if let t=transfer,!t.awaitingResult,!t.awaitingData { nextBlock() } }
+    func cancelFile(_ reason: String="已取消文件操作") {
+        if let t=transfer { _ = client.command(channel:2,opcode:84,payload:LE.bytes(t.id),label:"取消文件读取",target:3) }
+        transfer=nil;fileBusy=false;fileStatus=reason
+    }
+    private func receive(_ m: Message) {
+        guard client.owns(m) else{return}
+        do {
+            switch m.opcode {
+            case 128:
+                let r=try ExecutionResult(m);if let v=r.metrics { metrics=v };client.result(m)
+            case 130:
+                let r: RecordInfo
+                do { r=try RecordInfo(m.payload) }
+                catch { record=nil;fileStatus="录音状态未能解析，请刷新状态";throw error }
+                record=r;recordID=max(recordID,r.id)
+                UserDefaults.standard.set(String(recordID),forKey:"lastRecordID")
+                if !fileBusy {
+                    fileStatus=r.phase>=6 ? "录音未成功保存，错误码 \(r.error)；当前没有可下载的完整文件" : "设备实际状态：\(r.description)"
+                    if r.phase>=6 { show("录音未保存：\(r.description)，错误码 \(r.error)") }
+                }
+            case 131: loop=try LoopInfo(m.payload)
+            case 132: ensemble=try EnsembleInfo(m.payload)
+            case 129:
+                if let t=transfer { try t.accept(m.payload);fileStatus="已读取 \(t.offset) / \(t.total) 字节";advanceDownload() }
+            default: break
+            }
+        } catch { show(error.localizedDescription);if m.opcode==129 { cancelFile(error.localizedDescription) } }
+    }
+}
+
+private typealias FileTransfer = RecordingDownload

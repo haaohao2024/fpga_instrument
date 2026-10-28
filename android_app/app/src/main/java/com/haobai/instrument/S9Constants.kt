@@ -26,7 +26,7 @@ object S9Constants {
     const val SD_OCCUPANCY_US = 8000
     const val FILE_CHUNK_DATA = 500
     const val MAX_SCORE_BYTES = 17067520
-    const val MAX_TIMBRE = 4
+    const val MAX_TIMBRE = 5
     const val MAX_GLIDE = 11
     const val MAX_PAN = 256
     const val UNITY_GAIN = 32768

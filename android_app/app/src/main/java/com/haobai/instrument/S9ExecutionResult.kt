@@ -5,7 +5,7 @@ import java.nio.ByteOrder
 
 data class S9ExecutionResult(val sequence:Long,val channel:Int,val phase:Int,val error:Int,
                              val effectiveFrame:Long?,val configVersion:Long,val instanceId:Long?,
-                             val generation:Int,val value:Int,val diagnostic:Long,val saved:Boolean) {
+                             val generation:Int,val value:Int,val diagnostic:Long,val saved:Boolean,val voiceMetrics:VoiceMetrics?=null) {
     val description:String get() = when(phase) {
         S9Constants.PHASE_RECEIVED -> "MCU已接收（未执行）"
         S9Constants.PHASE_ACCEPTED -> if(channel==2) "文件服务已接受（未保存）" else "FPGA已接受（待提交）"
@@ -28,14 +28,16 @@ data class S9ExecutionResult(val sequence:Long,val channel:Int,val phase:Int,val
             val version=b.int.toLong() and 0xffffffffL
             val id=b.long;val generation=b.short.toInt() and 65535;val value=b.short.toInt() and 65535
             val diagnostic=b.int.toLong() and 0xffffffffL;val flags=b.int
-            require(seq!=0L && channel in 0..2 && phase in 1..7 && err in -13..0 && flags and 7.inv()==0)
+            require(seq!=0L && channel in 0..2 && phase in 1..7 && err in -13..0 && flags and 15.inv()==0)
+            require(flags and 8==0 || (flags==8&&channel==1&&phase==3&&err==0))
+            val metrics=if(flags and 8!=0) VoiceMetrics.decode(message.payload.copyOfRange(16,32)) else null
             val saved=flags and 4!=0
             require(!saved || (channel==2 && phase==4 && err==0))
             if(phase==4 && !saved) require(flags and 1!=0)
             if(phase==7) require(err<0)
             if(flags and 2!=0) require(id!=0L)
             return S9ExecutionResult(seq,channel,phase,err,if(flags and 1!=0) frame else null,
-                version,if(flags and 2!=0) id else null,generation,value,diagnostic,saved)
+                version,if(flags and 2!=0) id else null,generation,value,diagnostic,saved,metrics)
         }
     }
 }

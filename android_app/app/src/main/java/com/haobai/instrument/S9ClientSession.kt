@@ -80,23 +80,23 @@ class S9ClientSession(
         if(enqueue(0,16,S9Protocol.event(held.press,3,key,note,pressure),"表情 $key",3)==null)return false
         held.note=note;held.pressure=pressure;pump();return true
     }
-    fun vibrato(depth:Int):Boolean {
+    fun vibrato(depth:Int,completed:((S9ExecutionResult)->Unit)?=null):Boolean {
         require(depth in 0..255)
-        val ok=enqueue(0,16,S9Protocol.event(0,4,255,0,depth),"颤音",3)!=null;pump();return ok
+        val ok=enqueue(0,16,S9Protocol.event(0,4,255,0,depth),"颤音",3,completed)!=null;pump();return ok
     }
     fun parameter(opcode:Int,payload:ByteArray,label:String,target:Int=4,
                   rejected:((S9ExecutionResult)->Unit)?=null,
                   completed:((S9ExecutionResult)->Unit)?=null):Ticket? {
         val ticket=enqueue(1,opcode,payload,label,target,completed,rejected);pump();return ticket
     }
-    fun pitchParameter(opcode:Int,value:Int):Boolean {
+    fun pitchParameter(opcode:Int,value:Int,completed:((S9ExecutionResult)->Unit)?=null):Boolean {
         require(opcode==32||opcode==33)
-        require(if(opcode==32)value in 0..4 else value in 0..S9Constants.MAX_GLIDE)
+        require(if(opcode==32)value in 0..5 else value in 0..S9Constants.MAX_GLIDE)
         if(!canReserve(2))return false
         val target=if(opcode==32)3 else 4
         val config=enqueue(1,opcode,byteArrayOf(value.toByte()),if(opcode==32)"音色" else "Glide",target)?:return false
         val payload=ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).put(1).put(target.toByte()).putShort(0).putInt(config.sequence.toInt()).array()
-        val barrier=enqueue(1,40,payload,"音高配置屏障",3)?:run {fail("配置屏障无法排队");return false}
+        val barrier=enqueue(1,40,payload,"音高配置屏障",3,completed)?:run {fail("配置屏障无法排队");return false}
         pitchBarriers.add(barrier);pump();return true
     }
     fun pan(key:Int,position:Int):Boolean {

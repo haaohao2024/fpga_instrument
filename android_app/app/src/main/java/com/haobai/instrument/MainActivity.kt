@@ -39,16 +39,27 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     private val handler=Handler(Looper.getMainLooper())
     private var running=false
     private var page=0
+    private var ensembleInfo:EnsembleInfo?=null
+    private var voiceInfo:VoiceMetrics?=null
+    private var ensembleText:TextView?=null
+    private var loopText:TextView?=null
+    private var loopDescription="尚未查询循环状态"
+    private var lastVoicePoll=0L
+    private var fieldText:TextView?=null
+    private var fieldGeneration=0
+    private var fieldRequested=false
     private var prepared:File?=null
     private var preparedCrc=0L
     private var preparing=false
     private var destroyed=false
     private var prepareGeneration=0
     private val ticker=object:Runnable {
-        override fun run(){if(running){client.tick();if(::download.isInitialized)download.tick();handler.postDelayed(this,100)}}
+        override fun run(){if(running){client.tick();if(::download.isInitialized)download.tick();if((page==7||page==8)&&client.connected&&client.pendingCount<2&&SystemClock.elapsedRealtime()-lastVoicePoll>=1000){lastVoicePoll=SystemClock.elapsedRealtime();client.parameter(41,byteArrayOf(),"读取硬件声部",3)};handler.postDelayed(this,100)}}
     }
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedRecording=getPreferences(MODE_PRIVATE).getLong("lastRecordID",0L)
+        if(requestedRecording!=0L)recordingIds.observeRemote(requestedRecording)
         link=BleInstrumentLink(this,this)
         client=S9ClientSession(link::send,{reason->link.close();status(reason)},{feedback.text=it},SystemClock::elapsedRealtime)
         upload=S9ScoreUpload(client,{feedback.text=it})
@@ -58,9 +69,12 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         state=TextView(this).apply {text="未连接";textSize=16f};column.addView(state)
         mediaState=TextView(this).apply {text="设备尚未提供伴奏数字状态";textSize=14f};column.addView(mediaState)
         feedback=TextView(this).apply {text="参数为易失配置；无线与实卡尚需实机验证";textSize=14f};column.addView(feedback)
-        val nav=LinearLayout(this)
-        listOf("连接","演奏","参数","键位","曲谱","记录").forEachIndexed {i,title ->
-            nav.addView(Button(this).apply {text=title;textSize=12f;setPadding(0,0,0,0);setOnClickListener {showPage(i)}},LinearLayout.LayoutParams(0,-2,1f))
+        val nav=Spinner(this).apply {
+            adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("连接与设备","琴键演奏","音色与效果","键位映射","曲谱播放","录音文件","实时循环","智能合奏","赛题测试（48路）"))
+            onItemSelectedListener=object:AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent:AdapterView<*>?,view:View?,position:Int,id:Long){if(::body.isInitialized)showPage(position)}
+                override fun onNothingSelected(parent:AdapterView<*>?){}
+            }
         };column.addView(nav)
         body=LinearLayout(this).apply {orientation=1}
         column.addView(ScrollView(this).apply {addView(body)},LinearLayout.LayoutParams(-1,0,1f))
@@ -74,9 +88,10 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     private fun checked(text:String,initial:Boolean=false)=CheckBox(this).apply {this.text=text;isChecked=initial;body.addView(this)}
     private fun showPage(index:Int) {
+        if(page==8 && index!=8)stopFieldTest()
         keyboard?.cancel();client.releaseAll();keyboard=null;devices=null
-        body.removeAllViews();page=index
-        when(index){0->connectionPage();1->performancePage();2->parameterPage();3->mappingPage();4->scorePage();5->recordingPage()}
+        body.removeAllViews();ensembleText=null;loopText=null;fieldText=null;page=index
+        when(index){0->connectionPage();1->performancePage();2->parameterPage();3->mappingPage();4->scorePage();5->recordingPage();6->loopPage();7->ensemblePage();8->fieldTestPage()}
     }
     private fun connectionPage() {
         button("扫描乐器") {
@@ -114,10 +129,10 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     private fun parameterPage() {
         label("下列值为本次编辑值，不代表设备已生效值。请以执行反馈为准。")
-        val timbre=number("音色 ID（0基准；1～4实时音色）",0)
-        button("设置新实例音色"){client.pitchParameter(32,timbre.text.toString().toInt())}
-        val glide=number("Glide 编码（0～11）",0)
-        button("设置Glide"){client.pitchParameter(33,glide.text.toString().toInt())}
+        val timbre=choices("新按下琴键的音色",toneNames)
+        button("应用音色"){client.pitchParameter(32,timbre.selectedItemPosition)}
+        val glide=number("松手后的衰减时间（0～7，越大越长）",0)
+        button("设置松手衰减"){client.pitchParameter(33,glide.text.toString().toInt())}
         val local=number("本地增益（0～32768）",32768)
         val external=number("外部增益（0～32768）",32768)
         val lm=checked("本地静音");val em=checked("外部静音")
@@ -136,6 +151,44 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         button("提交效果参数"){client.parameter(35,fx(0),"效果参数")}
         button("独立清除三种尾音"){client.parameter(35,fx(7),"清尾音")}
     }
+    private val toneNames=listOf("基础正弦","FM音色","谐波音色A","谐波音色B","波形塑形","简易鼓组")
+    private fun choices(title:String,values:List<String>):Spinner {
+        label(title);return Spinner(this).apply {adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,values);body.addView(this)}
+    }
+    private fun loopPage(){
+        label("第一层开始/结束决定循环长度；随后可叠录，最多4层。现场琴键始终由FPGA直接发声。")
+        label("循环、智能合奏、文件录音与外部音频目前按模式使用；设备繁忙会明确拒绝新模式。")
+        loopText=TextView(this).apply {text=loopDescription;textSize=16f;body.addView(this)}
+        val tone=choices("本层音色",toneNames)
+        button("开始录制一层"){
+            val timbre=tone.selectedItemPosition
+            client.parameter(32,byteArrayOf(timbre.toByte()),"本层音色",3,completed={client.parameter(96,byteArrayOf(timbre.toByte()),"开始叠录",4)})
+        }
+        button("结束录制，加入循环"){client.parameter(97,byteArrayOf(),"结束叠录",4)}
+        button("撤销上一层"){client.parameter(98,byteArrayOf(),"撤销上一层",4)}
+        button("停止循环"){client.parameter(99,byteArrayOf(),"停止循环",4)}
+        button("恢复循环"){client.parameter(102,byteArrayOf(),"恢复循环",4)}
+        button("清空所有层"){client.parameter(100,byteArrayOf(),"清空循环",4)}
+        button("刷新循环状态"){client.parameter(101,byteArrayOf(),"查询循环",3)}
+        label("鼓组8键依次为：底鼓、军鼓、闭镲、开镲、低嗵鼓、高嗵鼓、拍手、镲。")
+    }
+    private fun ensemblePage(){
+        label("实体琴键直接演奏；BL616分析演奏事件并排程伴奏，FPGA合成全部声音。")
+        ensembleText=TextView(this).apply {text=ensembleDescription();textSize=16f;body.addView(this)}
+        val level=choices("丰富度",listOf("基础：和弦","标准：和弦＋低音＋鼓","丰富：分层和声＋低音＋鼓＋回应"));level.setSelection(2)
+        val key=choices("主音",listOf("C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"))
+        val mode=choices("调式",listOf("大调","自然小调"))
+        val bpm=number("速度 BPM（50～180）",120)
+        val style=choices("伴奏风格",listOf("常规","柔和","律动"))
+        button("启动智能合奏"){
+            client.parameter(104,EnsembleProtocol.start(level.selectedItemPosition,key.selectedItemPosition,mode.selectedItemPosition,bpm.text.toString().toInt(),style.selectedItemPosition),"启动智能合奏",4)
+        }
+        button("停止伴奏，继续现场演奏"){client.parameter(105,byteArrayOf(),"停止智能合奏",4)}
+        button("刷新合奏与硬件状态"){client.parameter(106,byteArrayOf(),"读取合奏状态",3);client.parameter(41,byteArrayOf(),"读取硬件声部",3)}
+        label("伴奏可根据最近音符调整和声；节拍按设定BPM运行。回应旋律在玩家停顿时出现。断开手机不影响实体琴键或已启动的伴奏。")
+        label("声部统计来自FPGA。非零贡献在效果器/总增益之前测量，不能替代最终音频测量或直接当作比赛得分。")
+    }
+    private fun ensembleDescription():String = (ensembleInfo?.description()?:"尚未取得合奏状态")+"\n"+(voiceInfo?.description()?:"尚未取得FPGA硬件声部状态")
     private fun mappingPage() {
         label("8键基础音高（24～103）；全释放且本地事件提交完毕后原子生效。断电不保存。")
         val fields=listOf(60,62,64,65,67,69,71,72).mapIndexed {i,n->number("FSR ${i+1}",n)}
@@ -168,21 +221,18 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     private fun recordingPage() {
         label(recording?.description()?:"尚未取得记录状态")
+        label("当前固件录音48kHz单声道，合成输出128kHz；兼容已有双声道录音。")
         val event=checked("完整演奏事件记录",true)
-        val pcm=checked("最终立体声PCM录音",true)
+        val pcm=checked("声音WAV（48kHz单声道）",true)
         label("先准备SD文件后开始；伴奏运行时的最终回读校验可能等待。录制与下载/上传互斥。")
         button("开始记录") {
             require(!download.active && !upload.active)
             val mask=(if(pcm.isChecked)1 else 0) or (if(event.isChecked)2 else 0)
             require(mask!=0)
-            if(recording==null) {
-                client.fileCommand(S11Protocol.STATUS,S11Protocol.id(0),"读取记录身份",3)
-                feedback.text="先取得设备记录身份，再开始新记录"
-                return@button
-            }
             val id=recordingIds.next()
             if(client.fileCommand(S11Protocol.START,S11Protocol.start(id,mask),"请求开始记录",3)!=null) {
-                requestedRecording=id;feedback.text="开始请求已排队，等待设备实际采集状态"
+                requestedRecording=id;getPreferences(MODE_PRIVATE).edit().putLong("lastRecordID",id).apply()
+                feedback.text="开始请求已排队，等待设备实际采集状态"
             }
         }
         button("停止并排空记录") {
@@ -190,7 +240,11 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
             require(id!=0L)
             client.fileCommand(S11Protocol.STOP,S11Protocol.id(id),"请求停止记录",3)
         }
-        button("查询实际记录/保存状态") {client.fileCommand(S11Protocol.STATUS,S11Protocol.id(0),"查询记录状态",3)}
+        button("查询实际记录/保存状态") {
+            val id=recording?.id?.takeIf{it!=0L}?:requestedRecording
+            require(id!=0L){"请先录音，再查询这段录音的状态"}
+            client.fileCommand(S11Protocol.STATUS,S11Protocol.id(id),"查询记录状态",3)
+        }
         button("下载已验证WAV") {beginDownload(1)}
         button("下载已验证EVR") {beginDownload(2)}
         button("取消文件下载") {download.cancel()}
@@ -206,9 +260,38 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
                 putExtra(Intent.EXTRA_TITLE,value.name)
             },11)
         }
-        label("独立现场测试：不依赖SD，与AUTO/TEACH互斥；声部各自运行。")
-        listOf(1,8,16,32).forEach {n->button("现场测试 $n Voice") {client.parameter(S11Protocol.FIELD_TEST,S11Protocol.field(n),"现场测试 $n Voice",3)}}
-        button("停止现场测试") {client.parameter(S11Protocol.FIELD_TEST,S11Protocol.field(0),"停止现场测试",3)}
+        label("48路现场测试：先停止合奏/循环/曲谱/录音并调低功放音量。48路保持30秒后自动停止；旧1/8/16/32路仍是短测试。需要本次配套固件，旧固件会拒绝48路。")
+        button("打开赛题测试（48路）"){showPage(8)}
+    }
+    private fun fieldTestPage() {
+        label("当前FPGA：48个独立振荡器。测试先设置基础正弦、关闭颤音、旁路效果器，保留输出增益。请先停止合奏/循环/曲谱/录音、松开实体键并调低功放音量。测试后声音设置保留。")
+        button("启动48路测试（30秒）"){startFieldTest(48)}
+        button("停止测试"){stopFieldTest()}
+        fieldText=TextView(this).apply {text=voiceInfo?.description()?:"尚未取得硬件计数";textSize=16f;body.addView(this)}
+        button("刷新实际硬件统计"){client.parameter(41,byteArrayOf(),"读取测试硬件声部",3)}
+        label("下列是短测试，约10.7ms后结束；48路测试30秒后自动结束。需要配套R87固件，旧固件会拒绝48路。断链后原生测试最迟30秒结束。")
+        listOf(1,8,16,32).forEach {n->button("原生短测试 $n 路"){startFieldTest(n)}}
+        label("预期基频（不是实测频谱）：")
+        (48..95).forEach {note->label("MIDI $note · ${String.format(java.util.Locale.US,"%.2f",440.0*Math.pow(2.0,(note-69)/12.0))} Hz")}
+        label("请求48路不等于已验证48个谱峰。请采集真实音频检查独立基频；容量、占槽、非零贡献快照和每帧完成数分别判断，谐波和噪声不计额外振荡器。评分使用实际音频输出采样率，不能使用48kHz录音率代替128kHz输出率。")
+    }
+    private fun startFieldTest(voices:Int) {
+        if(!client.connected||fieldRequested){feedback.text="请连接设备并先停止当前测试";return}
+        client.releaseAll();fieldRequested=true;val token=++fieldGeneration
+        client.pitchParameter(32,0) {
+            if(token==fieldGeneration)client.vibrato(0) {
+                if(token==fieldGeneration)client.parameter(35,S9Protocol.effects(longArrayOf(8,11520,12288,576,192,71583,24576,16384,6144,4096,4096)),"测试：旁路效果器",4,
+                    rejected={if(token==fieldGeneration){fieldRequested=false;fieldGeneration++}},
+                    completed={if(token==fieldGeneration)client.parameter(S11Protocol.FIELD_TEST,S11Protocol.field(voices),"现场测试 $voices 路",4,
+                        rejected={if(token==fieldGeneration){fieldRequested=false;fieldGeneration++}},
+                        completed={handler.postDelayed({if(token==fieldGeneration)fieldRequested=false},if(voices==48)31000L else 1000L)})})
+            }
+        }
+    }
+    private fun stopFieldTest() {
+        fieldGeneration++
+        if(fieldRequested&&client.connected)client.parameter(S11Protocol.FIELD_TEST,S11Protocol.field(0),"停止现场测试",4)
+        fieldRequested=false
     }
     private fun beginDownload(kind:Int) {
         val value=recording?:throw IllegalArgumentException("请先查询记录状态")
@@ -267,25 +350,38 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     override fun status(text:String){if(::state.isInitialized)state.text=text}
     override fun discovered(device:BluetoothDevice,displayName:String){devices?.addView(Button(this).apply {text=displayName;setOnClickListener{link.connect(device)}})}
-    override fun ready(session:ByteArray){recording=null;client.ready(session);client.fileCommand(S11Protocol.STATUS,S11Protocol.id(0),"读取记录身份",3);client.parameter(1,byteArrayOf(),"读取设备参数快照",3);status("设备会话已就绪；正在查询参数快照")}
+    override fun ready(session:ByteArray){
+        recording=null;voiceInfo=null;ensembleInfo=null;client.ready(session)
+        if(requestedRecording!=0L)client.fileCommand(S11Protocol.STATUS,S11Protocol.id(requestedRecording),"读取上次录音状态",3)
+        client.parameter(1,byteArrayOf(),"读取设备参数快照",3)
+        client.parameter(106,byteArrayOf(),"读取合奏状态",3);status("设备会话已就绪；正在查询参数快照")
+    }
     override fun result(message:S9Message){
         when(message.opcode) {
+            132 -> if(client.ownsSession(message))try{ensembleInfo=EnsembleInfo.decode(message.payload);ensembleText?.text=ensembleDescription()}catch(_:IllegalArgumentException){feedback.text="合奏状态格式不正确"}
+            131 -> if(client.ownsSession(message))try{loopDescription=EnsembleProtocol.loopDescription(message.payload);loopText?.text=loopDescription}catch(_:IllegalArgumentException){feedback.text="循环状态格式不正确"}
+            128 -> {
+                if(client.ownsSession(message))try{val result=S9ExecutionResult.decode(message);if(result.voiceMetrics!=null){voiceInfo=result.voiceMetrics;ensembleText?.text=ensembleDescription();fieldText?.text=voiceInfo?.description()}}catch(_:IllegalArgumentException){}
+                client.result(message)
+            }
             S11Protocol.RECORD_INFO -> if(client.ownsSession(message))try {
                 recording=S11RecordInfo.decode(message);
                 recordingIds.observeRemote(recording!!.id)
+                if(recording!!.id!=0L){requestedRecording=recording!!.id;getPreferences(MODE_PRIVATE).edit().putLong("lastRecordID",requestedRecording).apply()}
                 feedback.text=recording!!.description()
                 if(page==5 && !download.active)showPage(5)
-            }catch(e:IllegalArgumentException){feedback.text="记录状态不合法，未确认保存"}
+            }catch(e:IllegalArgumentException){recording=null;if(page==5 && !download.active)showPage(5);feedback.text="记录状态不合法，未确认保存：${e.message}"}
             S11Protocol.DOWNLOAD_DATA -> download.data(message)
             else -> client.result(message)
         }
     }
     override fun disconnected(){
+        fieldGeneration++;fieldRequested=false
         if(::mediaState.isInitialized)mediaState.text="设备尚未提供伴奏数字状态"
         if(::feedback.isInitialized)feedback.text="会话已结束，之前的就绪提示已失效"
 if(::client.isInitialized){keyboard?.cancel();client.disconnected();upload.disconnected();if(::download.isInitialized)download.disconnected()};status("会话已结束")}
     override fun onStart(){super.onStart();running=true;handler.post(ticker)}
-    override fun onStop(){running=false;handler.removeCallbacks(ticker);keyboard?.cancel();client.releaseAll();link.stopScan();link.close();super.onStop()}
+    override fun onStop(){stopFieldTest();running=false;handler.removeCallbacks(ticker);keyboard?.cancel();client.releaseAll();link.stopScan();link.close();super.onStop()}
     override fun onDestroy(){destroyed=true;prepareGeneration++;link.close();prepared?.delete();super.onDestroy()}
 
     private inner class PianoView(down:(Int)->Boolean,up:(Int)->Unit):View(this@MainActivity) {

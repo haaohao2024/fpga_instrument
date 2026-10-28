@@ -167,7 +167,8 @@ class BleInstrumentLink(private val context: Context, private val listener: List
             if(session?.contentEquals(message.session)!=true || message.sequence<=lastNotification) return
             require((message.opcode==S9Constants.OP_RESULT && message.payload.size==36) ||
                 (message.opcode==S11Protocol.RECORD_INFO && message.payload.size==72) ||
-                (message.opcode==S11Protocol.DOWNLOAD_DATA && message.payload.size in 33..512))
+                (message.opcode==S11Protocol.DOWNLOAD_DATA && message.payload.size in 33..512) ||
+                (message.opcode in listOf(131,132) && message.payload.size==64))
             trace.mark("notice","sequence=${message.sequence} opcode=${message.opcode} bytes=${message.payload.size}")
             lastNotification=message.sequence;listener.result(message)
         } catch(_:IllegalArgumentException) {

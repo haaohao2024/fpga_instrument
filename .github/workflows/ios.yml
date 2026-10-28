@@ -1,0 +1,74 @@
+name: iOS device IPA
+on:
+  push:
+    branches: [main]
+    paths: ['ios_app/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    working-directory: ios_app
+jobs:
+  build:
+    # Xcode 26 SDK: Liquid Glass (glassEffect) on iOS 26, classic fallback below.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          mkdir -p artifacts
+          xcodebuild -version | tee artifacts/toolchain.txt
+          swift --version | tee -a artifacts/toolchain.txt
+      - name: Protocol and lifecycle tests
+        run: |
+          set -o pipefail
+          swift test --package-path InstrumentCore 2>&1 | tee artifacts/protocol-tests.log
+      - name: Build arm64 device app without cloud signing
+        run: |
+          set -o pipefail
+          xcodebuild -project InstrumentIOS.xcodeproj -scheme InstrumentIOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee artifacts/xcodebuild.log
+      - name: Package unsigned IPA for local signing
+        run: |
+          set -euo pipefail
+          APP=build/Build/Products/Release-iphoneos/InstrumentIOS.app
+          test -f "$APP/InstrumentIOS"
+          lipo "$APP/InstrumentIOS" -verify_arch arm64
+          plutil -lint "$APP/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")" = "15.0"
+          mkdir -p build/package/Payload
+          ditto "$APP" build/package/Payload/InstrumentIOS.app
+          (cd build/package && zip -qr ../../artifacts/FPGA-Instrument-iOS-unsigned.ipa Payload)
+          shasum -a 256 artifacts/FPGA-Instrument-iOS-unsigned.ipa > artifacts/SHA256SUMS.txt
+          printf 'commit=%s\nrun=%s\nunsigned=true\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > artifacts/build-info.txt
+      - name: Simulator screenshots (iPhone and 11-inch iPad, landscape)
+        run: |
+          set -euo pipefail
+          xcodebuild -project InstrumentIOS.xcodeproj -scheme InstrumentIOS -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build-simulator CODE_SIGNING_ALLOWED=NO build 2>&1 | tee artifacts/simulator-build.log
+          RUNTIME=$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["isAvailable"] and x["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-26")]; assert r, "iOS 26 simulator unavailable"; print(sorted(r,key=lambda x:x["version"])[-1]["identifier"])')
+          APP=build-simulator/Build/Products/Debug-iphonesimulator/InstrumentIOS.app
+          shoot() {
+            NAME=$1; TYPE=$2
+            DEVICE=$(xcrun simctl create "QA-$NAME" "$TYPE" "$RUNTIME")
+            xcrun simctl boot "$DEVICE"; xcrun simctl bootstatus "$DEVICE" -b
+            xcrun simctl install "$DEVICE" "$APP"
+            xcrun simctl launch "$DEVICE" com.haaohao.fpga.instrument --qa-demo
+            sleep 4
+            xcrun simctl io "$DEVICE" screenshot "artifacts/stage-$NAME.png"
+            xcrun simctl shutdown "$DEVICE"
+          }
+          IPHONE=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; t=[d["identifier"] for d in json.load(sys.stdin)["devicetypes"] if "iPhone-16" in d["identifier"] or "iPhone-17" in d["identifier"]]; print(sorted(t)[-1])')
+          IPAD=$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; t=[d["identifier"] for d in json.load(sys.stdin)["devicetypes"] if "iPad-Pro-11" in d["identifier"] or "iPad-Air-11" in d["identifier"]]; print(sorted(t)[-1])')
+          shoot iphone "$IPHONE"
+          shoot ipad11 "$IPAD"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: FPGA-Instrument-iOS-${{ github.run_number }}
+          path: ios_app/artifacts/
+          retention-days: 14
+          if-no-files-found: error
