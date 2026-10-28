@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.bluetooth.BluetoothDevice
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -84,6 +85,11 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         }
         button("断开并清理手机持音"){client.releaseAll();link.close()}
         button("刷新设备状态"){link.requestInfo()}
+        button("复制连接诊断（不含音符、密钥）"){
+            val clipboard=getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("GATT诊断",link.diagnostics()))
+            feedback.text="已复制连接时序诊断，可粘贴给助手"
+        }
         devices=LinearLayout(this).apply {orientation=1;body.addView(this)}
         label("首次连接可能需要系统配对确认。设备启动与共存尚未完成实机验收。")
     }
@@ -276,6 +282,7 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     override fun disconnected(){
         if(::mediaState.isInitialized)mediaState.text="设备尚未提供伴奏数字状态"
+        if(::feedback.isInitialized)feedback.text="会话已结束，之前的就绪提示已失效"
 if(::client.isInitialized){keyboard?.cancel();client.disconnected();upload.disconnected();if(::download.isInitialized)download.disconnected()};status("会话已结束")}
     override fun onStart(){super.onStart();running=true;handler.post(ticker)}
     override fun onStop(){running=false;handler.removeCallbacks(ticker);keyboard?.cancel();client.releaseAll();link.stopScan();link.close();super.onStop()}

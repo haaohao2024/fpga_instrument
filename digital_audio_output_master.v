@@ -64,7 +64,7 @@ module digital_audio_output_master #(
     reg [15:0] cached_local_gain,cached_external_gain;
     wire [31:0] combined_gain=$unsigned(external_gain)*$unsigned(stream_gain);
     assign stream_error=input_error | master_error | deadline_error;
-    pcm_stream_input u_input(.clk(clk),.rst(rst),.sample_tick(sample_tick),
+    pcm_stream_input #(.OUTPUT_RATE_HZ(SAMPLE_RATE_HZ)) u_input(.clk(clk),.rst(rst),.sample_tick(sample_tick),
         .ctrl_valid(stream_ctrl_valid),.ctrl_ready(stream_ctrl_ready),.ctrl_cmd(stream_ctrl_cmd),
         .ctrl_epoch(stream_ctrl_epoch),.ctrl_rate(stream_ctrl_rate),.ctrl_track(stream_ctrl_track),
         .pcm_valid(external_valid),.pcm_ready(external_ready),.pcm_l(external_l),.pcm_r(external_r),.pcm_epoch(external_epoch),
@@ -74,7 +74,7 @@ module digital_audio_output_master #(
         .accepted_count(accepted_count),.consumed_count(consumed_count),.discard_count(discard_count),
         .stale_count(stale_count),.underflow_count(external_underflow_count),.conceal_count(conceal_count),
         .backpressure_count(backpressure_count),.rejected_control_count(rejected_control_count),.protocol_error(input_error));
-    master_gain_config u_gain(.clk(clk),.rst(rst),.sample_tick(sample_tick),.cfg_valid(gain_cfg_valid),
+    master_gain_config #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ)) u_gain(.clk(clk),.rst(rst),.sample_tick(sample_tick),.cfg_valid(gain_cfg_valid),
         .cfg_local_gain(gain_cfg_local),.cfg_external_gain(gain_cfg_external),
         .cfg_local_mute(gain_cfg_local_mute),.cfg_external_mute(gain_cfg_external_mute),
         .local_gain(local_gain),.external_gain(external_gain),.accepted_count(gain_accepted),.rejected_count(gain_rejected),

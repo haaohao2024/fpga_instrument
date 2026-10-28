@@ -1,4 +1,6 @@
 #include "s9_router.h"
+#include "live_loop_wire.h"
+#include "ensemble.h"
 #include <string.h>
 static int history_pinned(const s9_router *,unsigned,uint32_t);
 void s9_make_result(uint8_t out[36],uint8_t channel,uint32_t sequence,unsigned phase,int error){
@@ -91,17 +93,20 @@ static unsigned goal(const s9_router_entry *e){
  unsigned op=e->request[6];
  if(e->request[5]==0)return 3;
  if(e->request[5]==2)return op==S9_OP_UPLOAD_COMMIT?4:3;
+ if(op==ENS_START||op==ENS_STOP)return 4;
  if(op==S9_OP_GAIN)return 5;
+ if(op>=LL_APP_BEGIN&&op<=LL_APP_PLAY&&op!=LL_APP_STATUS)return 4;
  if(op==S9_OP_GLIDE||op==S9_OP_PAN||op==S9_OP_EFFECTS||op==S9_OP_KEYMAP)return 4;
  return 3;
 }
 int s9_router_result(s9_router *s,uint32_t generation,const uint8_t session[16],const uint8_t r[36]){
  if(!s->ready||generation!=s->generation||memcmp(session,s->session,16)){s->stale_updates++;return S9_E_STALE;}
  unsigned channel=r[4],phase=r[5];int error=(int16_t)s9_get16(r+6);uint32_t flags=s9_get32(r+32);
- if(channel>2||!s9_get32(r)||phase<1||phase>7||error>0||error< -13||(flags&~7u)||
+ if(channel>2||!s9_get32(r)||phase<1||phase>7||error>0||error< -13||(flags&~15u)||
     (phase==7&&error>=0)||(phase==4&&!(flags&5))||((flags&4)&&(channel!=2||phase!=4||error)))return S9_E_FORMAT;
  int n=find(s,channel,s9_get32(r));if(n<0){s->stale_updates++;return S9_E_EXPIRED;}
  s9_router_entry *e=&s->entry[n];
+ if((flags&8u)&&(channel!=1||phase!=3||e->request[6]!=ENS_METRICS))return S9_E_FORMAT;
  if(!e->sent||e->terminal||phase<e->result[5]){s->stale_updates++;return S9_E_STALE;}
  if(e->request[5]==2&&e->request[6]==S9_OP_UPLOAD_COMMIT&&phase==4&&!(flags&4))return S9_E_FORMAT;
  memcpy(e->result,r,36);e->dirty=1;

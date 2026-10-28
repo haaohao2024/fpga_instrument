@@ -1,5 +1,5 @@
 // Local Q8 + external PCM Q16 -> signed64 numerator, common L/R valid.
-// Exactly seven clocks from input acceptance to out_valid. No backpressure.
+// Exactly six clocks from input acceptance to out_valid. No backpressure.
 module stereo_master_mixer #(
     parameter integer MIX_SHIFT=5
 ) (
@@ -20,7 +20,7 @@ module stereo_master_mixer #(
     reg signed [48:0] mul_l,mul_r,local_product_l,local_product_r,external_product_l,external_product_r;
     reg signed [63:0] external_integer_l,external_integer_r,sum_l,sum_r;
     // Select operands before the two multipliers. The existing age-0/age-1
-    // write enables and seven-clock output schedule remain unchanged.
+    // write enables and operand arithmetic remains unchanged; final idle cycle is removed.
     wire signed [31:0] multiply_l = (age==0) ? ll : el;
     wire signed [31:0] multiply_r = (age==0) ? lr : er;
     wire signed [16:0] multiply_gain = $signed({1'b0,(age==0) ? gl : ge});
@@ -63,7 +63,7 @@ module stereo_master_mixer #(
                         sum_l<=$signed({{15{local_product_l[48]}},local_product_l})+(external_integer_l<<<SCALE);
                         sum_r<=$signed({{15{local_product_r[48]}},local_product_r})+(external_integer_r<<<SCALE);
                     end
-                    6:begin out_l<=sum_l;out_r<=sum_r;out_frame<=tag;out_valid<=1;busy<=0;end
+                    5:begin out_l<=sum_l;out_r<=sum_r;out_frame<=tag;out_valid<=1;busy<=0;end
                     default:begin end
                 endcase
             end

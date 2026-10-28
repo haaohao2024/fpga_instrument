@@ -8,8 +8,8 @@ android {
         applicationId 'com.haobai.instrument'
         minSdk 26
         targetSdk 37
-        versionCode 1
-        versionName '0.1.0-stage9'
+        versionCode 81
+        versionName '0.1.1-R81-connection-diagnostic'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

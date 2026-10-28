@@ -9,11 +9,13 @@
 #include "s11_service.h"
 #include "s11_storage.h"
 #include "s11_schedule.h"
+#include "live_loop_runtime.h"
 #include "queue.h"
 #ifdef S10_MEDIA_RUNTIME
 #include "s10_runtime.h"
 #endif
 #include <string.h>
+#include "link_diag.h"
 typedef struct {uint16_t length;uint8_t bytes[192];} command;
 typedef struct {
  TaskHandle_t waiter;uint8_t kind,drive,op;void *buffer;const void *payload;
@@ -47,6 +49,47 @@ int s9_tasks_bus_command(const uint8_t *p,unsigned n){
  return xQueueSend(commands,&c,0)==pdTRUE?0:S9_E_BUSY;
 }
 int s9_tasks_bus_status(uint8_t out[64]){return xQueueReceive(statuses,out,0)==pdTRUE;}
+static int loop_exchange(rpc *r){
+ if(r->count!=36&&r->count!=548)return S9_E_LENGTH;
+ if(s11_service_wire_begin(hal_time_us(),fpga_wire_us(r->count)))return S9_E_BUSY;
+ uint64_t began=hal_time_us();hal_frequency(FPGA_SPI_HZ);
+ if(hal_select(BUS_FPGA))return S9_E_IO;
+ hal_delay_us(1);
+ for(unsigned i=0;i<r->count;i++){uint8_t v=hal_exchange(((const uint8_t*)r->payload)[i]);if(i<32)((uint8_t*)r->buffer)[i]=v;}
+ hal_delay_us(1);hal_select(BUS_NONE);hal_exchange(255);
+ s11_service_wire(hal_time_us(),(uint32_t)(hal_time_us()-began),0);return 0;
+}
+static void loop_yield_protocol(void){
+ UBaseType_t saved=uxTaskPriorityGet(NULL);
+ vTaskPrioritySet(NULL,4);taskYIELD();vTaskPrioritySet(NULL,saved);
+}
+static void loop_window(void){
+ /* Only the bus owner calls this with SD released. The active file RPC is
+  * outside requests; its sole file-task owner cannot enqueue another FS or
+  * score RPC until it completes. Only protocol's kind6 can be pending here. */
+ if(disk_initializing||!initialized)return;
+#ifdef S10_MEDIA_RUNTIME
+ if(s10_runtime_bus_poll())return; /* Never select over an existing DMA. */
+#endif
+ for(unsigned i=0;i<4;i++){
+  rpc *r=0;
+  if(xQueuePeek(requests,&r,0)!=pdTRUE){
+   /* Also yield when protocol's 1ms delay has just expired during an SD
+    * programming-busy loop; otherwise it cannot enqueue its next RPC. */
+   if(!ll_runtime_active())return;
+   loop_yield_protocol();
+   if(xQueuePeek(requests,&r,0)!=pdTRUE)return;
+  }
+  if(!r||r->kind!=6)return;
+  if(xQueueReceive(requests,&r,0)!=pdTRUE)return;
+  r->result=loop_exchange(r);
+  /* CS and caller's buffer are physically retired before notification.
+   * At a long SD RPC the priority5 bus would otherwise starve protocol4.
+   * A temporary same-priority yield lets that one owner process its ACK
+   * and enqueue the next bounded exchange, with no extra task or sleep. */
+  xTaskNotifyGive(r->waiter);loop_yield_protocol();
+ }
+}
 static void control_window(void *unused){
  (void)unused;
  uint64_t began=hal_time_us();
@@ -54,7 +97,7 @@ static void control_window(void *unused){
 #ifdef S10_MEDIA_RUNTIME
  if(s10_runtime_bus_poll())return; /* Never deassert an in-flight PCM DMA. */
 #endif
- if(service.state==2&&(int32_t)((uint32_t)(hal_time_us()/1000)-peer_deadline)>=0)s9_bus_close(&service);
+ if(service.state==2&&(int32_t)((uint32_t)(hal_time_us()/1000)-peer_deadline)>=0){link_diag_event(LD_BUS_TIMEOUT,service.state,(uint32_t)(hal_time_us()/1000),peer_deadline);s9_bus_close(&service);}
  if(close_requested){s9_bus_close(&service);xQueueReset(commands);close_requested=0;}
  if(open_requested&&service.state==0){
   if(!s9_bus_open(&service,opening_id))open_requested=0;
@@ -65,8 +108,8 @@ static void control_window(void *unused){
   }
  }
  /* Publish an already captured result without adding an idle SPI poll. */
- if(s11_service_active()&&service.status_pending)s9_bus_step(&service,service.last_step_ms);
- if(!s11_control_slot((uint32_t)(hal_time_us()/1000),service.last_step_ms,s11_service_active(),service.state,service.count))return;
+ if((s11_service_active()||ll_runtime_active())&&service.status_pending)s9_bus_step(&service,service.last_step_ms);
+ if(!s11_control_slot((uint32_t)(hal_time_us()/1000),service.last_step_ms,s11_service_active()||ll_runtime_active(),service.state,service.count))return;
  unsigned planned=s9_bus_next_bytes(&service,(uint32_t)(hal_time_us()/1000));
  if(planned&&s11_service_wire_begin(hal_time_us(),fpga_wire_us(planned)))return;
  uint32_t transactions=service.transactions;s9_bus_step(&service,(uint32_t)(hal_time_us()/1000));
@@ -76,11 +119,14 @@ static void control_window(void *unused){
 int s9_tasks_bus_control_pending(void){
  return close_requested||open_requested||service.count||uxQueueMessagesWaiting(commands)||service.state==1||service.state==3;
 }
-void s9_tasks_bus_control_service(void){control_window(0);}
-static void shared_window(void *unused){
- control_window(unused);(void)s10_runtime_bus_service();
-}
+void s9_tasks_bus_control_service(void){control_window(0);loop_window();}
 #endif
+static void shared_window(void *unused){
+ control_window(unused);loop_window();
+#ifdef S10_MEDIA_RUNTIME
+ (void)s10_runtime_bus_service();
+#endif
+}
 static int call(rpc *r){
  r->waiter=xTaskGetCurrentTaskHandle();
  if(xQueueSend(requests,&r,portMAX_DELAY)!=pdTRUE)return -1;
@@ -95,6 +141,9 @@ DRESULT disk_ioctl(BYTE p,BYTE cmd,void *b){rpc r={.kind=4,.drive=p,.op=cmd,.buf
 int score_send(uint8_t cmd,uint64_t epoch,uint32_t seq,uint64_t arg,const uint8_t *data,unsigned n,uint8_t out[32]){
  rpc r={.kind=5,.op=cmd,.epoch=epoch,.sequence=seq,.argument=arg,.payload=data,.count=n,.buffer=out};return call(&r);
 }
+int s9_tasks_bus_raw_exchange(const uint8_t *tx,unsigned length,uint8_t rx[32]){
+ rpc r={.kind=6,.payload=tx,.buffer=rx,.count=length};return call(&r);
+}
 void s9_tasks_bus_run(void *unused){
  (void)unused;
 #ifdef S10_MEDIA_RUNTIME
@@ -106,18 +155,18 @@ void s9_tasks_bus_run(void *unused){
  sd_set_service(shared_window,0);
  sd_set_admission(s10_runtime_sd_prepare,s10_runtime_sd_retired,0);
 #else
- sd_set_service(control_window,0);
+ sd_set_service(shared_window,0);
 #endif
  disk_initializing=1;sd_bus_initialize(0);disk_initializing=0;initialized=1;
  for(;;){
-  (void)sd_set_recording_mode(s11_service_active());
+  (void)sd_set_recording_mode(s11_service_active()||ll_runtime_active());
   control_window(0);
 #ifdef S10_MEDIA_RUNTIME
   /* Retire an existing DMA first. A pending file RPC gets admission before
    * starting another optional media/readback DMA; SD admission itself still
    * services control/PCM while the reservation-based stock gate is not ready. */
   if(s10_runtime_bus_poll()){s10_runtime_bus_wait();continue;}
-  if((!s11_service_active()||!uxQueueMessagesWaiting(requests))&&s10_runtime_bus_service()){s10_runtime_bus_wait();continue;}
+  if(((!s11_service_active()&&!ll_runtime_active())||!uxQueueMessagesWaiting(requests))&&s10_runtime_bus_service()){s10_runtime_bus_wait();continue;}
 #endif
   rpc *r=0;
   if(xQueueReceive(requests,&r,s11_service_active()?0:pdMS_TO_TICKS(1))!=pdTRUE){if(s11_service_active())hal_delay_us(25);continue;}
@@ -158,6 +207,7 @@ void s9_tasks_bus_run(void *unused){
     if(hal_time_us()-waited>=20000)break;
     uint64_t began=hal_time_us();hal_frequency(FPGA_SPI_HZ);r->result=score_bus_send(r->op,r->epoch,r->sequence,r->argument,r->payload,r->count,r->buffer);if(s11_service_active())s11_service_wire(hal_time_us(),(uint32_t)(hal_time_us()-began),0);break;
    }
+   case 6:r->result=loop_exchange(r);break;
    default:r->result=-1;break;
   }
   xTaskNotifyGive(r->waiter);

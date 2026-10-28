@@ -8,6 +8,7 @@
 #include "conn.h"
 #include "gatt.h"
 #include "att.h"
+#include "link_diag.h"
 #include "bt_uuid.h"
 
 #ifdef CONFIG_BT_BREDR
@@ -30,7 +31,7 @@ static struct bt_uuid_128 uuid_status=BT_UUID_INIT_128(S9_UUID_STATUS_BYTES);
 
 static ssize_t read_info(struct bt_conn *conn,const struct bt_gatt_attr *attr,void *buf,u16_t len,u16_t offset) {
     if(conn!=active_conn || !callbacks) return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
-    if(!offset) callbacks->info_snapshot(info_read_snapshot);
+    if(!offset) { callbacks->info_snapshot(info_read_snapshot);link_diag_event(LD_INFO,active_generation,info_read_snapshot[5],bt_conn_get_security(conn)); }
     return bt_gatt_attr_read(conn,attr,buf,len,offset,info_read_snapshot,sizeof(info_read_snapshot));
 }
 static ssize_t receive_fragment(struct bt_conn *conn,const struct bt_gatt_attr *attr,
@@ -40,12 +41,13 @@ static ssize_t receive_fragment(struct bt_conn *conn,const struct bt_gatt_attr *
     if(flags & BT_GATT_WRITE_FLAG_PREPARE) return BT_GATT_ERR(BT_ATT_ERR_NOT_SUPPORTED);
     if(len<9 || len>S9_BLE_FRAGMENT_MAX) return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     int r=callbacks->receive(active_generation,(uint8_t)(uintptr_t)attr->user_data,buf,len);
+    link_diag_event(LD_RX,(uint32_t)(uintptr_t)attr->user_data,len,(uint32_t)r);
     if(r==S9_E_BUSY) return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
     if(r) return BT_GATT_ERR(BT_ATT_ERR_INVALID_PDU);
     return len;
 }
 static void changed_ccc(const struct bt_gatt_attr *attr,u16_t value) {
-    (void)attr;subscribed=(value==BT_GATT_CCC_NOTIFY);
+    (void)attr;subscribed=(value==BT_GATT_CCC_NOTIFY);link_diag_event(LD_CCC,active_generation,value,active_conn?bt_conn_get_security(active_conn):0);
 }
 static struct bt_gatt_attr attributes[]={
     BT_GATT_PRIMARY_SERVICE(&uuid_service.uuid),
@@ -63,20 +65,23 @@ static struct bt_gatt_service service=BT_GATT_SERVICE(attributes);
 enum { STATUS_VALUE_INDEX=10 };
 
 static void connected(struct bt_conn *conn,u8_t error) {
+    link_diag_event(LD_CONNECT,error,0,0);
     if(error || !callbacks) return;
     struct bt_conn_info info;
     if(!conn || bt_conn_get_info(conn,&info) || info.type!=BT_CONN_TYPE_LE) return;
     if(active_conn) { (void)bt_conn_disconnect(conn,0x13);return; }
-    uint32_t generation=callbacks->connected();
+    uint32_t generation=callbacks->connected();link_diag_event(LD_GENERATION,generation,0,0);
     if(!generation) { (void)bt_conn_disconnect(conn,0x13);return; }
     taskENTER_CRITICAL();
     active_conn=bt_conn_ref(conn);active_generation=generation;subscribed=0;
     memset(info_read_snapshot,0,sizeof(info_read_snapshot));
     taskEXIT_CRITICAL();
-    if(bt_conn_set_security(conn,BT_SECURITY_L2)) (void)bt_conn_disconnect(conn,0x13);
+    int sec=bt_conn_set_security(conn,BT_SECURITY_L2);
+    link_diag_event(LD_SECURITY_REQUEST,(uint32_t)sec,bt_conn_get_security(conn),generation);
+    if(sec) (void)bt_conn_disconnect(conn,0x13);
 }
 static void disconnected(struct bt_conn *conn,u8_t reason) {
-    (void)reason;
+    link_diag_event(LD_DISCONNECT,reason,active_generation,conn==active_conn);
     taskENTER_CRITICAL();
     struct bt_conn *old=active_conn==conn?active_conn:NULL;
     uint32_t generation=old?active_generation:0;
@@ -85,7 +90,10 @@ static void disconnected(struct bt_conn *conn,u8_t reason) {
     if(old) { callbacks->disconnected(generation);bt_conn_unref(old); }
     /* Advertising restarts from application task only after source cleanup. */
 }
-static struct bt_conn_cb connection_callbacks={.connected=connected,.disconnected=disconnected};
+static void security_changed(struct bt_conn *conn,bt_security_t level,enum bt_security_err err){
+    if(conn==active_conn)link_diag_event(LD_SECURITY_CHANGED,active_generation,level,err);
+}
+static struct bt_conn_cb connection_callbacks={.connected=connected,.disconnected=disconnected,.security_changed=security_changed};
 
 int s9_gatt_init(const s9_gatt_hooks *hooks) {
     if(registered || !hooks || !hooks->connected || !hooks->disconnected || !hooks->receive || !hooks->info_snapshot) return -EINVAL;
@@ -112,7 +120,14 @@ unsigned s9_gatt_mtu(void) {
     return mtu>S9_BLE_MTU_MAX?S9_BLE_MTU_MAX:mtu;
 }
 int s9_gatt_connected(void) { return active_conn!=NULL; }
+int s9_gatt_transport_ready(uint32_t generation){
+    taskENTER_CRITICAL();
+    int ready=active_conn && generation==active_generation && subscribed && bt_conn_get_security(active_conn)>=BT_SECURITY_L2;
+    taskEXIT_CRITICAL();return ready;
+}
+
 void s9_gatt_disconnect(void){
+    link_diag_event(LD_LOCAL_CLOSE,active_generation,0,0);
     taskENTER_CRITICAL();struct bt_conn *conn=active_conn?bt_conn_ref(active_conn):NULL;taskEXIT_CRITICAL();
     if(conn){(void)bt_conn_disconnect(conn,0x13);bt_conn_unref(conn);}
 }

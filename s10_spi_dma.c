@@ -87,7 +87,7 @@ int s10_spi_dma_begin(s10_spi_dma *s,uint64_t token,int target,uint32_t frequenc
     size_t extent=(bytes+31u) & ~(size_t)31u;
     if (!s || !s->initialized || !token || token<=s->last_token ||
         target<1 || target>3 || !bytes || bytes>S10_DMA_MAX_BYTES || !timeout_us ||
-        (frequency!=400000u && frequency!=2000000u && frequency!=4000000u && frequency!=5000000u && frequency!=8000000u)) return S10_DMA_ARGUMENT;
+        (frequency!=400000u && frequency!=2000000u && frequency!=4000000u && frequency!=5000000u && frequency!=8000000u && frequency!=10000000u)) return S10_DMA_ARGUMENT;
     if (s->state!=S10_DMA_IDLE || hardware_active(s->tx_channel) ||
         hardware_active(s->rx_channel) || bflb_spi_isbusy(s->spi)) return S10_DMA_BUSY;
     if (s->binding.owner(s->binding.user)!=0) return S10_DMA_OWNER;

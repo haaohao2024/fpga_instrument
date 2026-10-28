@@ -1,4 +1,6 @@
 #include "s9_protocol.h"
+#include "live_loop_wire.h"
+#include "ensemble.h"
 #include "s11_protocol.h"
 #include <string.h>
 
@@ -45,12 +47,16 @@ int s9_validate_request(const s9_message *m) {
     }
     if(m->channel==S9_CH_CFG) {
         switch(m->opcode) {
+        case ENS_START:{ens_config c;return n==8?ens_decode_config(p,&c):S9_E_LENGTH;}
+        case ENS_STOP:case ENS_STATUS:case ENS_METRICS:return n==0?S9_OK:S9_E_LENGTH;
         case S9_OP_HELLO: case S9_OP_KEEPALIVE: case S9_OP_DISCONNECT:
             return n==0?S9_OK:S9_E_LENGTH;
         case S9_OP_QUERY_RESULT:
             return n==5 && p[0]<=S9_CH_FILE && s9_get32(p+1)!=0?S9_OK:S9_E_RANGE;
         case S9_OP_BARRIER:
             return n==8 && p[0]<=S9_CH_CFG && p[1]>=S9_PHASE_COMMITTED && p[1]<=S9_PHASE_TARGET_REACHED && zeros(p+2,2) && s9_get32(p+4)!=0?S9_OK:S9_E_RANGE;
+        case LL_APP_BEGIN: return n==1&&p[0]<=5?S9_OK:S9_E_RANGE;
+        case LL_APP_END: case LL_APP_UNDO: case LL_APP_STOP: case LL_APP_CLEAR: case LL_APP_STATUS: case LL_APP_PLAY: return n==0?S9_OK:S9_E_LENGTH;
         case S9_OP_TIMBRE: return n==1 && p[0]<=S9_MAX_TIMBRE?S9_OK:S9_E_RANGE;
         case S9_OP_GLIDE: return n==1 && p[0]<=S9_MAX_GLIDE?S9_OK:S9_E_RANGE;
         case S9_OP_PAN:

@@ -137,7 +137,9 @@ module visual_snapshot_engine #(
       state<=4;
      end else capture_index<=capture_index+1'b1;
     end
-    4:if(fft_done)begin
+    // The height pipeline owns the final bin after the FFT releases it.
+    // Publish only after its final column has reached spectrum RAM.
+    4:if(bars_done)begin
      if(wave_state!=0||xy_state!=0)error<=1;
      metadata[175:160]<= {dc_l,dc_r};completed_windows<=completed_windows+1'b1;state<=5;
     end

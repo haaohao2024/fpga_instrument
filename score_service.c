@@ -1,3 +1,4 @@
+#include "audio_timebase.h"
 #include "score_service.h"
 #include "score_hal.h"
 #include "ff.h"
@@ -26,7 +27,7 @@ int score_open(uint64_t epoch){
  file_opened=1;
  UINT n;if(f_read(&file,header,512,&n)!=FR_OK||n!=512||cancelled)return open_failed(-4);
  uint32_t records=rd32(header+12);
- if(memcmp(header,"S7EV",4)||rd32(header+4)!=1||rd32(header+8)!=48000||!records||records>1000000||rd32(header+24)>1||score_crc(header,508)!=rd32(header+508))return open_failed(-5);
+ if(memcmp(header,"S7EV",4)||rd32(header+4)!=1||!audio_file_rate(rd32(header+8))||!records||records>1000000||rd32(header+24)>1||score_crc(header,508)!=rd32(header+508))return open_failed(-5);
  for(int i=28;i<508;i++)if(header[i])return open_failed(-5);
  pages=1+(records+29)/30;
  if(f_size(&file)!=(FSIZE_t)pages*512)return open_failed(-6);

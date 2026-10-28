@@ -27,6 +27,8 @@ class BleInstrumentLink(private val context: Context, private val listener: List
         fun mediaStatus(info: S10MediaInfo?) {}
     }
     private val handler=Handler(Looper.getMainLooper())
+    private val trace=S9GattTrace(SystemClock::elapsedRealtime)
+    fun diagnostics()=trace.snapshot()
     private val adapter=(context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private var gatt: BluetoothGatt?=null
     private var generation=0L
@@ -82,6 +84,7 @@ class BleInstrumentLink(private val context: Context, private val listener: List
     fun connect(device: BluetoothDevice) {
         if(missingPermissions().isNotEmpty()) {listener.status("需要蓝牙权限");return}
         stopScan();close();val token=++generation
+        trace.mark("connect","generation=$token")
         mtu=23;connectionStarted=SystemClock.elapsedRealtime();listener.status("正在连接并建立加密会话")
         gatt=device.connectGatt(context,false,callbacks(token),BluetoothDevice.TRANSPORT_LE)
         handler.postDelayed({if(token==generation && !ready) fail("连接/初始化超时")},20000)
@@ -93,14 +96,15 @@ class BleInstrumentLink(private val context: Context, private val listener: List
         if(missingPermissions().isEmpty()) {old?.disconnect();old?.close()}
         listener.disconnected()
     }
-    private fun fail(text: String) {close();listener.status(text)}
-    private fun beginOperation() {
+    private fun fail(text: String) {trace.mark("failure",text+" pending="+trace.pending());close();listener.status(text)}
+    private fun beginOperation(kind:String) {
+        trace.begin(kind)
         busy=true
         val operation=++operationSerial
         val connectionGeneration=generation
         handler.postDelayed({
             if(connectionGeneration==generation && operation==operationSerial && busy)
-                fail("GATT操作回调超时，结束会话清理手机持音")
+                fail("GATT操作回调超时（${trace.pending()}），结束会话清理手机持音")
         },3000)
     }
     fun send(message: S9Message): Boolean {
@@ -115,17 +119,18 @@ class BleInstrumentLink(private val context: Context, private val listener: List
         if(busy || !subscribed) return
         val service=connection.getService(uuidService)?:return
         if(pendingRead) {
-            pendingRead=false;beginOperation()
+            pendingRead=false;beginOperation("READ_INFO")
             if(!connection.readCharacteristic(service.getCharacteristic(uuidInfo))) fail("无法读取设备状态")
         } else if(outgoing.size!=0) {
             val fragment=try {outgoing.next(SystemClock.elapsedRealtime())} catch(_:IllegalStateException) {fail("GATT写入超时，结束会话清理手机持音");return}
             if(fragment==null) return
             val (channel,bytes)=fragment
             val ch=service.getCharacteristic(channels[channel])?:run {fail("缺少控制特征");return}
-            beginOperation()
+            val meta=ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            beginOperation("WRITE ch=$channel seq=${meta.getInt(0).toLong() and 0xffffffffL} offset=${meta.getShort(4).toInt() and 65535} bytes=${bytes.size}")
             val ok=if(Build.VERSION.SDK_INT>=33) connection.writeCharacteristic(ch,bytes,BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)==BluetoothStatusCodes.SUCCESS
                    else {ch.writeType=BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;ch.value=bytes;connection.writeCharacteristic(ch)}
-            if(!ok) {busy=false;handler.postDelayed({pump()},20)}
+            if(!ok) {trace.mark("write_not_queued");busy=false;handler.postDelayed({pump()},20)}
         }
     }
     private fun subscribe(connection: BluetoothGatt) {
@@ -163,6 +168,7 @@ class BleInstrumentLink(private val context: Context, private val listener: List
             require((message.opcode==S9Constants.OP_RESULT && message.payload.size==36) ||
                 (message.opcode==S11Protocol.RECORD_INFO && message.payload.size==72) ||
                 (message.opcode==S11Protocol.DOWNLOAD_DATA && message.payload.size in 33..512))
+            trace.mark("notice","sequence=${message.sequence} opcode=${message.opcode} bytes=${message.payload.size}")
             lastNotification=message.sequence;listener.result(message)
         } catch(_:IllegalArgumentException) {
             notifications.reset();listener.status("状态通知损坏；需查询命令结果")
@@ -171,6 +177,7 @@ class BleInstrumentLink(private val context: Context, private val listener: List
     private fun callbacks(token: Long)=object: BluetoothGattCallback() {
         private fun post(c:BluetoothGatt,action:()->Unit) {handler.post {if(token==generation && c===gatt) action()}}
         override fun onConnectionStateChange(c:BluetoothGatt,status:Int,newState:Int)=post(c) {
+            trace.mark("connection_callback","status=$status state=$newState")
             if(status!=BluetoothGatt.GATT_SUCCESS || newState==BluetoothProfile.STATE_DISCONNECTED) fail("蓝牙已断开；手机持音由设备清理")
             else if(newState==BluetoothProfile.STATE_CONNECTED) {if(!c.requestMtu(247)) c.discoverServices()}
         }
@@ -182,6 +189,7 @@ class BleInstrumentLink(private val context: Context, private val listener: List
             if(status!=BluetoothGatt.GATT_SUCCESS || c.getService(uuidService)==null) fail("设备不支持阶段9协议") else subscribe(c)
         }
         override fun onDescriptorWrite(c:BluetoothGatt,d:BluetoothGattDescriptor,status:Int)=post(c) {
+            trace.mark("CCC_callback","status=$status")
             if(status==BluetoothGatt.GATT_SUCCESS) {subscribed=true;requestInfo()}
             else if(SystemClock.elapsedRealtime()-connectionStarted<15000) {
                 listener.status("等待蓝牙加密/配对确认")
@@ -190,14 +198,14 @@ class BleInstrumentLink(private val context: Context, private val listener: List
         }
         override fun onCharacteristicRead(c:BluetoothGatt,ch:BluetoothGattCharacteristic,value:ByteArray,status:Int) {
             val copy=value.clone()
-            post(c) {busy=false;if(status==BluetoothGatt.GATT_SUCCESS && ch.uuid==uuidInfo) readInfo(copy) else fail("读取INFO失败：$status");pump()}
+            post(c) {trace.end(status);busy=false;if(status==BluetoothGatt.GATT_SUCCESS && ch.uuid==uuidInfo) readInfo(copy) else fail("读取INFO失败：$status");pump()}
         }
         @Deprecated("API26-32 callback")
         override fun onCharacteristicRead(c:BluetoothGatt,ch:BluetoothGattCharacteristic,status:Int) {
             if(Build.VERSION.SDK_INT<33) onCharacteristicRead(c,ch,ch.value?:ByteArray(0),status)
         }
         override fun onCharacteristicWrite(c:BluetoothGatt,ch:BluetoothGattCharacteristic,status:Int)=post(c) {
-            busy=false
+            trace.end(status);busy=false
             if(status==BluetoothGatt.GATT_SUCCESS) {outgoing.acknowledged();pump()}
             else if(status==17 || status==BluetoothGatt.GATT_CONNECTION_CONGESTED) handler.postDelayed({if(token==generation) pump()},20)
             else fail("写入失败：$status；未宣称命令执行")

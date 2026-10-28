@@ -1,17 +1,18 @@
 // Response CRC preparation reads the pinned recorder prefix in place. No
 // retransmission RAM is copied here. A payload becomes advertised only after
 // its complete 512-byte CRC has been scanned; a new CS freezes its identity.
-module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0,PINNED_PREFIX=0)(
- input wire comm_clk,fast_fall,fast_start,clk,rst,select_start,transaction,short_transaction,input wire [12:0] tx_bit_index,
+module s11_spi_response #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,COMM_SEPARATE=0, STREAM_HEADER_CRC=0,PINNED_PREFIX=0)(
+ input wire spi_sck,spi_cs_n,
+ input wire comm_clk,fast_fall,fast_start,clk,rst,select_start,transaction,short_transaction,bulk_transaction,input wire [14:0] tx_bit_index,
  input wire [1:0] media_state,input wire [63:0] media_epoch,
  input wire [31:0] media_last_sequence,input wire [8:0] media_credit,
- input wire [2:0] recorder_state,input wire recorder_incomplete,
+ input wire [2:0] recorder_state,input wire recorder_incomplete,missing_is_event,
  input wire [7:0] recorder_mask,input wire [63:0] recorder_id,
  input wire [31:0] recorder_command_sequence,recorder_error,captured_pcm_pairs,input wire [63:0] first_missing_frame,
  input wire block_valid,input wire [7:0] block_kind,
  input wire [31:0] block_sequence,input wire [63:0] block_first_frame,
  input wire [15:0] block_bytes,block_items,
- output wire [8:0] peek_byte_address,input wire [7:0] peek_byte_data,
+ output wire [10:0] peek_byte_address,input wire [7:0] peek_byte_data,
  output wire serial_bit,output wire [511:0] snapshot_header,
  output wire payload_ready
 );
@@ -22,7 +23,9 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  // residue DEBB20E3. Its continuation through 512 zero bytes is constant.
  localparam [31:0] ZERO_PACKET_RAW=32'h538d84e8; // raw CRC residue continued through 512 zeros
  localparam [31:0] SHORT_PACKET_CRC=32'h2144df1c; // complement of header64 raw residue DEBB20E3
- reg [1:0] scan_state;reg [9:0] scan_index;reg [31:0] scan_crc,payload_crc;
+ localparam [31:0] ZERO_BULK_RAW=32'h17f076dc;
+ reg [1:0] scan_state;reg [11:0] scan_index;reg [31:0] scan_crc,payload_crc;
+ reg [31:0] payload_crc512,packet_crc512_snapshot;
  reg scan_owned;
  reg prepared;reg [63:0] scan_id;
  reg [31:0] scan_sequence;reg [15:0] scan_bytes;
@@ -46,27 +49,57 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  integer j;
  wire match_payload=block_valid&&prepared&&same_context;
  assign payload_ready=match_payload;
- wire [9:0] wire_byte=tx_bit_index>>3;
+ wire [11:0] wire_byte=tx_bit_index>>3;
  // At bit4 request the following byte; capture at bit7's falling edge.
  // This gives the 25MHz synchronous recorder port >=600ns to respond at 5MHz SPI.
- wire [9:0] read_byte=wire_byte+((COMM_SEPARATE&&tx_bit_index[2:0]>=4)?10'd1:10'd0);
+ wire [11:0] read_byte=wire_byte+(((COMM_SEPARATE||SOURCE_SYNC_TX)&&tx_bit_index[2:0]>=4)?12'd1:12'd0);
  reg [7:0] payload_tx_byte;
  wire serial_clk=COMM_SEPARATE?comm_clk:clk;
+ generate if(!SOURCE_SYNC_TX)begin: old_payload_capture
  always @(posedge serial_clk)begin
   if(rst||fast_start)payload_tx_byte<=0;
   else if(fast_fall&&tx_bit_index[2:0]==7)payload_tx_byte<=peek_byte_data;
  end
- assign peek_byte_address=transaction&&payload_snapshot&&!short_transaction?(read_byte>=64&&read_byte<576?read_byte-64:9'd0):scan_index[8:0];
+ end else begin: unused_payload_capture
+  always @(*)payload_tx_byte=8'd0;
+ end endgenerate
+ wire [10:0] decoded_payload_address=read_byte>=64&&read_byte<2112?read_byte-64:11'd0;
+ reg [10:0] registered_payload_address;
+ // Bit4 look-ahead is retained. One 80MHz edge for address decoding still
+ // leaves >300ns before bit7 capture at 8MHz SPI. CRC scan stays unpipelined.
+ always @(posedge serial_clk)begin
+  if(rst||fast_start)registered_payload_address<=0;
+  else registered_payload_address<=decoded_payload_address;
+ end
+ assign peek_byte_address=transaction&&payload_snapshot&&!short_transaction?
+   (COMM_SEPARATE?registered_payload_address:decoded_payload_address):scan_index[10:0];
  assign snapshot_header=header_snapshot;
+ wire [31:0] selected_packet_crc=bulk_transaction?packet_crc_snapshot:packet_crc512_snapshot;
  wire [7:0] output_byte=wire_byte<64?header_snapshot[{wire_byte[5:0],3'b000}+:8]:
   short_transaction?(wire_byte<68?SHORT_PACKET_CRC[{wire_byte[1:0],3'b000}+:8]:8'd0):
-  wire_byte<576?(payload_snapshot&&wire_byte-64<payload_bytes_snapshot?(COMM_SEPARATE?payload_tx_byte:peek_byte_data):8'd0):
-  wire_byte<580?packet_crc_snapshot[{wire_byte[1:0],3'b000}+:8]:8'd0;
- assign serial_bit=output_byte[~tx_bit_index[2:0]];
+  wire_byte<(bulk_transaction?2112:576)?(payload_snapshot&&wire_byte-64<payload_bytes_snapshot?(COMM_SEPARATE?payload_tx_byte:peek_byte_data):8'd0):
+  wire_byte<(bulk_transaction?2116:580)?selected_packet_crc[{wire_byte[1:0],3'b000}+:8]:8'd0;
+ // A complete next byte is prepared while the previous byte is shifting.
+ wire [7:0] lookahead_byte=read_byte<64?header_snapshot[{read_byte[5:0],3'b000}+:8]:
+  short_transaction?(read_byte<68?SHORT_PACKET_CRC[{read_byte[1:0],3'b000}+:8]:8'd0):
+  read_byte<(bulk_transaction?2112:576)?(payload_snapshot&&read_byte-64<payload_bytes_snapshot?peek_byte_data:8'd0):
+  read_byte<(bulk_transaction?2116:580)?selected_packet_crc[{read_byte[1:0],3'b000}+:8]:8'd0;
+ generate if(SOURCE_SYNC_TX)begin: source_sync_byte
+  reg [7:0] shift;
+  wire tx_reset=rst||spi_cs_n;
+  always @(negedge spi_sck or posedge tx_reset)begin
+   if(tx_reset)shift<=8'h53;
+   else if(tx_bit_index[2:0]==7)shift<=lookahead_byte;
+   else shift<={shift[6:0],1'b0};
+  end
+  assign serial_bit=shift[7];
+ end else begin: old_serial_bit
+  assign serial_bit=output_byte[~tx_bit_index[2:0]];
+ end endgenerate
  always @(*)begin
-  header=0;header[31:0]=32'h54533753;header[39:32]=1;
+  header=0;header[31:0]=32'h54533753;header[39:32]=S11_VERSION;
   header[47:40]={6'd0,media_state};header[55:48]={5'd0,recorder_state};
-  header[63:56]={6'd0,recorder_incomplete,match_payload};header[127:64]=media_epoch;
+  header[63:56]={5'd0,(S11_VERSION==2?(recorder_incomplete&&!match_payload&&missing_is_event):1'b1),recorder_incomplete,match_payload};header[127:64]=media_epoch;
   header[159:128]=media_last_sequence;header[175:160]={7'd0,media_credit};
   header[183:176]=match_payload?block_kind:0;header[191:184]=recorder_mask;
   header[255:192]=recorder_id;header[287:256]=recorder_command_sequence;
@@ -78,7 +111,7 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
   header[511:480]=~hcrc;end
  end
  always @(posedge clk)begin
-  if(rst)begin scan_owned<=0;scan_state<=0;scan_index<=0;scan_crc<=0;payload_crc<=0;prepared<=0;
+  if(rst)begin scan_owned<=0;scan_state<=0;scan_index<=0;scan_crc<=0;payload_crc<=0;payload_crc512<=0;packet_crc512_snapshot<=0;prepared<=0;
    scan_id<=0;scan_sequence<=0;scan_bytes<=0;
    scan_kind<=0;scan_items<=0;
    scan_first_frame<=0;
@@ -89,7 +122,8 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
    if(!match_payload)prepared<=0;
    if(select_start)begin
     header_snapshot<=header;payload_snapshot<=match_payload;payload_bytes_snapshot<=match_payload?block_bytes:16'd0;
-    packet_crc_snapshot<=~(ZERO_PACKET_RAW^(match_payload?payload_crc:32'd0));
+    packet_crc_snapshot<=~(ZERO_BULK_RAW^(match_payload?payload_crc:32'd0));
+    packet_crc512_snapshot<=~(ZERO_PACKET_RAW^(match_payload?payload_crc512:32'd0));
     if(STREAM_HEADER_CRC)begin header_crc<=32'hffffffff;header_crc_index<=0;header_crc_busy<=1;end
    end else if(STREAM_HEADER_CRC&&header_crc_busy&&!payload_crc_step)begin
     header_crc<=shared_crc_next;
@@ -107,7 +141,8 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
     else if(scan_state==1)scan_state<=2; // synchronous RAM read has completed
     else begin
      scan_crc<=STREAM_HEADER_CRC?shared_crc_next:crcbyte(scan_crc,scan_index<scan_bytes?peek_byte_data:8'd0);
-     if(scan_index==511)begin
+     if(scan_index==511)payload_crc512<=STREAM_HEADER_CRC?shared_crc_next:crcbyte(scan_crc,scan_index<scan_bytes?peek_byte_data:8'd0);
+     if(scan_index==2047)begin
       payload_crc<=STREAM_HEADER_CRC?shared_crc_next:crcbyte(scan_crc,scan_index<scan_bytes?peek_byte_data:8'd0);
       prepared<=1;scan_state<=0;
       
@@ -122,14 +157,14 @@ module s11_spi_response #(parameter integer COMM_SEPARATE=0, STREAM_HEADER_CRC=0
  always @(posedge clk)if(!rst)begin
   if(STREAM_HEADER_CRC&&transaction&&tx_bit_index>=480&&tx_bit_index<512&&header_crc_busy)$fatal(1,"S11_HEADER_CRC_NOT_READY_AT_BIT");
   if($isunknown({select_start,transaction,block_valid,recorder_incomplete}))$fatal(1,"S11_RESPONSE_CONTROL_XZ");
-  if(block_valid&&(block_bytes==0||block_bytes>512))$fatal(1,"S11_RESPONSE_BLOCK_LENGTH");
+  if(block_valid&&(block_bytes==0||block_bytes>2048))$fatal(1,"S11_RESPONSE_BLOCK_LENGTH");
   if(transaction&&payload_snapshot&&!block_valid)$fatal(1,"S11_RESPONSE_PREFIX_RELEASED_IN_FLIGHT");
  end
  // synthesis translate_on
 endmodule
 
 module r8_response_crc_probe #(parameter integer STREAM_HEADER_CRC=0)(
- input wire clk,rst,select_start,transaction,short_transaction,input wire [12:0] tx_bit_index,
+ input wire clk,rst,select_start,transaction,short_transaction,bulk_transaction,input wire [14:0] tx_bit_index,
  input wire [1:0] media_state,input wire [63:0] media_epoch,
  input wire [31:0] media_last_sequence,input wire [8:0] media_credit,
  input wire [2:0] recorder_state,input wire recorder_incomplete,
@@ -138,10 +173,10 @@ module r8_response_crc_probe #(parameter integer STREAM_HEADER_CRC=0)(
  input wire block_valid,input wire [7:0] block_kind,
  input wire [31:0] block_sequence,input wire [63:0] block_first_frame,
  input wire [15:0] block_bytes,block_items,
- output wire [8:0] peek_byte_address,input wire [7:0] peek_byte_data,
+ output wire [10:0] peek_byte_address,input wire [7:0] peek_byte_data,
  output wire serial_bit,output wire [511:0] snapshot_header,
  output wire payload_ready
 );
 
-s11_spi_response #(.STREAM_HEADER_CRC(1)) impl(.*);
+s11_spi_response #(.STREAM_HEADER_CRC(1)) impl(.bulk_transaction(1'b0),.*);
 endmodule

@@ -16,7 +16,14 @@ module pt8211_serializer #(
 );
     // 2 edges/bit * 16 bits/channel * 2 channels/frame.
     localparam [63:0] EDGE_RATE_HZ = 64'd64 * SAMPLE_RATE_HZ;
-    localparam integer PHASE_WIDTH = (CLK_FREQ_HZ < 2) ? 1 : $clog2(CLK_FREQ_HZ);
+    function automatic [63:0] constant_gcd(input [63:0] a,b);
+        reg [63:0] t;
+        begin while(b!=0)begin t=a%b;a=b;b=t;end constant_gcd=a;end
+    endfunction
+    localparam [63:0] PHASE_UNIT=constant_gcd(CLK_FREQ_HZ,EDGE_RATE_HZ);
+    localparam [63:0] PHASE_MOD=CLK_FREQ_HZ/PHASE_UNIT;
+    localparam [63:0] PHASE_STEP=EDGE_RATE_HZ/PHASE_UNIT;
+    localparam integer PHASE_WIDTH = (PHASE_MOD < 2) ? 1 : $clog2(PHASE_MOD);
     localparam [63:0] SAFE_EDGE_RATE = (EDGE_RATE_HZ < 1) ? 1 : EDGE_RATE_HZ;
     localparam [63:0] MIN_HALF_CYCLES = CLK_FREQ_HZ / SAFE_EDGE_RATE;
     localparam [63:0] SAFE_SAMPLE_RATE = (SAMPLE_RATE_HZ < 1) ? 1 : SAMPLE_RATE_HZ;
@@ -27,15 +34,23 @@ module pt8211_serializer #(
     reg [3:0] bit_index;
     reg [15:0] shift_reg;
     reg [15:0] left_hold;
-    wire edge_enable = (phase >= CLK_FREQ_HZ - EDGE_RATE_HZ);
+    reg edge_enable,frame_load_q;
+    wire [PHASE_WIDTH-1:0] phase_next=edge_enable?phase+PHASE_STEP-PHASE_MOD:phase+PHASE_STEP;
+    wire edge_next=(phase_next>=PHASE_MOD-PHASE_STEP);
+    wire bck_next=edge_enable?~dac_bck:dac_bck;
+    wire ws_next=edge_enable&&dac_bck&&bit_index==0?~dac_ws:dac_ws;
+    wire [3:0] bit_next=edge_enable&&dac_bck?bit_index-1'b1:bit_index;
     // Startup loads while BCK is low. Thereafter load at the falling edge
     // following the left LSB, simultaneously starting the next right word.
-    assign frame_load = rst_n && (!started ||
-        (edge_enable && dac_bck && dac_ws && bit_index == 0));
+    // Decode the NEXT state locally; this registered pulse describes the
+    // same physical latch edge as before, not a delayed frame indication.
+    assign frame_load = rst_n && frame_load_q;
 
     always @(posedge sys_clk) begin
         if (!rst_n) begin
             phase <= 0;
+            edge_enable <= 0;
+            frame_load_q <= 1;
             started <= 0;
             bit_index <= 15;
             shift_reg <= 0;
@@ -45,6 +60,8 @@ module pt8211_serializer #(
             dac_din <= 0;
         end else if (!started) begin
             phase <= 0;
+            edge_enable <= (0 >= PHASE_MOD-PHASE_STEP);
+            frame_load_q <= 0;
             started <= 1;
             left_hold <= frame_l;
             shift_reg <= frame_r;
@@ -54,10 +71,9 @@ module pt8211_serializer #(
         end else begin
             // Constant arithmetic: no PLL, run-time division or generated
             // clock domain. Phase is retained across channel/frame boundaries.
-            if (edge_enable)
-                phase <= phase + EDGE_RATE_HZ - CLK_FREQ_HZ;
-            else
-                phase <= phase + EDGE_RATE_HZ;
+            phase <= phase_next;
+            edge_enable <= edge_next;
+            frame_load_q <= edge_next && bck_next && ws_next && bit_next==0;
 
             if (edge_enable) begin
                 dac_bck <= ~dac_bck;

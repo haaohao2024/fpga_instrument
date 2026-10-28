@@ -22,7 +22,7 @@ module s11_pcm_recorder #(
     output reg [31:0] block_sequence,
     output reg [63:0] block_first_frame,
     output reg [15:0] block_pair_count,
-    input wire [8:0] peek_byte_address,
+    input wire [10:0] peek_byte_address,
     output wire [7:0] peek_byte_data,
     input wire ack_valid,ack_accepted,
     input wire [63:0] ack_record_id,
@@ -130,7 +130,7 @@ module s11_pcm_recorder #(
     // synthesis translate_off
     always @(posedge clk)if(!rst&&TRUSTED_ACK&&accepted_ack!==checked_ack)
         $fatal(1,"R54_PARENT_ACK_CONTRACT");
-    initial if(CAPACITY<128 || CAPACITY>4096 || BLOCK_PAIRS<1 || BLOCK_PAIRS>128)
+    initial if(CAPACITY<128 || CAPACITY>4096 || BLOCK_PAIRS<1 || BLOCK_PAIRS>512)
         $fatal(1,"S11_PCM_CONFIGURATION");
     always @(posedge clk)if(!rst)begin
         if($isunknown({start_valid,stop_valid,clear_valid,audio_reset,observe_load,

@@ -1,3 +1,4 @@
+#include "audio_timebase.h"
 #include "s9_score_check.h"
 #include "s9_protocol.h"
 #include <string.h>
@@ -5,10 +6,10 @@ static int zero(const uint8_t *p,unsigned n){while(n--)if(*p++)return 0;return 1
 int s9_score_header(s9_score_check *s,const uint8_t p[512],uint32_t bytes){
  memset(s,0,sizeof *s);
  uint32_t n=s9_get32(p+12);
- if(memcmp(p,"S7EV",4)||s9_get32(p+4)!=1||s9_get32(p+8)!=48000||!n||n>1000000||
+ if(memcmp(p,"S7EV",4)||s9_get32(p+4)!=1||!audio_file_rate(s9_get32(p+8))||!n||n>1000000||
     s9_get32(p+24)>1||!zero(p+28,480)||s9_crc32(p,508)!=s9_get32(p+508)||
     bytes!=(1+(n+29)/30)*512)return S9_E_FORMAT;
- s->records=n;s->end_time=s9_get64(p+16);s->next_page=1;s->closed=1;s->initialized=1;return 0;
+ s->rate=s9_get32(p+8);s->records=n;s->end_time=s9_get64(p+16);s->next_page=1;s->closed=1;s->initialized=1;return 0;
 }
 int s9_score_page(s9_score_check *s,const uint8_t p[512]){
  if(!s->initialized||s->ended||s9_get32(p)!=s->next_page||!zero(p+6,10)||s9_crc32(p,508)!=s9_get32(p+508))return S9_E_FORMAT;
@@ -22,7 +23,7 @@ int s9_score_page(s9_score_check *s,const uint8_t p[512]){
    if(t!=s->last_time)s->group=0;
   }
   if(++s->group>64)return S9_E_RANGE;
-  while(s->recent_count&&t-s->recent[s->recent_head]>=4800){s->recent_head=(s->recent_head+1)&127;s->recent_count--;}
+  while(s->recent_count&&t-s->recent[s->recent_head]>=s->rate/10u){s->recent_head=(s->recent_head+1)&127;s->recent_count--;}
   if(s->recent_count==128)return S9_E_RANGE;
   s->recent[(s->recent_head+s->recent_count++)&127]=t;
   if(op==1){

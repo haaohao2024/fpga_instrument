@@ -1,6 +1,8 @@
 // Stage10 SPI PCM composition only; no change to the frozen audio/video algorithms.
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage10 #(
+    parameter integer S11_VERSION=1,
+    parameter integer AUDIO_RATE_HZ=48000,
     parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
@@ -19,12 +21,13 @@ module instrument_core_stage10 #(
  input wire  r18_snapshot_valid,
  output wire  r18_snapshot_ready,
  input wire  r18_query_valid,
- input wire [4:0] r18_query_slot,
+ input wire [5:0] r18_query_slot,
  output wire  r18_query_ready,
  output wire  r18_response_valid,
- output wire [4:0] r18_response_slot,
+ output wire [5:0] r18_response_slot,
  output wire [314:0] r18_response_word,
  input wire [63:0] r18_allocated_pid,
+ input wire r18_capture_caught_up,
  input wire [63:0] r18_clock_frame,
  input wire [15:0] r18_clock_subcycle,
  output wire  r18_fact_valid,
@@ -36,7 +39,7 @@ module instrument_core_stage10 #(
  output wire  r18_pan_ready,
  output wire  r18_pan_response_valid,
  output wire [1:0] r18_pan_result,
- output wire [4:0] r18_pan_response_slot,
+ output wire [5:0] r18_pan_response_slot,
  output wire [314:0] r18_pan_before,
  output wire [314:0] r18_pan_after,
 
@@ -58,7 +61,7 @@ module instrument_core_stage10 #(
     output wire [351:0] fx_cfg_data,
     output wire fx_error,
     output wire pan_valid,
-    output wire [4:0] pan_slot,
+    output wire [5:0] pan_slot,
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
@@ -80,6 +83,7 @@ module instrument_core_stage10 #(
     output wire underrun,
     output wire observe_load,
     output wire signed [15:0] observe_l,observe_r,
+ output wire [47:0] observe_full_slot_valid,observe_full_slot_gate,
     output wire [31:0] observe_slot_valid,observe_slot_gate,
     output wire [95:0] observe_slot_timbres,
     output wire [351:0] observe_fx_config,
@@ -143,13 +147,13 @@ module instrument_core_stage10 #(
     output wire [1:0] record_cmd,output wire [63:0] record_cmd_id,
     output wire [7:0] record_cmd_mask,record_ack_kind,
     output wire [31:0] record_cmd_sequence,record_ack_sequence,
-    input wire [2:0] record_state,input wire record_incomplete,
+    input wire [2:0] record_state,input wire record_incomplete,record_missing_is_event,
     input wire [7:0] record_mask,input wire [63:0] record_id,
     input wire [31:0] record_last_command,record_error,record_captured_pcm,input wire [63:0] record_first_missing_frame,
     input wire record_block_valid,input wire [7:0] record_block_kind,
     input wire [31:0] record_block_sequence,input wire [63:0] record_block_first,
     input wire [15:0] record_block_bytes,record_block_items,
-    output wire [8:0] record_peek_address,input wire [7:0] record_peek_data,
+    output wire [10:0] record_peek_address,input wire [7:0] record_peek_data,
     output wire [103:0] observe_gain_state,
     output wire [63:0] observe_media_epoch
 );
@@ -161,11 +165,24 @@ module instrument_core_stage10 #(
  wire [1:0] media_state,media_banks;wire [8:0] media_credit,media_reserved,media_resident;
  wire [31:0] media_last_sequence;wire [63:0] media_epoch,media_source_start;
  assign observe_media_epoch=media_epoch;
- // A single output driver selects the new PHY only after its magic is known.
- // Its front 32 bytes are the same score snapshot as the legacy response.
- assign spi_miso=(!score_cs_n&&route_s10)?media_miso:legacy_miso;
- assign spi_miso_oe=(!score_cs_n&&route_s10)?media_oe:legacy_oe;
- s10_pcm_transport #(.PINNED_RECORD_PREFIX(PINNED_RECORD_PREFIX),.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/100),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.shared_score_rx(shared_score_rx),.comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
+ // One score-CS transmitter from the first bit. The media serializer
+ // already sends the identical frozen S7 prefix before protocol detection;
+ // using it immediately avoids the separate wide legacy TX selector.
+ // Control-CS replies still use the control serializer. Raw CS conflicts
+ // remain suppressed by the original OE equations.
+ assign spi_miso=!score_cs_n?media_miso:legacy_miso;
+ assign spi_miso_oe=!score_cs_n?media_oe:legacy_oe;
+ // synthesis translate_off
+ // Compare at the actual Mode0 sampling edge, including the transition
+ // from the common 32-bit magic into the protocol-specific response.
+ wire old_reply=(!score_cs_n&&route_s10)?media_miso:legacy_miso;
+ wire old_oe=(!score_cs_n&&route_s10)?media_oe:legacy_oe;
+ always @(posedge spi_sck)if(!rst)begin
+  if(spi_miso_oe!==old_oe)$fatal(1,"SPI_RETURN_OE_EDGE_MISMATCH");
+  if(spi_miso_oe&&spi_miso!==old_reply)$fatal(1,"SPI_RETURN_DATA_EDGE_MISMATCH");
+ end
+ // synthesis translate_on
+ s10_pcm_transport #(.S11_VERSION(S11_VERSION),.SOURCE_SYNC_TX(COMM_SEPARATE),.PINNED_RECORD_PREFIX(PINNED_RECORD_PREFIX),.COMM_SEPARATE(COMM_SEPARATE),.WATCHDOG_CLOCKS(CLK_FREQ_HZ/100),.ENABLE_S11(ENABLE_S11),.STREAM_STATUS_CRC(1),.DEFER_LEGACY_CRC(1)) transport(.shared_score_rx(shared_score_rx),.comm_clk(comm_clk),.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),
   .control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),
   .legacy_status_bytes(observe_score_status),.stream_buffered(observe_stream_buffered),
   .stream_generation(observe_stream_generation),.stream_state(observe_stream_state),.cancel(1'b0),
@@ -194,7 +211,7 @@ module instrument_core_stage10 #(
   .record_last_command(record_last_command),
   .record_error(record_error),
   .record_captured_pcm(record_captured_pcm),
-  .record_first_missing_frame(record_first_missing_frame),
+  .record_missing_is_event(record_missing_is_event),.record_first_missing_frame(record_first_missing_frame),
   .record_block_valid(record_block_valid),
   .record_block_kind(record_block_kind),
   .record_block_sequence(record_block_sequence),
@@ -203,7 +220,7 @@ module instrument_core_stage10 #(
   .record_block_items(record_block_items),
   .record_peek_address(record_peek_address),
   .record_peek_data(record_peek_data));
- instrument_core_stage9 #(.EXTERNAL_SCORE_RX(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage9 #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.EXTERNAL_SCORE_RX(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
  .CLK_FREQ_HZ(CLK_FREQ_HZ),
  .ADC_ZERO(ADC_ZERO),
@@ -225,6 +242,7 @@ module instrument_core_stage10 #(
   .r18_response_slot(r18_response_slot),
   .r18_response_word(r18_response_word),
   .r18_allocated_pid(r18_allocated_pid),
+  .r18_capture_caught_up(r18_capture_caught_up),
   .r18_clock_frame(r18_clock_frame),
   .r18_clock_subcycle(r18_clock_subcycle),
   .r18_fact_valid(r18_fact_valid),
@@ -337,7 +355,7 @@ module instrument_core_stage10 #(
  .observe_load(observe_load),
  .observe_l(observe_l),
  .observe_r(observe_r),
- .observe_slot_valid(observe_slot_valid),
+ .observe_full_slot_valid(observe_full_slot_valid),.observe_full_slot_gate(observe_full_slot_gate),.observe_slot_valid(observe_slot_valid),
  .observe_slot_gate(observe_slot_gate),
  .observe_slot_timbres(observe_slot_timbres),
  .observe_fx_config(observe_fx_config),

@@ -1,6 +1,8 @@
 // Stage10 SPI PCM composition only; no change to the frozen audio/video algorithms.
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage11 #(
+    parameter integer RECORD48=1,
+    parameter integer AUDIO_RATE_HZ=48000,
     parameter integer COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=1,
     parameter integer CLK_FREQ_HZ = 50_000_000,
@@ -33,7 +35,7 @@ module instrument_core_stage11 #(
     output wire [351:0] fx_cfg_data,
     output wire fx_error,
     output wire pan_valid,
-    output wire [4:0] pan_slot,
+    output wire [5:0] pan_slot,
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
@@ -55,6 +57,7 @@ module instrument_core_stage11 #(
     output wire underrun,
     output wire observe_load,
     output wire signed [15:0] observe_l,observe_r,
+ output wire [47:0] observe_full_slot_valid,observe_full_slot_gate,
     output wire [31:0] observe_slot_valid,observe_slot_gate,
     output wire [95:0] observe_slot_timbres,
     output wire [351:0] observe_fx_config,
@@ -134,10 +137,10 @@ module instrument_core_stage11 #(
  wire  r18_snapshot_valid;
  wire  r18_snapshot_ready;
  wire  r18_query_valid;
- wire [4:0] r18_query_slot;
+ wire [5:0] r18_query_slot;
  wire  r18_query_ready;
  wire  r18_response_valid;
- wire [4:0] r18_response_slot;
+ wire [5:0] r18_response_slot;
  wire [314:0] r18_response_word;
  wire [63:0] r18_allocated_pid;
  wire [63:0] r18_clock_frame;
@@ -151,7 +154,7 @@ module instrument_core_stage11 #(
  wire  r18_pan_ready;
  wire  r18_pan_response_valid;
  wire [1:0] r18_pan_result;
- wire [4:0] r18_pan_response_slot;
+ wire [5:0] r18_pan_response_slot;
  wire [314:0] r18_pan_before;
  wire [314:0] r18_pan_after;
 
@@ -163,24 +166,31 @@ module instrument_core_stage11 #(
  wire record_block_valid;wire [1:0] record_block_kind;
  wire [31:0] record_block_sequence;wire [63:0] record_block_first;
  wire [15:0] record_block_bytes,record_block_items;
- wire [8:0] record_peek_address;wire [7:0] record_peek_data;
- wire cfg_tx_valid,cfg_tx_ready,cfg_tx_done,cfg_fault_valid,cfg_idle,cfg_capture_fault;
+ wire [10:0] record_peek_address;wire [7:0] record_peek_data;
+ wire cfg_tx_valid,cfg_tx_ready,cfg_tx_done,cfg_fault_valid,cfg_idle,cfg_quiet,cfg_capture_fault;
+ wire r18_capture_caught_up;
  wire [63:0] cfg_first_missing_frame;
  wire cfg_tx_read_valid,cfg_tx_response_valid;wire [15:0] cfg_tx_read_epoch,cfg_tx_response_epoch;wire [5:0] cfg_tx_response_index;
  wire [5:0] cfg_tx_count;wire [255:0] cfg_tx_cell;wire [5:0] cfg_tx_index;wire [7:0] cfg_fault_code;
  wire [63:0] recorder_first_missing=record_mask[0]&&record_first_missing_frame!=64'hffffffffffffffff ? record_first_missing_frame:record_first_missing_event_frame;
  wire [2:0] wire_record_state;
  wire wire_record_incomplete,record_drained;
+ reg [63:0] previous_dac_frame;
  reg [63:0] dac_load_count;reg [15:0] since_load;
  assign observe_frame_id=dac_load_count;
- assign observe_event_frame_id=observe_load?dac_load_count:(dac_load_count==0?64'd0:dac_load_count-1'b1);
+ assign observe_event_frame_id=observe_load?dac_load_count:previous_dac_frame;
+ // synthesis translate_off
+ always @(posedge clk)if(!rst && observe_event_frame_id !==
+   (observe_load?dac_load_count:(dac_load_count==0?64'd0:dac_load_count-1'b1)))
+   $fatal(1,"MARGIN_EVENT_FRAME_EQ");
+ // synthesis translate_on
  assign observe_event_subcycle=observe_load?16'd0:since_load+1'b1;
  always @(posedge clk)begin
-  if(rst)begin dac_load_count<=0;since_load<=0;end
-  else if(observe_load)begin dac_load_count<=dac_load_count+1'b1;since_load<=0;end
+  if(rst)begin dac_load_count<=0;previous_dac_frame<=0;since_load<=0;end
+  else if(observe_load)begin dac_load_count<=dac_load_count+1'b1;previous_dac_frame<=(&dac_load_count)?64'd0:dac_load_count;since_load<=0;end
   else if(since_load!=65535)since_load<=since_load+1'b1;
  end
- instrument_core_stage10 #(.PINNED_RECORD_PREFIX(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage10 #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.PINNED_RECORD_PREFIX(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -192,7 +202,7 @@ module instrument_core_stage11 #(
   .OCTAVE_MIN(OCTAVE_MIN),
   .OCTAVE_MAX(OCTAVE_MAX),
   .MIX_SHIFT(MIX_SHIFT),
-  .ENABLE_S11(1)) base(
+  .S11_VERSION(RECORD48?2:1),.ENABLE_S11(1)) base(
   .r18_snapshot_valid(r18_snapshot_valid),
   .r18_snapshot_ready(r18_snapshot_ready),
   .r18_query_valid(r18_query_valid),
@@ -202,6 +212,7 @@ module instrument_core_stage11 #(
   .r18_response_slot(r18_response_slot),
   .r18_response_word(r18_response_word),
   .r18_allocated_pid(r18_allocated_pid),
+  .r18_capture_caught_up(r18_capture_caught_up),
   .r18_clock_frame(r18_clock_frame),
   .r18_clock_subcycle(r18_clock_subcycle),
   .r18_fact_valid(r18_fact_valid),
@@ -267,7 +278,7 @@ module instrument_core_stage11 #(
   .observe_load(observe_load),
   .observe_l(observe_l),
   .observe_r(observe_r),
-  .observe_slot_valid(observe_slot_valid),
+  .observe_full_slot_valid(observe_full_slot_valid),.observe_full_slot_gate(observe_full_slot_gate),.observe_slot_valid(observe_slot_valid),
   .observe_slot_gate(observe_slot_gate),
   .observe_slot_timbres(observe_slot_timbres),
   .observe_fx_config(observe_fx_config),
@@ -377,6 +388,7 @@ module instrument_core_stage11 #(
   .record_last_command(record_last_command),
   .record_error(record_error),
   .record_captured_pcm(record_captured_pairs[31:0]),
+  .record_missing_is_event(!(record_mask[0]&&record_first_missing_frame!=64'hffffffffffffffff)),
   .record_first_missing_frame(recorder_first_missing),
   .record_block_valid(record_block_valid),
   .record_block_kind({6'd0,record_block_kind}),
@@ -386,7 +398,7 @@ module instrument_core_stage11 #(
   .record_block_items(record_block_items),
   .record_peek_address(record_peek_address),
   .observe_media_epoch(observe_media_epoch),.record_peek_data(record_peek_data));
- r18_recording_subsystem #(.SERIAL_EVENTS(1)) recorder(
+ r18_recording_subsystem #(.PCM_BLOCK_PAIRS(512),.SERIAL_EVENTS(1),.RECORD48(RECORD48)) recorder(
  .pan_applied(r18_pan_response_valid&&r18_pan_result==0),.pan_applied_slot(r18_pan_response_slot),.pan_applied_word(r18_pan_after),
   .snapshot_valid(r18_snapshot_valid),.snapshot_ready(r18_snapshot_ready),.allocated_persistent_id(r18_allocated_pid),
   .snapshot_query_valid(r18_query_valid),.snapshot_query_ready(r18_query_ready),.snapshot_query_slot(r18_query_slot),
@@ -409,7 +421,7 @@ module instrument_core_stage11 #(
   
   
   
-  .slot_valid(observe_slot_valid),.slot_gate(observe_slot_gate),
+  .slot_valid(observe_full_slot_valid),.slot_gate(observe_full_slot_gate),
   
   
   
@@ -417,7 +429,7 @@ module instrument_core_stage11 #(
   .cfg_tx_response_valid(cfg_tx_response_valid),.cfg_tx_response_index(cfg_tx_response_index),.cfg_tx_response_epoch(cfg_tx_response_epoch),
   .cfg_tx_valid(cfg_tx_valid),.cfg_tx_count(cfg_tx_count),.cfg_tx_cell(cfg_tx_cell),.cfg_tx_index(cfg_tx_index),.cfg_tx_ready(cfg_tx_ready),.cfg_tx_done(cfg_tx_done),
   .cfg_fault_valid(cfg_fault_valid),.cfg_fault_code(cfg_fault_code),.cfg_first_missing_frame(cfg_first_missing_frame),
-  .cfg_capture_fault(cfg_capture_fault),.cfg_idle(cfg_idle),.block_request(1'b1),
+  .cfg_capture_fault(cfg_capture_fault),.cfg_idle(cfg_idle),.cfg_quiet(cfg_quiet),.capture_caught_up(r18_capture_caught_up),.block_request(1'b1),
   .block_valid(record_block_valid),.block_kind(record_block_kind),.block_sequence(record_block_sequence),
   .block_first_frame(record_block_first),.block_items(record_block_items),.block_bytes(record_block_bytes),
   .peek_byte_address(record_peek_address),.peek_byte_data(record_peek_data),
@@ -446,5 +458,5 @@ module instrument_core_stage11 #(
   .tx_read_valid(cfg_tx_read_valid),.tx_read_epoch(cfg_tx_read_epoch),
   .tx_response_valid(cfg_tx_response_valid),.tx_response_index(cfg_tx_response_index),.tx_response_epoch(cfg_tx_response_epoch),
   .tx_valid(cfg_tx_valid),.tx_count(cfg_tx_count),.tx_cell(cfg_tx_cell),.tx_index(cfg_tx_index),.tx_ready(cfg_tx_ready),.tx_done(cfg_tx_done),
-  .fault_valid(cfg_fault_valid),.first_missing_frame(cfg_first_missing_frame),.fault_code(cfg_fault_code),.idle(cfg_idle));
+  .fault_valid(cfg_fault_valid),.first_missing_frame(cfg_first_missing_frame),.fault_code(cfg_fault_code),.idle(cfg_idle),.capture_quiet(cfg_quiet));
 endmodule

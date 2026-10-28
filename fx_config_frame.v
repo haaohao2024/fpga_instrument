@@ -22,7 +22,7 @@ module fx_config_frame(
         base>=depth+2 && base+depth<=1920 &&
         (cfg_data[191:160]==0 || (cfg_data[191:160]>=4474 && cfg_data[191:160]<=447392)) &&
         cfg_data[223:192]<=28672 && cfg_data[255:224]<=28672 &&
-        cfg_data[287:256]<=8192 && cfg_data[319:288]<=8192 && cfg_data[351:320]<=8192;
+        cfg_data[287:256]<=32768 && cfg_data[319:288]<=32768 && cfg_data[351:320]<=32768;
     always @(posedge clk) begin
         if(rst)begin
             shadow<=DEFAULT_CONFIG;frame_config<=DEFAULT_CONFIG;

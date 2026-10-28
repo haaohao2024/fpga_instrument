@@ -1,6 +1,13 @@
 // Source1 scheduler. No direct Voice access; completion is a read-only fence.
-module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONTROL=0,SHARED_STORE=0,TOKEN_WIDTH=64, EARLY_DEADLINE=960)(
+module score_sequencer # (parameter integer RAW_ONLY=0,PARALLEL_PRESSURE_VIEW=1,SERIAL_CONTROL=0,SHARED_STORE=0,TOKEN_WIDTH=64, EARLY_DEADLINE=960)(
  input wire audio_published,
+ input wire ctrl_raw,input wire [31:0] raw_frame,
+ output reg raw_mode,output reg raw_fifo_clear,
+ output reg [1:0] event_owner,output reg [2:0] event_timbre,
+ output wire raw_cleanup_valid,input wire raw_cleanup_ready,raw_cleanup_done,
+ output wire [1:0] raw_cleanup_sources,output wire raw_cleanup_all,output wire [15:0] raw_cleanup_revision,
+ output wire [31:0] raw_last_audible,raw_completed_barrier,
+ output reg raw_published_valid,output wire raw_barrier_busy,
  output reg event_write_valid,output reg[3:0] event_write_index,output reg[95:0] event_write_data,input wire event_write_ready,
  input wire clk,rst,sample_tick,stereo_locked,
  input wire ctrl_valid,output wire ctrl_ready,input wire [7:0] ctrl_cmd,input wire [63:0] ctrl_epoch,ctrl_arg,
@@ -54,10 +61,61 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
  reg [15:0] frame_age;
  reg [31:0] system_sample;
  wire [31:0] outstanding=events_accepted-events_completed;
+ reg [31:0] raw_target;
+ reg [3:0] raw_left;
+ reg raw_last,raw_group_audio,raw_bank_seen;
+ reg [1:0] raw_cleanup_phase;
+ wire raw_head=raw_left==0;
+ wire raw_barrier=raw_head&&record_data[110:107]==0;
+ wire [31:0] raw_due_target=raw_head?record_data[31:0]:raw_target;
+ wire [31:0] raw_delta=raw_due_target-raw_frame;
+ // Classify a row on its own edge. A consumed row invalidates the
+ // response before the next row can use it; frame changes also reclassify.
+ reg raw_due_q,raw_due_valid;reg[31:0] raw_due_frame;
+ wire raw_due=raw_due_valid&&raw_due_frame[0]==raw_frame[0]&&raw_due_q;
+ always @(posedge clk)begin
+  if(rst||!raw_mode||(state!=2&&state!=4))begin raw_due_q<=0;raw_due_valid<=0;raw_due_frame<=0;end
+  else begin
+   raw_due_q<=raw_delta==0||raw_delta[31];raw_due_frame<=raw_frame;
+   raw_due_valid<=record_valid&&!(record_valid&&record_ready);
+  end
+ end
+ // synthesis translate_off
+ // Production raw_frame has one producer: the DAC-load counter/mux in
+ // instrument_core_stage11. It holds or advances by one modulo2^32.
+ // raw_due_frame is refreshed on every edge in both consuming states;
+ // therefore its age at any valid response is at most one frame transition.
+ reg frame_seen;reg[31:0] previous_raw_frame;
+ always @(posedge clk)begin
+  if(rst)begin frame_seen<=0;previous_raw_frame<=raw_frame;end
+  else begin
+   if(frame_seen&&raw_frame!=previous_raw_frame&&raw_frame!=previous_raw_frame+32'd1)
+    $fatal(1,"RAW_FRAME_JUMP_OUTSIDE_PRODUCTION_CONTRACT");
+   if(raw_due_valid&&raw_due_frame[0]==raw_frame[0]&&raw_due_frame!=raw_frame)
+    $fatal(1,"RAW_DUE_FRAME_ALIAS");
+   frame_seen<=1;previous_raw_frame<=raw_frame;
+  end
+ end
+ // synthesis translate_on
+ wire raw_drained=!event_valid&&!event_write_valid&&build_count==0&&outstanding==0&&!wait_audible;
+ wire raw_close_end=state==4&&!record_valid&&visible_records==0&&raw_drained;
+ wire raw_barrier_due=(state==2||state==4)&&record_valid&&raw_barrier&&raw_due&&raw_drained;
+ assign raw_cleanup_sources=raw_close_end?2'b11:record_data[33:32];
+ assign raw_cleanup_all=raw_close_end?1'b1:record_data[34];
+ assign raw_cleanup_revision=raw_close_end?16'd0:record_data[50:35];
+ assign raw_cleanup_valid=raw_mode&&raw_cleanup_phase==0&&
+  (raw_close_end||(raw_barrier_due&&raw_cleanup_sources!=0));
+ assign raw_barrier_busy=raw_mode&&(raw_cleanup_phase!=0||raw_barrier_due);
+ // Reuse exclusive legacy diagnostic counters, without a second target/id bank.
+ assign raw_last_audible=system_sample;
+ assign raw_completed_barrier=stops;
  wire [63:0] rec_time=record_data[63:0];
- wire [7:0] op=record_data[71:64],key=record_data[79:72],note=record_data[87:80],value=record_data[95:88];
+ wire [7:0] op=raw_mode?{4'd0,record_data[27:24]}:record_data[71:64];
+ wire [7:0] key=raw_mode?record_data[23:16]:record_data[79:72];
+ wire [7:0] note=raw_mode?{1'b0,record_data[15:9]}:record_data[87:80];
+ wire [7:0] value=raw_mode?record_data[8:1]:record_data[95:88];
  wire [7:0] pressure_read;
- wire pressure_write=!rst&&state==2&&record_ready&&record_valid&&(op==1||op==3);
+ wire pressure_write=!rst&&state==2&&record_ready&&record_valid&&(op==1||op==3)&&(!raw_mode||(!raw_head&&event_owner==1));
  generate if(PARALLEL_PRESSURE_VIEW)begin: observed_pressure
   reg [7:0] storage[0:31];reg [31:0] initialized;
   always @(posedge clk)begin
@@ -78,21 +136,41 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
   assign logical_pressures=256'd0; // unconsumed parallel diagnostic port
  end endgenerate
  wire closed=record_data[96];
+ // The two formats are exclusive producers of the same musical state.
+ // Share the per-key decode and the current-item bypass into the guide.
+ wire source1_accept=record_valid&&record_ready&&
+  (raw_mode?(!raw_head&&event_owner==1):(state==2));
+ wire source1_gate_write=source1_accept&&(op==1||op==2);
+ wire source1_note_write=source1_accept&&(op==1||op==3);
+ wire musical_target_close=record_valid&&record_ready&&closed&&(raw_mode?!raw_head:state==2);
+ wire [31:0] source1_note_select;
+ generate for(genvar g=0;g<32;g=g+1)begin: musical_key_decode
+  assign source1_note_select[g]=source1_note_write&&key==g;
+ end endgenerate
+ // One regular carry chain serves exclusive legacy+1 and raw epoch+1.
+ wire [63:0] music_step=music_time+(raw_mode?64'h0000000100000000:64'd1);
+ wire raw_clock_wrap=!raw_frame[31]&&music_time[31];
  // Reserve dispatch for the due same-time score group, including gaps while
  // its next packet is built. Already accepted phone packets still finish.
  // No reservation for future-time records or an idle music frame.
- assign observe_dispatch_active=!rst && (SERIAL_CONTROL ?
+ assign observe_dispatch_active=!rst && (raw_mode ?
+   ((state==2||state==4)&&(group_active||build_count!=0||event_valid||outstanding!=0||
+    (state==2&&record_valid&&!raw_barrier&&(!raw_due_valid||raw_due_frame[0]!=raw_frame[0]||raw_due)&&!wait_audible))) : (SERIAL_CONTROL ?
     ((state==2 && (resuming || group_active || build_count!=0 || event_valid || outstanding!=0 ||
        (record_valid && rec_time<=music_time&&!wait_audible))) ||
      (state==4 && (stop_phase!=2 || build_count!=0 || event_valid || outstanding!=0))) :
     (state==2 && window_open && (group_active || build_count!=0 || event_valid || outstanding!=0 ||
-      (record_valid && r54_equal_0))));
+      (record_valid && r54_equal_0)))));
  wire append_ready=!SHARED_STORE||!event_write_valid;
  wire destructive_control=ctrl_valid&&ctrl_ready&&(ctrl_cmd==3||ctrl_cmd==6||ctrl_cmd==7);
  assign ctrl_ready=!rst;
- assign parser_enable=state==1||state==2||state==3;
- assign record_ready=append_ready&&!rst&&!sample_tick&&state==2&&window_open&&!resuming&&!event_valid&&
-  outstanding<2&&!local_backlog&&(!SERIAL_CONTROL||!wait_audible)&&(SERIAL_CONTROL?rec_time<=music_time:r54_equal_0)&&!destructive_control&&!parser_error;
+ assign parser_enable=raw_mode?state==2:(state==1||state==2||state==3);
+ assign record_ready=raw_mode?
+   (!rst&&!sample_tick&&(state==2||state==4)&&append_ready&&!event_valid&&outstanding<2&&
+    !local_backlog&&!wait_audible&&raw_due&&
+    (!raw_barrier||((raw_cleanup_sources==0||raw_cleanup_phase==2)&&raw_drained))) :
+   (append_ready&&!rst&&!sample_tick&&state==2&&window_open&&!resuming&&!event_valid&&
+  outstanding<2&&!local_backlog&&(!SERIAL_CONTROL||!wait_audible)&&(SERIAL_CONTROL?rec_time<=music_time:r54_equal_0)&&!destructive_control&&!parser_error);
  wire [6:0] resume_notes[0:31];wire [7:0] resume_pressures[0:31];
  wire [63:0] next_token=token_counter+64'd1;
  generate for(genvar s=0;s<32;s=s+1)begin: resume_word
@@ -132,8 +210,8 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
  // requires resuming, so these original write sites are mutually exclusive.
  // Keep stale full tokens until the original reset; clearing logical held
  // state must not clear token ownership or change later OFF/expression data.
- wire token_write_record=!rst&&state==2&&record_ready&&record_valid&&op==1&&!teach&&token_counter!=TOKEN_MAX;
- wire token_write_resume=append_ready&&!rst&&state==2&&resuming&&window_open&&!sample_tick&&!event_valid&&
+ wire token_write_record=!raw_mode&&!rst&&state==2&&record_ready&&record_valid&&op==1&&!teach&&token_counter!=TOKEN_MAX;
+ wire token_write_resume=!raw_mode&&append_ready&&!rst&&state==2&&resuming&&window_open&&!sample_tick&&!event_valid&&
   outstanding<2&&!local_backlog&&resume_key!=32&&logical_held[resume_key[4:0]]&&token_counter!=TOKEN_MAX;
  wire token_write=token_write_record||token_write_resume;
  wire [4:0] token_write_slot=token_write_resume?resume_key[4:0]:key[4:0];
@@ -151,8 +229,11 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
   append_calls=0;
   // synthesis translate_on
   if(event_write_valid&&event_write_ready)event_write_valid<=0;
-  parser_clear<=0;
+  parser_clear<=0;raw_fifo_clear<=0;
   if(rst)begin
+   raw_mode<=RAW_ONLY;raw_fifo_clear<=1;raw_target<=0;raw_left<=0;raw_last<=0;
+   raw_group_audio<=0;raw_bank_seen<=0;raw_cleanup_phase<=0;raw_published_valid<=0;
+   event_owner<=1;event_timbre<=0;
    wait_audible<=0;event_write_valid<=0;event_write_index<=0;event_write_data<=0;
    state<=0;error_code<=0;music_time<=0;epoch<=0;logical_held<=0;sound_held<=0;logical_notes<=0;guide_held<=0;guide_notes<=0;
    teach<=0;loop_mode<=0;window_open<=0;group_active<=0;window_used<=0;pause_requested<=0;resume_pending<=0;resuming<=0;natural_end<=0;
@@ -161,18 +242,80 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
    deadline_count<=0;token_exhaustions<=0;stops<=0;last_group_cycles<=0;frame_age<=0;system_sample<=0;parser_clear<=1;reload_request<=0;
 
   end else begin
-   if(SERIAL_CONTROL&&audio_published)wait_audible<=0;
-   if(state!=2)wait_audible<=0;
+   if(sample_tick&&(!raw_mode||(wait_audible&&raw_bank_seen)))
+    system_sample<=raw_mode?raw_target:system_sample+1'b1;
+   if(source1_gate_write)logical_held[key[4:0]]<=op==1;
+   if(musical_target_close)begin
+    guide_held<=logical_held;
+    if(source1_gate_write)guide_held[key[4:0]]<=op==1;
+   end
+   for(integer k=0;k<32;k=k+1)begin
+    if(source1_note_select[k])logical_notes[k*7+:7]<=note[6:0];
+    if(musical_target_close)guide_notes[k*7+:7]<=source1_note_select[k]?note[6:0]:logical_notes[k*7+:7];
+   end
+   if(raw_mode)begin
+    // A bank swap is before mix/DAC load. Retire only on a later sample edge.
+    if(wait_audible&&audio_published)raw_bank_seen<=1;
+    if(wait_audible&&raw_bank_seen&&sample_tick)begin
+     wait_audible<=0;raw_bank_seen<=0;raw_published_valid<=1;
+    end
+    music_time[31:0]<=raw_frame;
+    if(raw_clock_wrap)music_time[63:32]<=music_step[63:32];
+   end else begin
+    if(SERIAL_CONTROL&&audio_published)wait_audible<=0;
+    if(state!=2)wait_audible<=0;
+   end
    if(sample_tick)begin
-    system_sample<=system_sample+1;frame_age<=0;window_open<=0;
-    if(state==2)begin
+    frame_age<=0;window_open<=0;
+    if(!raw_mode&&state==2)begin
      if(!SERIAL_CONTROL&&window_used&&(group_active||build_count!=0||event_valid||outstanding!=0))begin deadline_count<=deadline_count+1;begin_stop(0,8);end
-     else music_time<=music_time+1;
+     else music_time<=music_step;
     end
     window_used<=0;
    end else if(frame_age<65535)frame_age<=frame_age+1;
    if(event_valid&&event_ready)begin event_valid<=0;events_accepted<=events_accepted+1;end
    if(dispatch_done)events_completed<=events_completed+1;
+   if(raw_mode)begin
+    window_open<=stereo_locked;
+    if(raw_cleanup_valid&&raw_cleanup_ready)raw_cleanup_phase<=1;
+    if(raw_cleanup_phase==1&&raw_cleanup_done)begin
+     if(state==4&&!record_valid)begin
+      state<=0;raw_fifo_clear<=1;parser_clear<=1;raw_left<=0;group_active<=0;
+      guide_held<=0;logical_held<=0;raw_cleanup_phase<=0;
+     end else raw_cleanup_phase<=2;
+    end
+    if(record_valid&&record_ready)begin
+     records_consumed<=records_consumed+1;
+     if(raw_head)begin
+      if(raw_barrier)begin
+       stops<=record_data[95:64];raw_cleanup_phase<=0;
+       if(record_data[51])begin guide_held<=0;logical_held<=0;end
+      end else begin
+       raw_target<=record_data[31:0];raw_left<=record_data[110:107];raw_last<=record_data[101];
+       event_owner<=record_data[103:102];event_timbre<=record_data[106:104];teach<=record_data[100];
+       group_active<=1;
+      end
+     end else begin
+      raw_left<=raw_left-1'b1;
+      if(!teach)begin append_item(record_data[95:0],raw_left==1);raw_group_audio<=1;end
+      if(closed)begin
+       group_active<=0;raw_group_audio<=0;
+       if(raw_group_audio||!teach)begin wait_audible<=1;raw_bank_seen<=0;end
+
+      end
+     end
+    end
+    if(parser_error!=0&&state==2)begin
+     if(error_code==0)error_code<=parser_error;
+     state<=4;parser_clear<=1;
+    end
+    // Lateness is bounded in the actual S11 frame domain. A previously
+    // admitted same-target row is allowed to finish before graceful close.
+    if(state==2&&record_valid&&raw_head&&raw_due&&raw_delta<32'hffffffd0&&
+       raw_delta[31]&&!group_active&&!wait_audible)begin
+     if(error_code==0)error_code<=5;state<=4;parser_clear<=1;deadline_count<=deadline_count+1;
+    end
+   end else begin
    if(state==1&&header_valid&&(last_verified_time>=4800||eof_seen)&&stereo_locked)begin
     state<=2;music_time<=0;window_open<=1;window_used<=0;
    end
@@ -185,14 +328,8 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
     if(closed)begin
      if(SERIAL_CONTROL&&!teach&&op!=4)wait_audible<=1;
      last_group_cycles<=frame_age;
-     // LED sees a complete chord state, never an intermediate partial group.
-     guide_held<=logical_held;guide_notes<=logical_notes;
-     if(op==1)begin guide_held[key[4:0]]<=1;for(integer s=0;s<32;s=s+1)if(key==s)guide_notes[s*7+:7]<=note[6:0];end
-     else if(op==2)guide_held[key[4:0]]<=0;
-     else if(op==3)for(integer s=0;s<32;s=s+1)if(key==s)guide_notes[s*7+:7]<=note[6:0];
     end
     if(op==1)begin
-     logical_held[key[4:0]]<=1;for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];
      if(!teach)begin
       if(token_counter==TOKEN_MAX)begin token_exhaustions<=token_exhaustions+1;begin_stop(0,9);end
       else begin token_counter<=next_token;sound_held[key[4:0]]<=1;
@@ -200,10 +337,8 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
       end
      end
     end else if(op==2)begin
-     logical_held[key[4:0]]<=0;
      if(!teach)begin sound_held[key[4:0]]<=0;append_item({selected_key_token,4'd1,4'd2,key,7'd0,8'd0,1'b0},closed);end
     end else if(op==3)begin
-     for(integer s=0;s<32;s=s+1)if(key==s)logical_notes[s*7+:7]<=note[6:0];
      if(!teach)append_item({selected_key_token,4'd1,4'd3,key,note[6:0],value,1'b0},closed);
     end else if(op==4)begin
      natural_end<=1;begin_stop(0,0);
@@ -240,11 +375,26 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
     end else resume_key<=resume_key+1;
    end
    if(parser_error!=0&&(state==1||state==2||state==3))begin_stop(0,parser_error+16);
-   if(ctrl_valid&&ctrl_ready)case(ctrl_cmd)
-    1:if(state==0&&ctrl_epoch!=0&&!r54_equal_1&&ctrl_arg<4)begin
-     state<=1;epoch<=ctrl_epoch;teach<=ctrl_arg[0];loop_mode<=ctrl_arg[1];music_time<=0;error_code<=0;
-     logical_held<=0;sound_held<=0;guide_held<=0;guide_notes<=0;parser_clear<=1;reload_request<=0;natural_end<=0;resume_pending<=0;
+   end
+   if(ctrl_valid&&ctrl_ready&&ctrl_cmd==1&&state==0&&ctrl_epoch!=0&&!r54_equal_1&&(!RAW_ONLY||ctrl_raw)&&
+      ((ctrl_raw&&ctrl_arg==0)||(!ctrl_raw&&ctrl_arg<4)))begin
+    raw_mode<=RAW_ONLY||ctrl_raw;epoch<=ctrl_epoch;error_code<=0;parser_clear<=1;raw_fifo_clear<=1;
+    logical_held<=0;sound_held<=0;guide_held<=0;guide_notes<=0;
+    group_active<=0;build_count<=0;event_valid<=0;event_write_valid<=0;wait_audible<=0;
+    raw_left<=0;raw_last<=0;raw_group_audio<=0;raw_bank_seen<=0;raw_cleanup_phase<=0;
+    raw_published_valid<=0;event_owner<=1;event_timbre<=0;
+    if(RAW_ONLY||ctrl_raw)begin
+     state<=2;teach<=0;loop_mode<=0;music_time<={32'd0,raw_frame};system_sample<=0;stops<=0;
+    end else begin
+     state<=1;teach<=ctrl_arg[0];loop_mode<=ctrl_arg[1];music_time<=0;
+     reload_request<=0;natural_end<=0;resume_pending<=0;
     end
+   end else if(raw_mode)begin
+    if(ctrl_valid&&ctrl_ready&&(ctrl_cmd==3||ctrl_cmd==7)&&state!=0)begin
+     state<=4;parser_clear<=1;
+     if(ctrl_cmd==7&&error_code==0)error_code<=6;
+    end
+   end else if(ctrl_valid&&ctrl_ready)case(ctrl_cmd)
     3,6,7:if(state!=0&&state!=4)begin_stop(0,(ctrl_cmd==7)?7:0);
     4:if(state==2)begin
      // Resolve the boundary accepted ON THIS edge, not last edge's group flag.
@@ -268,7 +418,7 @@ module score_sequencer # (parameter integer PARALLEL_PRESSURE_VIEW=1,SERIAL_CONT
     end
     append_count=build_count+1;
     if(append_flush || append_count==9)begin
-     offered_header<={system_sample,((9'd1<<append_count)-1'b1)};
+     offered_header<={raw_mode?raw_target:system_sample,((9'd1<<append_count)-1'b1)};
      event_valid<=1;events_offered<=events_offered+1;build_count<=0;if(!SHARED_STORE)build_items<=append_items;
     end else begin if(!SHARED_STORE)build_items<=append_items;build_count<=append_count;end
    end

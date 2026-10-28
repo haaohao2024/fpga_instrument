@@ -1,6 +1,7 @@
 // Stage9 board-independent I/O composition. No new physical pin bindings.
 // Existing ADC/EC11 and official video PLL logic are unchanged.
 module instrument_io_stage11 #(
+    parameter integer AUDIO_RATE_HZ=48000,
  parameter integer COMM_SEPARATE=0,
  parameter integer CLK_FREQ_HZ=50_000_000, SPI_CLK_HZ=1_000_000,
  parameter integer EXTERNAL_VIDEO_REFERENCE=0,
@@ -24,7 +25,7 @@ module instrument_io_stage11 #(
     output wire [351:0] fx_cfg_data,
     output wire fx_error,
     output wire pan_valid,
-    output wire [4:0] pan_slot,
+    output wire [5:0] pan_slot,
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
@@ -99,7 +100,7 @@ module instrument_io_stage11 #(
  wire video_pixel_clk,video_serial_clk,video_pll_locked;
  video_pll_800x600 video_pll(.clkin(EXTERNAL_VIDEO_REFERENCE ? video_ref_clk : clk),.reset(rst),.lock(video_pll_locked),
  .clkout0(video_serial_clk),.clkout1(video_pixel_clk));
- instrument_core_stage11 #(.COMM_SEPARATE(COMM_SEPARATE),.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1),.VIBRATO_STEP(8)) u_core(
+ instrument_core_stage11 #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.COMM_SEPARATE(COMM_SEPARATE),.CLK_FREQ_HZ(CLK_FREQ_HZ),.PRESSURE_PRENORMALIZED(1),.VIBRATO_STEP(8)) u_core(
  .spi_sck(spi_sck),
  .score_cs_n(score_cs_n),
  .sd_cs_n(sd_cs_n),

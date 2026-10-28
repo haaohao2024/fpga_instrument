@@ -1,3 +1,4 @@
+#include "audio_timebase.h"
 /* Actual recorder files use the existing sole FatFs caller. Complete files
  * are not downloadable until sync, close and a separate reopen verification.
  * There is deliberately no power-fail atomicity claim. */
@@ -7,6 +8,13 @@
 #include "diskio.h"
 #include "s9_storage.h"
 #include <string.h>
+#ifdef ENSEMBLE_CAPTURE_DIAG
+#include "link_diag.h"
+#include "sd_spi.h"
+#define SD_DIAG(k,a,b,c) link_diag_event(k,a,b,c)
+#else
+#define SD_DIAG(k,a,b,c) ((void)0)
+#endif
 static FIL pcm_file,event_file;
 static uint8_t page[512],event_page[512];
 static char pcm_tmp[20],pcm_final[20],event_tmp[20],event_final[20];
@@ -27,7 +35,7 @@ static uint32_t numbered_name(const char *s){
  * Preparing/download occurs with maintenance allowed, never in a BLE callback.
  * Persisted files and retained partial files reserve their number across boots. */
 static int allocate_number(uint32_t *out){
- DIR dir;FILINFO info;uint32_t maximum=0;if(f_opendir(&dir,"0:/")!=FR_OK)return S9_E_IO;int r=0;
+ DIR dir;FILINFO info;uint32_t maximum=0;FRESULT dir_result=f_opendir(&dir,"0:/");if(dir_result!=FR_OK){SD_DIAG(21,1,dir_result,0);return S9_E_IO;}int r=0;
  for(;;){if(f_readdir(&dir,&info)!=FR_OK){r=S9_E_IO;break;}if(!info.fname[0])break;uint32_t n=numbered_name(info.fname);if(n>maximum)maximum=n;}
  if(f_closedir(&dir)!=FR_OK)r=S9_E_IO;
  if(r)return r;
@@ -35,16 +43,16 @@ static int allocate_number(uint32_t *out){
  *out=maximum+1;return 0;
 }
 static void wav_header(uint8_t b[512],uint32_t pairs){
- memset(b,0,512);memcpy(b,"RIFF",4);s9_put32(b+4,504u+4u*pairs);memcpy(b+8,"WAVEfmt ",8);s9_put32(b+16,16);s9_put16(b+20,1);s9_put16(b+22,2);s9_put32(b+24,48000);s9_put32(b+28,192000);s9_put16(b+32,4);s9_put16(b+34,16);memcpy(b+36,"JUNK",4);s9_put32(b+40,460);memcpy(b+504,"data",4);s9_put32(b+508,4u*pairs);
+ memset(b,0,512);memcpy(b,"RIFF",4);s9_put32(b+4,504u+4u*pairs);memcpy(b+8,"WAVEfmt ",8);s9_put32(b+16,16);s9_put16(b+20,1);s9_put16(b+22,2);s9_put32(b+24,INSTRUMENT_AUDIO_HZ);s9_put32(b+28,INSTRUMENT_AUDIO_HZ*4u);s9_put16(b+32,4);s9_put16(b+34,16);memcpy(b+36,"JUNK",4);s9_put32(b+40,460);memcpy(b+504,"data",4);s9_put32(b+508,4u*pairs);
 }
 static void evr_header(uint8_t b[512]){
- memset(b,0,512);memcpy(b,"EVR2",4);s9_put32(b+4,2);s9_put64(b+8,stats.recording_id);s9_put32(b+16,48000);s9_put32(b+20,25000000);s9_put32(b+24,stats.event_units);s9_put32(b+28,stats.event_pages);s9_put64(b+32,stats.first_frame);s9_put64(b+40,stats.last_frame);s9_put64(b+48,stats.missing_frame);b[56]=stats.state; b[57]=stats.kinds;s9_put16(b+58,(uint16_t)stats.error);s9_put32(b+508,s9_crc32(b,508));
+ memset(b,0,512);memcpy(b,"EVR2",4);s9_put32(b+4,2);s9_put64(b+8,stats.recording_id);s9_put32(b+16,INSTRUMENT_AUDIO_HZ);s9_put32(b+20,INSTRUMENT_SYS_HZ);s9_put32(b+24,stats.event_units);s9_put32(b+28,stats.event_pages);s9_put64(b+32,stats.first_frame);s9_put64(b+40,stats.last_frame);s9_put64(b+48,stats.missing_frame);b[56]=stats.state; b[57]=stats.kinds;s9_put16(b+58,(uint16_t)stats.error);s9_put32(b+508,s9_crc32(b,508));
 }
-static int written(FIL *f,const uint8_t *b,unsigned bytes){UINT n=0;write_scope=1;FRESULT r=f_write(f,b,bytes,&n);write_scope=0;return r==FR_OK&&n==bytes?0:S9_E_IO;}
+static int written(FIL *f,const uint8_t *b,unsigned bytes){UINT n=0;write_scope=1;FRESULT r=f_write(f,b,bytes,&n);write_scope=0;if(r!=FR_OK||n!=bytes){SD_DIAG(21,4,r,n);SD_DIAG(25,sd_get_diagnostics()->io_errors,sd_get_diagnostics()->deadline_errors,sd_get_diagnostics()->max_selected_us);}return r==FR_OK&&n==bytes?0:S9_E_IO;}
 /* FatFs may flush a dirty partial sector while seeking back to a header.
  * This is still a recorder-owned write, including during media playback. */
 static int seek_owned(FIL *f,FSIZE_t offset){write_scope=1;FRESULT r=f_lseek(f,offset);write_scope=0;return r==FR_OK?0:S9_E_IO;}
-static int sync_file(FIL *f){write_scope=1;FRESULT r=f_sync(f);DRESULT d=r==FR_OK?disk_ioctl(0,CTRL_SYNC,0):RES_ERROR;write_scope=0;return r==FR_OK&&d==RES_OK?0:S9_E_IO;}
+static int sync_file(FIL *f){write_scope=1;FRESULT r=f_sync(f);DRESULT d=r==FR_OK?disk_ioctl(0,CTRL_SYNC,0):RES_ERROR;write_scope=0;if(r!=FR_OK||d!=RES_OK)SD_DIAG(21,5,r,d);return r==FR_OK&&d==RES_OK?0:S9_E_IO;}
 static int close_handle(FIL *f,unsigned *opened){if(!*opened)return 0;write_scope=1;FRESULT r=f_close(f);write_scope=0;*opened=0;return r==FR_OK?0:S9_E_IO;}
 static int error(int e){stats.error=e;stats.state=S11_STORE_ERROR;return e;}
 int s11_storage_write_authorized(void){return write_scope;}
@@ -59,8 +67,8 @@ int s11_storage_prepare(uint64_t id,unsigned kinds){
  memset(&stats,0,sizeof stats);stats.recording_id=id;stats.kinds=(uint8_t)kinds;stats.first_frame=stats.last_frame=stats.missing_frame=UINT64_MAX;event_used=0;pcm_running_crc=event_running_crc=~0u;
  name(pcm_tmp,'W',file_number,"TMP");name(pcm_final,'W',file_number,"WAV");name(event_tmp,'E',file_number,"TMP");name(event_final,'E',file_number,"EVR");
  FILINFO info;if(f_stat(pcm_final,&info)==FR_OK||f_stat(event_final,&info)==FR_OK)return error(S9_E_CONFLICT);
- if(kinds&S11_KIND_PCM){if(f_open(&pcm_file,pcm_tmp,FA_CREATE_NEW|FA_READ|FA_WRITE)!=FR_OK)return error(S9_E_IO);pcm_open=1;wav_header(page,0);if(written(&pcm_file,page,512))goto fail;}
- if(kinds&S11_KIND_EVENT){if(f_open(&event_file,event_tmp,FA_CREATE_NEW|FA_READ|FA_WRITE)!=FR_OK)goto fail;event_open=1;evr_header(page);if(written(&event_file,page,512))goto fail;memset(event_page,0,512);}
+ if(kinds&S11_KIND_PCM){FRESULT fr=f_open(&pcm_file,pcm_tmp,FA_CREATE_NEW|FA_READ|FA_WRITE);if(fr!=FR_OK){SD_DIAG(21,2,fr,0);return error(S9_E_IO);}pcm_open=1;wav_header(page,0);if(written(&pcm_file,page,512))goto fail;}
+ if(kinds&S11_KIND_EVENT){FRESULT fr=f_open(&event_file,event_tmp,FA_CREATE_NEW|FA_READ|FA_WRITE);if(fr!=FR_OK){SD_DIAG(21,3,fr,0);goto fail;}event_open=1;evr_header(page);if(written(&event_file,page,512))goto fail;memset(event_page,0,512);}
  if((pcm_open&&sync_file(&pcm_file))||(event_open&&sync_file(&event_file)))goto fail;
  stats.state=S11_STORE_CAPTURING;return 0;
  fail:close_handle(&pcm_file,&pcm_open);close_handle(&event_file,&event_open);return error(S9_E_IO);
@@ -145,7 +153,7 @@ int s11_storage_select(uint64_t id){
  if(!id)return S9_E_RANGE;
  if(pcm_open||event_open||stats.state==S11_STORE_VERIFY_PENDING)return S9_E_BUSY;
  if(id==stats.recording_id&&stats.state==S11_STORE_SAVED)return 0;
- DIR dir;FILINFO info;int r=S9_E_EXPIRED;uint32_t found=0;if(f_opendir(&dir,"0:/")!=FR_OK)return S9_E_IO;
+ DIR dir;FILINFO info;int r=S9_E_EXPIRED;uint32_t found=0;FRESULT dir_result=f_opendir(&dir,"0:/");if(dir_result!=FR_OK){SD_DIAG(21,1,dir_result,0);return S9_E_IO;}
  for(;;){if(f_readdir(&dir,&info)!=FR_OK){r=S9_E_IO;break;}if(!info.fname[0])break;uint32_t number=numbered_name(info.fname);if(!number||info.fname[0]!='M'||strcmp(info.fname+9,"MET"))continue;
   char path[20];name(path,'M',number,"MET");FIL f;if(f_open(&f,path,FA_READ)!=FR_OK){r=S9_E_IO;break;}UINT n;int read=f_read(&f,page,512,&n)==FR_OK&&n==512&&f_size(&f)==512?0:S9_E_IO;if(f_close(&f)!=FR_OK)read=S9_E_IO;if(read){r=read;break;}
   if(!memcmp(page,"S11M",4)&&s9_get64(page+8)==id){found=number;r=0;break;}
@@ -192,6 +200,7 @@ static uint8_t export_pending[16];static int export_have_pending;
 static uint32_t export_count,export_bytes,export_crc,export_page_sequence,export_page_used,export_offset;
 static uint64_t export_origin,export_end,export_previous;
 static unsigned export_group,export_write;
+static uint32_t export_rate;
 /* SCORE v1 is a note-layer export under the reset sound configuration:
  * ID0, no Glide, center Pan, unity settled Gain, closed external stream,
  * reset/bypassed Effects and the default physical-key map. It does not encode
@@ -227,7 +236,7 @@ static int export_emit_page(void){
 static int export_record(uint64_t time,unsigned op,unsigned key,unsigned note,unsigned pressure){
  if(export_count>=1000000)return S9_E_RANGE;
  if(export_count&&time<export_previous)return S9_E_SEQUENCE;
- if(export_count>=128&&time-export_density[export_count%128]<4800)return S9_E_RANGE;
+ if(export_count>=128&&time-export_density[export_count%128]<export_rate/10u)return S9_E_RANGE;
  if(export_count&&time==export_previous){if(++export_group>64)return S9_E_RANGE;}else export_group=1;
  export_density[export_count%128]=time;export_previous=time;
  if(export_have_pending){
@@ -241,8 +250,12 @@ static int export_record(uint64_t time,unsigned op,unsigned key,unsigned note,un
 static int export_pass(int writing,uint32_t expected_records,uint64_t end){
  FIL f;UINT n;if(f_open(&f,event_final,FA_READ)!=FR_OK)return S9_E_IO;
  memset(export_notes,0,sizeof export_notes);memset(export_density,0,sizeof export_density);memset(export_page,0,512);export_count=export_page_used=export_page_sequence=export_offset=0;export_have_pending=0;export_crc=~0u;export_origin=UINT64_MAX;export_previous=export_end=0;export_group=0;export_write=(unsigned)writing;
+ /* Read the original file rate before emitting its score header. */
+ if(f_read(&f,page,512,&n)!=FR_OK||n!=512||s9_crc32(page,508)!=s9_get32(page+508)||!audio_file_rate(s9_get32(page+16))){f_close(&f);return S9_E_FORMAT;}
+ export_rate=s9_get32(page+16);
+ if(f_lseek(&f,0)!=FR_OK){f_close(&f);return S9_E_IO;}
  /* First pass counts only; second/third use the fixed counted header. */
- memcpy(export_page,"S7EV",4);s9_put32(export_page+4,1);s9_put32(export_page+8,48000);s9_put32(export_page+12,expected_records);s9_put64(export_page+16,end);
+ memcpy(export_page,"S7EV",4);s9_put32(export_page+4,1);s9_put32(export_page+8,export_rate);s9_put32(export_page+12,expected_records);s9_put64(export_page+16,end);
  int r=export_emit_page();if(r){f_close(&f);return r;}
  if(f_read(&f,page,512,&n)!=FR_OK||n!=512){f_close(&f);return S9_E_IO;}
  unsigned v2=!memcmp(page,"EVR2",4)&&s9_get32(page+4)==2;

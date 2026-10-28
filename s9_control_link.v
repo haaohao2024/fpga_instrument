@@ -347,7 +347,12 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  generate if(COMM_SEPARATE)begin: map_handoff
   reg [3:0] half_cycle;
   always @(negedge comm_clk)half_cycle<=fast_map_address;
-  assign map_address=half_cycle;
+  reg [3:0] system_address;
+  // Query changes at byte completion, is consumed at bit5 of the next
+  // byte. Synchronize the owned address before the RAM: one 40MHz cycle
+  // costs25ns out of >600ns wire look-ahead, and removes a half-cycle RAM path.
+  always @(posedge clk)if(rst)system_address<=0;else system_address<=half_cycle;
+  assign map_address=system_address;
  end else begin: map_direct_crossing
   assign map_address=fast_map_address;
  end endgenerate
@@ -416,11 +421,13 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  assign lookup_ready=1'b1;assign lookup_error=-16'sd13;assign lookup_result=0;
  reg[735:0] response,status;
  reg[7:0] tx_index,tx_shift;reg[2:0] tx_bit;
+ reg[7:0] prefetched_byte;
+ reg[31:0] prefetched_header_word;reg[1:0] prefetched_header_lane;
  reg[31:0] tx_crc;reg[8:0] tx_map_mask,held_map_mask;
  reg[3:0] map_column;wire[7:0] map_bytes[0:11];
  for(genvar m=0;m<12;m=m+1)assign map_bytes[m]=map_data[m*8+:8];
  wire[6:0] next_header_index=tx_index[6:0]+7'd1;
- wire[7:0] next_byte=tx_index<91?response[{next_header_index,3'b000}+:8]:
+ wire[7:0] next_byte=tx_index<91?prefetched_header_word[{prefetched_header_lane,3'b000}+:8]:
   tx_index<199?(tx_map_mask[fast_map_address]?map_bytes[map_column]:8'd0):
   tx_index<203?~(tx_crc >> ((tx_index-199)*8)):8'd0;
  always @*begin
@@ -433,8 +440,17 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
  // postpone the first response bit. Raw CS/conflict/reset still gate I/O.
  assign spi_miso_oe=!rst&&!control_cs_n&&score_cs_n&&sd_cs_n&&fast_selected;
  assign spi_miso=tx_index<204?tx_shift[7-tx_bit]:1'b0;
+ // Header snapshot is immutable from CS. Split word selection and byte
+ // selection across two existing SPI bit slots, without delaying the wire.
  always @(posedge serial_clk)begin
-  if(rst)begin response<=0;tx_shift<=0;tx_bit<=0;tx_crc<=32'hffffffff;tx_index<=0;fast_map_address<=0;map_column<=0;tx_map_mask<=0; end
+  if(rst||fast_start)begin prefetched_header_word<=0;prefetched_header_lane<=0;end
+  else if(fast_selected&&fast_fall&&tx_bit==3&&tx_index<91)begin
+   prefetched_header_word<=response[{next_header_index[6:2],5'b00000}+:32];
+   prefetched_header_lane<=next_header_index[1:0];
+  end
+ end
+ always @(posedge serial_clk)begin
+  if(rst)begin prefetched_byte<=0;response<=0;tx_shift<=0;tx_bit<=0;tx_crc<=32'hffffffff;tx_index<=0;fast_map_address<=0;map_column<=0;tx_map_mask<=0; end
   else if(fast_start)begin
     response<=status;tx_shift<=status[7:0];tx_index<=0;tx_bit<=0;
     tx_crc<=crcbyte(32'hffffffff,status[7:0]);tx_map_mask<=held_map_mask;
@@ -442,9 +458,10 @@ module r22_control_link #(parameter integer COMM_SEPARATE=0, CLK_FREQ_HZ=50_000_
   end else if(fast_selected)begin
     if(fast_fall&&tx_index<204)begin
      tx_bit<=tx_bit+1'b1;
+     if(tx_bit==5)prefetched_byte<=next_byte;
      if(tx_bit==7)begin
-      tx_index<=tx_index+1'b1;tx_shift<=next_byte;
-      if(tx_index<199)tx_crc<=crcbyte(tx_crc,next_byte);
+      tx_index<=tx_index+1'b1;tx_shift<=prefetched_byte;
+      if(tx_index<199)tx_crc<=crcbyte(tx_crc,prefetched_byte);
       // Header snapshot remains frozen until the next transaction.
       if(tx_index>=91&&tx_index<199)begin
        if(map_column==11)begin map_column<=0;fast_map_address<=fast_map_address+1'b1;end

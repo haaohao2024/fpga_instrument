@@ -368,6 +368,7 @@ endmodule
 // Histories/feedback retain their fixed /8192 scale. Sum weighted returns before
 // alignment; preserve full dry precision. Equal aligned wet preserves dry PCM
 // differences only without saturation. Reassess if Master Mixer/gain changes.
+// 30M/72k experiment: reverb schedule -6 cycles; output at 98 (was 128).
 module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, SHARED_MAC=0) (
     output wire fx_mac_use,output wire signed[35:0] fx_mac_a,output wire signed[17:0] fx_mac_b,
     input wire signed[53:0] fx_mac_q,
@@ -412,7 +413,7 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
     wire d_read_valid_l,d_read_valid_r;
     wire d_read_enable=busy && (cycle==5 || cycle==6);
     wire [14:0] d_lag=(cycle==5)?{1'b0,d_old}:{1'b0,d_new};
-    wire d_write_enable=busy && cycle==21;
+    wire d_write_enable=busy && cycle==22;
     reg [31:0] c_phase;
     wire [31:0] triangle_phase=c_phase+((cycle==26||cycle==28)?32'h40000000:32'd0);
     reg [10:0] c_base_old,c_base_new;
@@ -485,39 +486,39 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
      operand_addresses[45]=18'h002c9;
      operand_addresses[47]=18'h00008;
      operand_addresses[48]=18'h00009;
-     operand_addresses[59]=18'h00c70;
-     operand_addresses[60]=18'h00c70;
-     operand_addresses[61]=18'h00cf2;
-     operand_addresses[62]=18'h00cf2;
-     operand_addresses[63]=18'h00aa8;
-     operand_addresses[64]=18'h00ae9;
-     operand_addresses[65]=18'h00aa8;
-     operand_addresses[66]=18'h00ae9;
-     operand_addresses[67]=18'h00cb0;
-     operand_addresses[68]=18'h00cf1;
-     operand_addresses[69]=18'h0002e;
-     operand_addresses[70]=18'h00be0;
-     operand_addresses[71]=18'h0002f;
-     operand_addresses[72]=18'h00020;
-     operand_addresses[73]=18'h00024;
-     operand_addresses[74]=18'h00021;
-     operand_addresses[75]=18'h00025;
-     operand_addresses[76]=18'h00022;
-     operand_addresses[77]=18'h00026;
-     operand_addresses[78]=18'h00023;
-     operand_addresses[79]=18'h00027;
-     operand_addresses[85]=18'h00036;
-     operand_addresses[86]=18'h00037;
-     operand_addresses[89]=18'h0001a;
-     operand_addresses[90]=18'h00d1b;
-     operand_addresses[91]=18'h00d4e;
-     operand_addresses[92]=18'h0000f;
-     operand_addresses[98]=18'h0050c;
-     operand_addresses[99]=18'h0054d;
-     operand_addresses[100]=18'h00b1e;
-     operand_addresses[101]=18'h00b5f;
-     operand_addresses[102]=18'h0001e;
-     operand_addresses[103]=18'h0001f;
+     operand_addresses[53]=18'h00c70;
+     operand_addresses[54]=18'h00c70;
+     operand_addresses[55]=18'h00cf2;
+     operand_addresses[56]=18'h00cf2;
+     operand_addresses[57]=18'h00aa8;
+     operand_addresses[58]=18'h00ae9;
+     operand_addresses[59]=18'h00aa8;
+     operand_addresses[60]=18'h00ae9;
+     operand_addresses[61]=18'h00cb0;
+     operand_addresses[62]=18'h00cf1;
+     operand_addresses[63]=18'h0002e;
+     operand_addresses[64]=18'h00be0;
+     operand_addresses[65]=18'h0002f;
+     operand_addresses[66]=18'h00020;
+     operand_addresses[67]=18'h00024;
+     operand_addresses[68]=18'h00021;
+     operand_addresses[69]=18'h00025;
+     operand_addresses[70]=18'h00022;
+     operand_addresses[71]=18'h00026;
+     operand_addresses[72]=18'h00023;
+     operand_addresses[73]=18'h00027;
+     operand_addresses[79]=18'h00036;
+     operand_addresses[80]=18'h00037;
+     operand_addresses[83]=18'h0001a;
+     operand_addresses[84]=18'h00d1b;
+     operand_addresses[85]=18'h00d4e;
+     operand_addresses[86]=18'h0000f;
+     operand_addresses[92]=18'h0050c;
+     operand_addresses[93]=18'h0054d;
+     operand_addresses[94]=18'h00b1e;
+     operand_addresses[95]=18'h00b5f;
+     operand_addresses[96]=18'h0001e;
+     operand_addresses[97]=18'h0001f;
     end
     function signed [47:0] trunc0;
         input signed [47:0] x;
@@ -579,8 +580,8 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
     fx_history18 #(.DEPTH(2048),.LENGTH(2048),.AW(11)) chorus_r(
         .clk(clk),.rst(rst),.clear(clear_pulse[1]),.read_en(c_read_enable),.read_lag(c_lag_r),
         .read_data(c_read_r),.read_valid(c_read_valid_r),.write_en(busy && cycle==49),.write_data(c_send[1][17:0]));
-    wire [3:0] r_write_enable={ {2{busy && cycle==84}}, {2{busy && cycle==83}} };
-    wire [3:0] r_read_enable={ {2{busy && cycle==56}}, {2{busy && cycle==55}} };
+    wire [3:0] r_write_enable={ {2{busy && cycle==78}}, {2{busy && cycle==77}} };
+    wire [3:0] r_read_enable={ {2{busy && cycle==50}}, {2{busy && cycle==49}} };
     r32_reverb_history history_bank(.clk(clk),.rst(rst),.clear(clear_pulse[2]),
       .read_en(r_read_enable),.write_en(r_write_enable),
       .write_data({r_write[3],r_write[2],r_write[1],r_write[0]}),
@@ -613,6 +614,18 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
      endcase
     end
     wire signed[35:0] post_value=post_scaled+((post_sum[35]&&discarded)?36'sd1:36'sd0);
+    // Saturation consumers have fixed shifts and known free destination
+    // slots. Split add from round/saturate without moving output cycle98.
+    reg signed[35:0] saturation_sum_q;
+    wire signed[35:0] history_round=(saturation_sum_q>>>15)+
+       ((saturation_sum_q[35]&&(|saturation_sum_q[14:0]))?36'sd1:36'sd0);
+    wire signed[17:0] history_sat=sat18(history_round);
+    wire signed[31:0] final_sat=sat32(saturation_sum_q);
+    always @(posedge clk)begin
+     if(rst)saturation_sum_q<=0;
+     else if(busy)saturation_sum_q<=post_sum;
+    end
+
     wire signed[17:0] post_sat=sat18(post_value);
     always @*begin
      ma_left=0;ma_right=0;mb=0;
@@ -639,85 +652,120 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
       40:begin ma_left=$signed(rf_read0);ma_right=$signed(rf_read2);mb={2'b0,c_delay[3][15:0]};end
       44:begin ma_left=$signed(rf_read1);ma_right=$signed(rf_read0);mb=c_transition?c_position:18'd1024;end
       45:begin ma_left=$signed(rf_read1);ma_right=$signed(rf_read0);mb=c_transition?c_position:18'd1024;end
-      72:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[255:224]);end
+      66:begin ma_left=$signed(rf_read0);mb=18'sd32768;end
+      67:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
+      68:begin ma_left=$signed(rf_read0);mb=18'sd32768;end
+      69:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
+      70:begin ma_left=$signed(rf_read0);mb=18'sd32768;end
+      71:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
+      72:begin ma_left=$signed(rf_read0);mb=18'sd32768;end
       73:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
-      74:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[255:224]);end
-      75:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
-      76:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[255:224]);end
-      77:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
-      78:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[255:224]);end
-      79:begin ma_left=$signed(rf_read0);mb=$signed(controls[255:224]);end
-      85:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[287:256]);end
-      86:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[287:256]);end
-      87:begin ma_left=r_tone[0];mb=$signed(controls[287:256]);end
-      88:begin ma_left=r_tone[1];mb=$signed(controls[287:256]);end
-      89:begin ma_left=$signed(rf_read0);mb=$signed(controls[127:96]);end
-      90:begin ma_left=$signed(rf_read0);mb=$signed(controls[127:96]);end
-      91:begin ma_left=$signed(rf_read0);mb=$signed(controls[159:128]);end
-      92:begin ma_left=$signed(rf_read0);mb=$signed(controls[159:128]);end
-      93:begin ma_left=r_tone[0];mb=$signed(controls[191:160]);end
-      94:begin ma_left=r_tone[1];mb=$signed(controls[191:160]);end
+      79:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[287:256]);end
+      80:begin ma_left=$signed(rf_read0);mb=32768-$signed(controls[287:256]);end
+      81:begin ma_left=r_tone[0];mb=$signed(controls[287:256]);end
+      82:begin ma_left=r_tone[1];mb=$signed(controls[287:256]);end
+      83:begin ma_left=$signed(rf_read0);mb=$signed(controls[127:96]);end
+      84:begin ma_left=$signed(rf_read0);mb=$signed(controls[127:96]);end
+      85:begin ma_left=$signed(rf_read0);mb=$signed(controls[159:128]);end
+      86:begin ma_left=$signed(rf_read0);mb=$signed(controls[159:128]);end
+      87:begin ma_left=r_tone[0];mb=$signed(controls[191:160]);end
+      88:begin ma_left=r_tone[1];mb=$signed(controls[191:160]);end
       default:begin end
      endcase
     end
+    // Predecoded next micro-operation, registered alongside cycle. The
+    // selected operands still come from the original cycle's RAM/DSP results.
+    wire [7:0] next_cycle=start?8'd1:busy?cycle+8'd1:cycle;
+    reg [3:0] post_a_select,post_b_select;
+    reg [13:0] post_instruction;
     always @*begin
-     post_a=0;post_b=0;post_sub=0;post_shift=0;
-     case(cycle)
-      1:begin post_a=0;post_b=dry_l;post_shift=13;post_sub=0;end
-      2:begin post_a=0;post_b=dry_r;post_shift=13;post_sub=0;end
-      6:begin post_a=0;post_b=mq;post_shift=15;post_sub=0;end
-      7:begin post_a=0;post_b=mq;post_shift=15;post_sub=0;end
-      12:begin post_a=$signed($signed(rf_read0))*48'sd1024;post_b=mq;post_shift=10;post_sub=0;end
-      13:begin post_a=$signed($signed(rf_read0))*48'sd1024;post_b=mq;post_shift=10;post_sub=0;end
-      19:begin post_a=$signed(rf_read0);post_b=mq;post_shift=15;post_sub=0;end
-      20:begin post_a=$signed(rf_read0);post_b=mq;post_shift=15;post_sub=0;end
-      21:begin post_a=0;post_b=mq;post_shift=15;post_sub=0;end
-      22:begin post_a=0;post_b=mq;post_shift=15;post_sub=0;end
-      23:begin post_a=0;post_b=mq;post_shift=15;post_sub=0;end
-      24:begin post_a=0;post_b=mq;post_shift=15;post_sub=0;end
-      28:begin post_a=$signed({21'd0,c_base_old})*48'sd65536;post_b=mq;post_shift=0;post_sub=0;end
-      29:begin post_a=$signed({21'd0,c_base_old})*48'sd65536;post_b=mq;post_shift=0;post_sub=0;end
-      30:begin post_a=$signed({21'd0,c_base_new})*48'sd65536;post_b=mq;post_shift=0;post_sub=0;end
-      31:begin post_a=$signed({21'd0,c_base_new})*48'sd65536;post_b=mq;post_shift=0;post_sub=0;end
-      40:begin post_a=$signed($signed(rf_read1))*48'sd65536;post_b=mq;post_shift=16;post_sub=0;end
-      41:begin post_a=$signed($signed(rf_read0))*48'sd65536;post_b=mq;post_shift=16;post_sub=0;end
-      42:begin post_a=$signed($signed(rf_read0))*48'sd65536;post_b=mq;post_shift=16;post_sub=0;end
-      43:begin post_a=$signed($signed(rf_read0))*48'sd65536;post_b=mq;post_shift=16;post_sub=0;end
-      47:begin post_a=$signed($signed(rf_read0))*48'sd1024;post_b=mq;post_shift=10;post_sub=0;end
-      48:begin post_a=$signed($signed(rf_read0))*48'sd1024;post_b=mq;post_shift=10;post_sub=0;end
-      50:begin post_a=$signed({1'b0,c_phase});post_b=$signed({1'b0,controls[319:288]});post_shift=0;post_sub=0;end
-      59:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=0;post_sub=0;end
-      60:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=0;post_sub=1;end
-      61:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=0;post_sub=0;end
-      62:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=0;post_sub=1;end
-      63:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=1;post_sub=0;end
-      64:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=1;post_sub=0;end
-      65:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=1;post_sub=1;end
-      66:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=1;post_sub=1;end
-      67:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=1;post_sub=0;end
-      68:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=1;post_sub=1;end
-      69:begin post_a=0;post_b=$signed(rf_read0);post_shift=1;post_sub=0;end
-      70:begin post_a=0;post_b=$signed(rf_read1);post_shift=1;post_sub=0;end
-      71:begin post_a=0;post_b=$signed(rf_read0);post_shift=1;post_sub=1;end
-      76:begin post_a=feedback_first;post_b=mq;post_shift=15;post_sub=0;end
-      78:begin post_a=feedback_first;post_b=mq;post_shift=15;post_sub=0;end
-      80:begin post_a=feedback_first;post_b=mq;post_shift=15;post_sub=0;end
-      82:begin post_a=feedback_first;post_b=mq;post_shift=15;post_sub=0;end
-      90:begin post_a=$signed(rf_read1);post_b=mq;post_shift=15;post_sub=0;end
-      91:begin post_a=$signed(rf_read1);post_b=mq;post_shift=15;post_sub=0;end
-      92:begin post_a=0;post_b=mq;post_shift=2;post_sub=0;end
-      93:begin post_a=0;post_b=mq;post_shift=2;post_sub=0;end
-      94:begin post_a=0;post_b=mq;post_shift=2;post_sub=0;end
-      95:begin post_a=0;post_b=mq;post_shift=2;post_sub=0;end
-      96:begin post_a=0;post_b=mq;post_shift=2;post_sub=0;end
-      97:begin post_a=0;post_b=mq;post_shift=2;post_sub=0;end
-      98:begin post_a=$signed(rf_read1);post_b=$signed(rf_read0);post_shift=0;post_sub=0;end
-      99:begin post_a=$signed(rf_read1);post_b=$signed(rf_read0);post_shift=0;post_sub=0;end
-      100:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=8+MIX_SHIFT;post_sub=0;end
-      101:begin post_a=$signed(rf_read0);post_b=$signed(rf_read1);post_shift=8+MIX_SHIFT;post_sub=0;end
-      102:begin post_a=dry_l;post_b=$signed(rf_read0);post_shift=0;post_sub=0;end
-      103:begin post_a=dry_r;post_b=$signed(rf_read0);post_shift=0;post_sub=0;end
+     post_instruction=0;
+     case(next_cycle)
+      1:post_instruction={4'd0,4'd1,5'(13),1'b0};
+      2:post_instruction={4'd0,4'd2,5'(13),1'b0};
+      6:post_instruction={4'd0,4'd3,5'(15),1'b0};
+      7:post_instruction={4'd0,4'd3,5'(15),1'b0};
+      12:post_instruction={4'd1,4'd3,5'(10),1'b0};
+      13:post_instruction={4'd1,4'd3,5'(10),1'b0};
+      19:post_instruction={4'd2,4'd3,5'(15),1'b0};
+      20:post_instruction={4'd2,4'd3,5'(15),1'b0};
+      21:post_instruction={4'd0,4'd3,5'(15),1'b0};
+      22:post_instruction={4'd0,4'd3,5'(15),1'b0};
+      23:post_instruction={4'd0,4'd3,5'(15),1'b0};
+      24:post_instruction={4'd0,4'd3,5'(15),1'b0};
+      28:post_instruction={4'd3,4'd3,5'(0),1'b0};
+      29:post_instruction={4'd3,4'd3,5'(0),1'b0};
+      30:post_instruction={4'd4,4'd3,5'(0),1'b0};
+      31:post_instruction={4'd4,4'd3,5'(0),1'b0};
+      40:post_instruction={4'd5,4'd3,5'(16),1'b0};
+      41:post_instruction={4'd6,4'd3,5'(16),1'b0};
+      42:post_instruction={4'd6,4'd3,5'(16),1'b0};
+      43:post_instruction={4'd6,4'd3,5'(16),1'b0};
+      47:post_instruction={4'd1,4'd3,5'(10),1'b0};
+      48:post_instruction={4'd1,4'd3,5'(10),1'b0};
+      50:post_instruction={4'd7,4'd4,5'(0),1'b0};
+      53:post_instruction={4'd2,4'd5,5'(0),1'b0};
+      54:post_instruction={4'd2,4'd5,5'(0),1'b1};
+      55:post_instruction={4'd2,4'd5,5'(0),1'b0};
+      56:post_instruction={4'd2,4'd5,5'(0),1'b1};
+      57:post_instruction={4'd2,4'd5,5'(1),1'b0};
+      58:post_instruction={4'd2,4'd5,5'(1),1'b0};
+      59:post_instruction={4'd2,4'd5,5'(1),1'b1};
+      60:post_instruction={4'd2,4'd5,5'(1),1'b1};
+      61:post_instruction={4'd2,4'd5,5'(1),1'b0};
+      62:post_instruction={4'd2,4'd5,5'(1),1'b1};
+      63:post_instruction={4'd0,4'd6,5'(1),1'b0};
+      64:post_instruction={4'd0,4'd5,5'(1),1'b0};
+      65:post_instruction={4'd0,4'd6,5'(1),1'b1};
+      70:post_instruction={4'd8,4'd3,5'(15),1'b0};
+      72:post_instruction={4'd8,4'd3,5'(15),1'b0};
+      74:post_instruction={4'd8,4'd3,5'(15),1'b0};
+      76:post_instruction={4'd8,4'd3,5'(15),1'b0};
+      84:post_instruction={4'd9,4'd3,5'(15),1'b0};
+      85:post_instruction={4'd9,4'd3,5'(15),1'b0};
+      86:post_instruction={4'd0,4'd3,5'(2),1'b0};
+      87:post_instruction={4'd0,4'd3,5'(2),1'b0};
+      88:post_instruction={4'd0,4'd3,5'(2),1'b0};
+      89:post_instruction={4'd0,4'd3,5'(2),1'b0};
+      90:post_instruction={4'd0,4'd3,5'(2),1'b0};
+      91:post_instruction={4'd0,4'd3,5'(2),1'b0};
+      92:post_instruction={4'd9,4'd6,5'(0),1'b0};
+      93:post_instruction={4'd9,4'd6,5'(0),1'b0};
+      94:post_instruction={4'd2,4'd5,5'(8+MIX_SHIFT),1'b0};
+      95:post_instruction={4'd2,4'd5,5'(8+MIX_SHIFT),1'b0};
+      96:post_instruction={4'd10,4'd6,5'(0),1'b0};
+      97:post_instruction={4'd11,4'd6,5'(0),1'b0};
       default:begin end
+     endcase
+    end
+    always @(posedge clk)begin
+     if(rst)begin post_a_select<=0;post_b_select<=0;post_shift<=0;post_sub<=0;end
+     else {post_a_select,post_b_select,post_shift,post_sub}<=post_instruction;
+    end
+    always @*begin
+     post_a=0;post_b=0;
+     case(post_a_select)
+      0:post_a=0;
+      1:post_a=$signed($signed(rf_read0))*48'sd1024;
+      2:post_a=$signed(rf_read0);
+      3:post_a=$signed({21'd0,c_base_old})*48'sd65536;
+      4:post_a=$signed({21'd0,c_base_new})*48'sd65536;
+      5:post_a=$signed($signed(rf_read1))*48'sd65536;
+      6:post_a=$signed($signed(rf_read0))*48'sd65536;
+      7:post_a=$signed({1'b0,c_phase});
+      8:post_a=feedback_first;
+      9:post_a=$signed(rf_read1);
+      10:post_a=dry_l;
+      11:post_a=dry_r;
+     endcase
+     case(post_b_select)
+      0:post_b=0;
+      1:post_b=dry_l;
+      2:post_b=dry_r;
+      3:post_b=mq;
+      4:post_b=$signed({1'b0,controls[319:288]});
+      5:post_b=$signed(rf_read1);
+      6:post_b=$signed(rf_read0);
      endcase
     end
 
@@ -743,8 +791,8 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
       39:begin forward_enable0=1;forward_value0=$signed(18'(pending3));end
       43:begin forward_enable0=1;forward_value0=$signed(18'(pending0));end
       44:begin forward_enable0=1;forward_value0=$signed(18'(pending1));end
-      63:begin forward_enable0=1;forward_value0=$signed(19'(pending1));end
-      69:begin forward_enable0=1;forward_value0=$signed(18'(post_value));end
+      57:begin forward_enable0=1;forward_value0=$signed(19'(pending1));end
+      63:begin forward_enable0=1;forward_value0=$signed(18'(post_value));end
       default:begin end
      endcase
     end
@@ -757,10 +805,10 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
       38:begin forward_enable1=1;forward_value1=$signed(18'(pending0));end
       43:begin forward_enable1=1;forward_value1=$signed(18'(pending2));end
       44:begin forward_enable1=1;forward_value1=$signed(18'(pending0));end
-      58:begin forward_enable1=1;forward_value1=$signed(18'(pending0));end
-      60:begin forward_enable1=1;forward_value1=$signed(18'(pending1));end
-      62:begin forward_enable1=1;forward_value1=$signed(19'(pending0));end
-      63:begin forward_enable1=1;forward_value1=$signed(19'(pending0));end
+      52:begin forward_enable1=1;forward_value1=$signed(18'(pending0));end
+      54:begin forward_enable1=1;forward_value1=$signed(18'(pending1));end
+      56:begin forward_enable1=1;forward_value1=$signed(19'(pending0));end
+      57:begin forward_enable1=1;forward_value1=$signed(19'(pending0));end
       default:begin end
      endcase
     end
@@ -806,118 +854,166 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
       43:begin
        pending0<=$signed(18'(post_value));
       end
-      57:begin
+      51:begin
        pending0<=$signed(18'(r_read[1]));
       end
-      58:begin
+      52:begin
        pending0<=$signed(18'(r_read[2]));
        pending1<=$signed(18'(r_read[3]));
       end
-      59:begin
+      53:begin
        pending0<=$signed(19'(post_value));
+      end
+      54:begin
+       pending1<=$signed(19'(post_value));
+      end
+      55:begin
+       pending0<=$signed(19'(post_value));
+      end
+      56:begin
+       pending0<=$signed(19'(post_value));
+      end
+      57:begin
+       pending1<=$signed(19'(post_value));
+      end
+      58:begin
+       pending0<=$signed(19'(post_value));
+      end
+      59:begin
+       pending1<=$signed(19'(post_value));
       end
       60:begin
-       pending1<=$signed(19'(post_value));
+       pending0<=$signed(19'(post_value));
       end
       61:begin
-       pending0<=$signed(19'(post_value));
-      end
-      62:begin
-       pending0<=$signed(19'(post_value));
-      end
-      63:begin
-       pending1<=$signed(19'(post_value));
-      end
-      64:begin
-       pending0<=$signed(19'(post_value));
-      end
-      65:begin
-       pending1<=$signed(19'(post_value));
-      end
-      66:begin
-       pending0<=$signed(19'(post_value));
-      end
-      67:begin
        pending1<=$signed(18'(post_value));
       end
-      68:begin
+      62:begin
        pending0<=$signed(18'(post_value));
       end
-      70:begin
+      64:begin
        pending2<=$signed(18'($signed(rf_read0)));
       end
-      71:begin
+      65:begin
        pending2<=$signed(18'(post_value));
       end
       default:begin end
      endcase
     end
     reg [5:0] operand_write_address;reg signed[35:0] operand_write_data;reg operand_write_enable;
+    reg [4:0] write_format;
+    // Format1 is issued only for dry input conversion, cycles1/2.
+    // Keep that conversion off the unrelated operand-RAM arithmetic path.
+    wire signed [31:0] input_scale_raw=post_b_select==2?dry_r:dry_l;
+    wire signed [18:0] input_scale=$signed(input_scale_raw[31:13])+
+       ((input_scale_raw[31]&&(|input_scale_raw[12:0]))?19'sd1:19'sd0);
+    wire [17:0] input_scale_sat=input_scale[18]==input_scale[17]?input_scale[17:0]:
+       (input_scale[18]?18'h20000:18'h1ffff);
+    // synthesis translate_off
+    always @(posedge clk)if(!rst&&busy&&operand_write_enable&&write_format==1)begin
+      if((cycle!=1&&cycle!=2)||input_scale_sat!==post_sat)$fatal(1,"FX_INPUT_SCALE_EQ");
+    end
+    // synthesis translate_on
+
+    reg [11:0] next_write_control;
     always @*begin
-     operand_write_enable=0;operand_write_address=0;operand_write_data=0;
-     case(cycle)
-      1:begin operand_write_enable=1;operand_write_address=6'd28;operand_write_data=$signed(18'(post_sat));end
-      2:begin operand_write_enable=1;operand_write_address=6'd29;operand_write_data=$signed(18'(post_sat));end
-      6:begin operand_write_enable=1;operand_write_address=6'd24;operand_write_data=$signed(18'(post_value));end
-      7:begin operand_write_enable=1;operand_write_address=6'd16;operand_write_data=$signed(18'(d_read_l));end
-      8:begin operand_write_enable=1;operand_write_address=6'd22;operand_write_data=$signed(18'(d_read_l));end
-      9:begin operand_write_enable=1;operand_write_address=6'd17;operand_write_data=$signed(18'(pending0));end
-      10:begin operand_write_enable=1;operand_write_address=6'd23;operand_write_data=$signed(18'(pending2));end
-      11:begin operand_write_enable=1;operand_write_address=6'd25;operand_write_data=$signed(18'(pending1));end
-      12:begin operand_write_enable=1;operand_write_address=6'd26;operand_write_data=$signed(18'(post_value));end
-      13:begin operand_write_enable=1;operand_write_address=6'd27;operand_write_data=$signed(18'(post_value));end
-      17:begin operand_write_enable=1;operand_write_address=6'd18;operand_write_data=$signed(33'(mq));end
-      18:begin operand_write_enable=1;operand_write_address=6'd19;operand_write_data=$signed(33'(mq));end
-      23:begin operand_write_enable=1;operand_write_address=6'd46;operand_write_data=$signed(18'(post_value));end
-      24:begin operand_write_enable=1;operand_write_address=6'd47;operand_write_data=$signed(18'(post_value));end
-      35:begin operand_write_enable=1;operand_write_address=6'd4;operand_write_data=$signed(18'(c_read_l));end
-      36:begin operand_write_enable=1;operand_write_address=6'd0;operand_write_data=$signed(18'(c_read_l));end
-      37:begin operand_write_enable=1;operand_write_address=6'd5;operand_write_data=$signed(18'(pending0));end
-      38:begin operand_write_enable=1;operand_write_address=6'd1;operand_write_data=$signed(18'(pending1));end
-      39:begin operand_write_enable=1;operand_write_address=6'd6;operand_write_data=$signed(18'(pending0));end
-      40:begin operand_write_enable=1;operand_write_address=6'd2;operand_write_data=$signed(18'(pending1));end
-      41:begin operand_write_enable=1;operand_write_address=6'd7;operand_write_data=$signed(18'(pending2));end
-      42:begin operand_write_enable=1;operand_write_address=6'd3;operand_write_data=$signed(18'(pending3));end
-      43:begin operand_write_enable=1;operand_write_address=6'd8;operand_write_data=$signed(18'(pending0));end
-      44:begin operand_write_enable=1;operand_write_address=6'd10;operand_write_data=$signed(18'(pending2));end
-      45:begin operand_write_enable=1;operand_write_address=6'd9;operand_write_data=$signed(18'(pending1));end
-      46:begin operand_write_enable=1;operand_write_address=6'd11;operand_write_data=$signed(18'(pending0));end
-      47:begin operand_write_enable=1;operand_write_address=6'd14;operand_write_data=$signed(18'(post_value));end
-      48:begin operand_write_enable=1;operand_write_address=6'd15;operand_write_data=$signed(18'(post_value));end
-      57:begin operand_write_enable=1;operand_write_address=6'd48;operand_write_data=$signed(18'(r_read[0]));end
-      58:begin operand_write_enable=1;operand_write_address=6'd49;operand_write_data=$signed(18'(pending0));end
-      59:begin operand_write_enable=1;operand_write_address=6'd50;operand_write_data=$signed(18'(pending0));end
-      60:begin operand_write_enable=1;operand_write_address=6'd51;operand_write_data=$signed(18'(pending1));end
-      61:begin operand_write_enable=1;operand_write_address=6'd40;operand_write_data=$signed(19'(pending0));end
-      62:begin operand_write_enable=1;operand_write_address=6'd42;operand_write_data=$signed(19'(pending0));end
-      63:begin operand_write_enable=1;operand_write_address=6'd41;operand_write_data=$signed(19'(pending1));end
-      64:begin operand_write_enable=1;operand_write_address=6'd43;operand_write_data=$signed(19'(pending0));end
-      65:begin operand_write_enable=1;operand_write_address=6'd36;operand_write_data=$signed(19'(pending1));end
-      66:begin operand_write_enable=1;operand_write_address=6'd37;operand_write_data=$signed(19'(pending0));end
-      67:begin operand_write_enable=1;operand_write_address=6'd38;operand_write_data=$signed(19'(pending1));end
-      68:begin operand_write_enable=1;operand_write_address=6'd39;operand_write_data=$signed(19'(pending0));end
-      69:begin operand_write_enable=1;operand_write_address=6'd32;operand_write_data=$signed(18'(post_value));end
-      70:begin operand_write_enable=1;operand_write_address=6'd33;operand_write_data=$signed(18'(post_value));end
-      71:begin operand_write_enable=1;operand_write_address=6'd34;operand_write_data=$signed(18'(pending2));end
-      72:begin operand_write_enable=1;operand_write_address=6'd35;operand_write_data=$signed(18'(pending2));end
-      73:begin operand_write_enable=1;operand_write_address=6'd54;operand_write_data=$signed(18'(pending1));end
-      74:begin operand_write_enable=1;operand_write_address=6'd55;operand_write_data=$signed(18'(pending0));end
-      88:begin operand_write_enable=1;operand_write_address=6'd52;operand_write_data=$signed(33'(mq));end
-      89:begin operand_write_enable=1;operand_write_address=6'd53;operand_write_data=$signed(33'(mq));end
-      92:begin operand_write_enable=1;operand_write_address=6'd20;operand_write_data=$signed(29'(post_value));end
-      93:begin operand_write_enable=1;operand_write_address=6'd21;operand_write_data=$signed(29'(post_value));end
-      94:begin operand_write_enable=1;operand_write_address=6'd12;operand_write_data=$signed(29'(post_value));end
-      95:begin operand_write_enable=1;operand_write_address=6'd13;operand_write_data=$signed(29'(post_value));end
-      96:begin operand_write_enable=1;operand_write_address=6'd44;operand_write_data=$signed(29'(post_value));end
-      97:begin operand_write_enable=1;operand_write_address=6'd45;operand_write_data=$signed(29'(post_value));end
-      98:begin operand_write_enable=1;operand_write_address=6'd30;operand_write_data=$signed(36'(post_value));end
-      99:begin operand_write_enable=1;operand_write_address=6'd31;operand_write_data=$signed(36'(post_value));end
-      100:begin operand_write_enable=1;operand_write_address=6'd30;operand_write_data=$signed(36'((post_value << (8+MIX_SHIFT))));end
-      101:begin operand_write_enable=1;operand_write_address=6'd31;operand_write_data=$signed(36'((post_value << (8+MIX_SHIFT))));end
+     next_write_control=0;
+     case(next_cycle)
+      1:next_write_control={1'b1,6'd28,5'd1};
+      2:next_write_control={1'b1,6'd29,5'd1};
+      6:next_write_control={1'b1,6'd24,5'd2};
+      7:next_write_control={1'b1,6'd16,5'd3};
+      8:next_write_control={1'b1,6'd22,5'd3};
+      9:next_write_control={1'b1,6'd17,5'd4};
+      10:next_write_control={1'b1,6'd23,5'd5};
+      11:next_write_control={1'b1,6'd25,5'd6};
+      12:next_write_control={1'b1,6'd26,5'd2};
+      13:next_write_control={1'b1,6'd27,5'd2};
+      17:next_write_control={1'b1,6'd18,5'd7};
+      18:next_write_control={1'b1,6'd19,5'd7};
+      23:next_write_control={1'b1,6'd46,5'd2};
+      24:next_write_control={1'b1,6'd47,5'd2};
+      35:next_write_control={1'b1,6'd4,5'd8};
+      36:next_write_control={1'b1,6'd0,5'd8};
+      37:next_write_control={1'b1,6'd5,5'd4};
+      38:next_write_control={1'b1,6'd1,5'd6};
+      39:next_write_control={1'b1,6'd6,5'd4};
+      40:next_write_control={1'b1,6'd2,5'd6};
+      41:next_write_control={1'b1,6'd7,5'd5};
+      42:next_write_control={1'b1,6'd3,5'd9};
+      43:next_write_control={1'b1,6'd8,5'd4};
+      44:next_write_control={1'b1,6'd10,5'd5};
+      45:next_write_control={1'b1,6'd9,5'd6};
+      46:next_write_control={1'b1,6'd11,5'd4};
+      47:next_write_control={1'b1,6'd14,5'd2};
+      48:next_write_control={1'b1,6'd15,5'd2};
+      51:next_write_control={1'b1,6'd48,5'd10};
+      52:next_write_control={1'b1,6'd49,5'd4};
+      53:next_write_control={1'b1,6'd50,5'd4};
+      54:next_write_control={1'b1,6'd51,5'd6};
+      55:next_write_control={1'b1,6'd40,5'd11};
+      56:next_write_control={1'b1,6'd42,5'd11};
+      57:next_write_control={1'b1,6'd41,5'd12};
+      58:next_write_control={1'b1,6'd43,5'd11};
+      59:next_write_control={1'b1,6'd36,5'd12};
+      60:next_write_control={1'b1,6'd37,5'd11};
+      61:next_write_control={1'b1,6'd38,5'd12};
+      62:next_write_control={1'b1,6'd39,5'd11};
+      63:next_write_control={1'b1,6'd32,5'd2};
+      64:next_write_control={1'b1,6'd33,5'd2};
+      65:next_write_control={1'b1,6'd34,5'd5};
+      66:next_write_control={1'b1,6'd35,5'd5};
+      67:next_write_control={1'b1,6'd54,5'd6};
+      68:next_write_control={1'b1,6'd55,5'd4};
+      82:next_write_control={1'b1,6'd52,5'd7};
+      83:next_write_control={1'b1,6'd53,5'd7};
+      86:next_write_control={1'b1,6'd20,5'd13};
+      87:next_write_control={1'b1,6'd21,5'd13};
+      88:next_write_control={1'b1,6'd12,5'd13};
+      89:next_write_control={1'b1,6'd13,5'd13};
+      90:next_write_control={1'b1,6'd44,5'd13};
+      91:next_write_control={1'b1,6'd45,5'd13};
+      92:next_write_control={1'b1,6'd30,5'd14};
+      93:next_write_control={1'b1,6'd31,5'd14};
+      94:next_write_control={1'b1,6'd30,5'd15};
+      95:next_write_control={1'b1,6'd31,5'd15};
       default:begin end
      endcase
     end
+    always @(posedge clk)begin
+     if(rst){operand_write_enable,operand_write_address,write_format}<=0;
+     else {operand_write_enable,operand_write_address,write_format}<=next_write_control;
+    end
+    always @*begin
+     operand_write_data=0;
+     case(write_format)
+      0:operand_write_data=0;
+      1:operand_write_data=$signed(input_scale_sat);
+      2:operand_write_data=$signed(18'(post_value));
+      3:operand_write_data=$signed(18'(d_read_l));
+      4:operand_write_data=$signed(18'(pending0));
+      5:operand_write_data=$signed(18'(pending2));
+      6:operand_write_data=$signed(18'(pending1));
+      7:operand_write_data=$signed(33'(mq));
+      8:operand_write_data=$signed(18'(c_read_l));
+      9:operand_write_data=$signed(18'(pending3));
+      10:operand_write_data=$signed(18'(r_read[0]));
+      11:operand_write_data=$signed(19'(pending0));
+      12:operand_write_data=$signed(19'(pending1));
+      13:operand_write_data=$signed(33'(post_value));
+      14:operand_write_data=$signed(36'(post_sum));
+      15:operand_write_data=$signed(36'((post_value << (8+MIX_SHIFT))));
+     endcase
+    end
     always @(posedge clk)if(!rst&&busy&&operand_write_enable)operand_memory[operand_write_address]<=operand_write_data;
+    // synthesis translate_off
+    always @(posedge clk)if(!rst&&busy)begin
+     if(cycle==19||cycle==20||cycle==70||cycle==72||cycle==74||cycle==76||cycle==84||cycle==85)
+      if(post_shift!=15||post_sub)$fatal(1,"FX_FIXED_HISTORY_SHIFT");
+     if(cycle==96||cycle==97||write_format==14)
+      if(post_shift!=0||post_sub||post_value!==post_sum)$fatal(1,"FX_FIXED_FINAL_SHIFT");
+    end
+    // synthesis translate_on
     // synthesis translate_off
     wire signed [17:0] input_l;
     assign input_l=operand_memory[28][17:0];
@@ -1029,14 +1125,27 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
             else if(busy)begin
              cycle<=cycle+1'b1;
              case(cycle)
+              20:d_write[0]<=history_sat;
+              21:d_write[1]<=history_sat;
+              71:r_write[0]<=history_sat;
+              73:r_write[1]<=history_sat;
+              75:r_write[2]<=history_sat;
+              77:r_write[3]<=history_sat;
+              85:r_tone[0]<=history_sat;
+              86:r_tone[1]<=history_sat;
+              97:result_l<=final_sat;
+              98:result_r<=final_sat;
+              default:begin end
+             endcase
+             case(cycle)
               1:begin ; input_saturations<=input_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
               2:begin ; input_saturations<=input_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
               6:begin ; end
               7:begin ; end
               12:begin ; end
               13:begin ; end
-              19:begin d_write[0]<=post_sat; history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
-              20:begin d_write[1]<=post_sat; history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
+              19:begin history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
+              20:begin history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
               21:begin c_send[0]<=post_value; end
               22:begin c_send[1]<=post_value; end
               23:begin ; end
@@ -1052,6 +1161,12 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
               47:begin ; end
               48:begin ; end
               50:begin c_phase<=post_value; end
+              53:begin ; end
+              54:begin ; end
+              55:begin ; end
+              56:begin ; end
+              57:begin ; end
+              58:begin ; end
               59:begin ; end
               60:begin ; end
               61:begin ; end
@@ -1059,30 +1174,37 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
               63:begin ; end
               64:begin ; end
               65:begin ; end
-              66:begin ; end
-              67:begin ; end
-              68:begin ; end
-              69:begin ; end
-              70:begin ; end
-              71:begin ; end
-              76:begin r_write[0]<=post_sat; history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
-              78:begin r_write[1]<=post_sat; history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
-              80:begin r_write[2]<=post_sat; history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
-              82:begin r_write[3]<=post_sat; history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
-              90:begin r_tone[0]<=post_sat; end
-              91:begin r_tone[1]<=post_sat; end
+              70:begin history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
+              72:begin history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
+              74:begin history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
+              76:begin history_saturations<=history_saturations+(post_value>48'sd131071||post_value< -48'sd131072); end
+              84:begin end
+              85:begin end
+              86:begin ; end
+              87:begin ; end
+              88:begin ; end
+              89:begin ; end
+              90:begin ; end
+              91:begin ; end
               92:begin ; end
               93:begin ; end
               94:begin ; end
               95:begin ; end
-              96:begin ; end
-              97:begin ; end
-              98:begin ; end
-              99:begin ; end
-              100:begin ; end
-              101:begin ; end
-              102:begin result_l<=sat32(post_value); output_saturations<=output_saturations+(post_value>48'sd2147483647||post_value< -48'sd2147483648); end
-              103:begin result_r<=sat32(post_value); output_saturations<=output_saturations+(post_value>48'sd2147483647||post_value< -48'sd2147483648); end
+              96:begin output_saturations<=output_saturations+(post_value>48'sd2147483647||post_value< -48'sd2147483648); end
+              97:begin output_saturations<=output_saturations+(post_value>48'sd2147483647||post_value< -48'sd2147483648); end
+              default:begin end
+             endcase
+             case(cycle)
+              20:d_write[0]<=history_sat;
+              21:d_write[1]<=history_sat;
+              71:r_write[0]<=history_sat;
+              73:r_write[1]<=history_sat;
+              75:r_write[2]<=history_sat;
+              77:r_write[3]<=history_sat;
+              85:r_tone[0]<=history_sat;
+              86:r_tone[1]<=history_sat;
+              97:result_l<=final_sat;
+              98:result_r<=final_sat;
               default:begin end
              endcase
              case(cycle)
@@ -1112,17 +1234,17 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
               36:begin ;;end
               37:begin ;;end
               38:begin ;;end
-              57:begin ;;if(r_read_valid[1:0]!=2'b11)protocol_error<=1;end
-              58:begin ;;if(r_read_valid[3:2]!=2'b11)protocol_error<=1;end
-              70:;
-              75,77,79,81:feedback_first<=mq;
-              88:;
-              89:;
+              51:begin ;;if(r_read_valid[1:0]!=2'b11)protocol_error<=1;end
+              52:begin ;;if(r_read_valid[3:2]!=2'b11)protocol_error<=1;end
+              64:;
+              69,71,73,75:feedback_first<=mq;
+              82:;
+              83:;
               default:begin end
              endcase
-             if(cycle==128)begin
+             if(cycle==98)begin
               if(job_version!=frame_version)protocol_error<=1;
-              out_l_q8<=result_l;out_r_q8<=result_r;out_valid<=1;
+              out_l_q8<=result_l;out_r_q8<=final_sat;out_valid<=1;
               frame_count<=frame_count+1'b1;busy<=0;
              end
             end
@@ -1157,37 +1279,37 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
       47:begin wide_check_a=$signed($signed(rf_read0))*48'sd1024;wide_check_b=mq;wide_check_shift=10;wide_check_sub=0;end
       48:begin wide_check_a=$signed($signed(rf_read0))*48'sd1024;wide_check_b=mq;wide_check_shift=10;wide_check_sub=0;end
       50:begin wide_check_a=$signed({1'b0,c_phase});wide_check_b=$signed({1'b0,controls[319:288]});wide_check_shift=0;wide_check_sub=0;end
-      59:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=0;end
-      60:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=1;end
-      61:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=0;end
-      62:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=1;end
-      63:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
-      64:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
-      65:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=1;end
-      66:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=1;end
-      67:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
-      68:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=1;end
-      69:begin wide_check_a=0;wide_check_b=$signed(rf_read0);wide_check_shift=1;wide_check_sub=0;end
-      70:begin wide_check_a=0;wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
-      71:begin wide_check_a=0;wide_check_b=$signed(rf_read0);wide_check_shift=1;wide_check_sub=1;end
+      53:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=0;end
+      54:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=1;end
+      55:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=0;end
+      56:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=0;wide_check_sub=1;end
+      57:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
+      58:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
+      59:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=1;end
+      60:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=1;end
+      61:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
+      62:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=1;end
+      63:begin wide_check_a=0;wide_check_b=$signed(rf_read0);wide_check_shift=1;wide_check_sub=0;end
+      64:begin wide_check_a=0;wide_check_b=$signed(rf_read1);wide_check_shift=1;wide_check_sub=0;end
+      65:begin wide_check_a=0;wide_check_b=$signed(rf_read0);wide_check_shift=1;wide_check_sub=1;end
+      70:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
+      72:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
+      74:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
       76:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
-      78:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
-      80:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
-      82:begin wide_check_a=feedback_first;wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
-      90:begin wide_check_a=$signed(rf_read1);wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
-      91:begin wide_check_a=$signed(rf_read1);wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
-      92:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
-      93:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
-      94:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
-      95:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
-      96:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
-      97:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
-      98:begin wide_check_a=$signed(rf_read1);wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
-      99:begin wide_check_a=$signed(rf_read1);wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
-      100:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=8+MIX_SHIFT;wide_check_sub=0;end
-      101:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=8+MIX_SHIFT;wide_check_sub=0;end
-      102:begin wide_check_a=dry_l;wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
-      103:begin wide_check_a=dry_r;wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
+      84:begin wide_check_a=$signed(rf_read1);wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
+      85:begin wide_check_a=$signed(rf_read1);wide_check_b=mq;wide_check_shift=15;wide_check_sub=0;end
+      86:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
+      87:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
+      88:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
+      89:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
+      90:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
+      91:begin wide_check_a=0;wide_check_b=mq;wide_check_shift=2;wide_check_sub=0;end
+      92:begin wide_check_a=$signed(rf_read1);wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
+      93:begin wide_check_a=$signed(rf_read1);wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
+      94:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=8+MIX_SHIFT;wide_check_sub=0;end
+      95:begin wide_check_a=$signed(rf_read0);wide_check_b=$signed(rf_read1);wide_check_shift=8+MIX_SHIFT;wide_check_sub=0;end
+      96:begin wide_check_a=dry_l;wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
+      97:begin wide_check_a=dry_r;wide_check_b=$signed(rf_read0);wide_check_shift=0;wide_check_sub=0;end
       default:begin end
      endcase
     end

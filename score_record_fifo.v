@@ -1,17 +1,20 @@
 // 4096-byte physical organization: one 1024x32 RAM, four words/record.
 // Partial groups remain hidden until their END_GROUP record is stored.
 module score_record_fifo(
- input wire clk,rst,clear,input wire s_valid,output wire s_ready,input wire [127:0] s_record,
+ input wire clk,rst,clear,input wire raw_mode,input wire [63:0] raw_time,input wire s_valid,output wire s_ready,input wire [127:0] s_record,
  output reg m_valid,input wire m_ready,output reg [127:0] m_record,
  output wire [8:0] occupancy,visible_records,output reg [31:0] inserted,consumed,
  output reg preview_valid,output wire [63:0] preview_time,output wire [127:0] preview_notes
 );
+ reg [31:0] ram_read_data;
+ wire raw_enabled=(raw_mode===1'b1);
+ reg [3:0] peek_raw_left;reg [1:0] peek_raw_owner;
  wire r54_equal_0;
 
  reg [31:0] memory[0:1023];
  reg [31:0] committed;reg [8:0] open_count;
  reg [7:0] wr_slot,rd_slot;reg writing;reg [1:0] wi;reg [127:0] write_record;
- reg [2:0] read_state;reg [1:0] ri;reg [31:0] ram_read_data;
+ reg [2:0] read_state;reg [1:0] ri;
   reg [3:0] peek_state;reg [7:0] peek_slot;reg [8:0] peek_count;
   reg [127:0] peek_notes;reg [63:0] peek_time;reg peek_group_first;
  // Preview construction stops while valid. The builder itself is the
@@ -25,6 +28,11 @@ module score_record_fifo(
    (peek_state==1||peek_state==3||peek_state==5||peek_state==7);
   wire [1:0] peek_word=(peek_state==1)?2'd0:(peek_state==3)?2'd1:(peek_state==5)?2'd2:2'd3;
   wire [9:0] ram_read_addr=peek_read?{peek_slot,peek_word}:{rd_slot,ri};
+ // Raw and legacy preview share one 128-bit note bitmap decoder/write port.
+ wire [6:0] peek_note_index=raw_enabled?ram_read_data[15:9]:ram_read_data[22:16];
+ wire peek_note_write=m_valid&&!m_ready&&!preview_valid&&
+  (raw_enabled?(peek_state==2&&peek_raw_left!=0&&peek_raw_owner==1&&ram_read_data[27:24]==1):
+   (peek_state==6&&ram_read_data[7:0]==1&&ram_read_data[23:16]<128));
  always @(posedge clk)ram_read_data<=memory[ram_read_addr];
  assign occupancy=inserted-consumed;
  assign visible_records=committed-consumed;
@@ -33,7 +41,7 @@ module score_record_fifo(
   if(rst||clear)begin
    wr_slot<=0;rd_slot<=0;writing<=0;wi<=0;read_state<=0;ri<=0;
    m_valid<=0;inserted<=0;consumed<=0;committed<=0;open_count<=0;m_record<=0;write_record<=0;
-    preview_valid<=0;peek_state<=0;peek_notes<=0;peek_slot<=0;peek_count<=0;peek_time<=0;peek_group_first<=1;
+    peek_raw_left<=0;peek_raw_owner<=0;preview_valid<=0;peek_state<=0;peek_notes<=0;peek_slot<=0;peek_count<=0;peek_time<=0;peek_group_first<=1;
   end else begin
    if(s_valid&&s_ready)begin writing<=1;wi<=0;write_record<=s_record;end
    if(writing)begin
@@ -48,15 +56,26 @@ module score_record_fifo(
    // Borrow the otherwise idle read port while the front record is held.
    // Consumption cancels preview; it never delays a scheduler read.
    if(m_valid&&!m_ready&&!preview_valid)case(peek_state)
-     0:begin peek_slot<=rd_slot;peek_count<=0;peek_notes<=0;peek_group_first<=1;peek_state<=1;end
+     0:begin peek_slot<=rd_slot;peek_count<=0;peek_notes<=0;peek_group_first<=1;peek_raw_left<=0;peek_raw_owner<=0;peek_state<=1;end
      1:begin peek_state<=2;end
-     2:begin if(peek_group_first)peek_time[31:0]<=ram_read_data;peek_state<=3;end
+     2:begin
+      if(raw_enabled)begin
+       if(peek_raw_left==0&&peek_group_first)peek_time<={32'd0,ram_read_data};
+      end else if(peek_group_first)peek_time[31:0]<=ram_read_data;
+      peek_state<=3;
+     end
      3:begin peek_state<=4;end
-     4:begin if(peek_group_first)peek_time[63:32]<=ram_read_data;peek_state<=5;end
+     4:begin if(!raw_enabled&&peek_group_first)peek_time[63:32]<=ram_read_data;peek_state<=5;end
      5:begin peek_state<=6;end
-     6:begin if(ram_read_data[7:0]==1&&ram_read_data[23:16]<128)peek_notes[ram_read_data[22:16]]<=1;peek_state<=7;end
+     6:begin peek_state<=7;end
      7:begin peek_state<=8;end
      8:begin
+      if(raw_enabled)begin
+       if(peek_raw_left!=0)peek_raw_left<=peek_raw_left-1'b1;
+       else if(ram_read_data[31:16]==16'h5248)begin
+        peek_raw_left<=ram_read_data[14:11];peek_raw_owner<=ram_read_data[7:6];
+       end
+      end
       peek_group_first<=ram_read_data[0];
       if(ram_read_data[0]&&peek_notes!=0)begin
        preview_valid<=1;peek_state<=0;
@@ -70,6 +89,7 @@ module score_record_fifo(
       peek_slot<=peek_slot+1'b1;peek_count<=peek_count+1'b1;peek_state<=1;
      end
    endcase
+   if(peek_note_write)peek_notes[peek_note_index]<=1;
    case(read_state)
     0: if(!m_valid&&!r54_equal_0)begin ri<=0;read_state<=1;end
     1: begin read_state<=2;end

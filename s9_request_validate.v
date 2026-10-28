@@ -30,6 +30,7 @@ module s9_request_validate(
   end else if(channel==1)begin
    case(op)
     `S9_OP_HELLO,`S9_OP_KEEPALIVE,`S9_OP_DISCONNECT:begin legal=n==0;error_code=-1;end
+    8'd41:legal=n==0;
     `S9_OP_QUERY_RESULT:legal=n==5&&p[7:0]<=2&&p[39:8]!=0;
     `S9_OP_BARRIER:legal=n==8&&p[7:0]<=1&&p[15:8]>=3&&p[15:8]<=5&&p[31:16]==0&&p[63:32]!=0;
     `S9_OP_TIMBRE:legal=n==1&&p[7:0]<=`S9_MAX_TIMBRE;

@@ -37,32 +37,47 @@ module fx_frame_control_scheduled(
    default:reset_current=0;
   endcase end
  endfunction
- wire signed [19:0] target=context_valid[prep_slot]?context_word[19:0]:reset_current(prep_slot);
- wire signed [10:0] increment=context_valid[prep_slot]?context_word[30:20]:32'd0;
- wire [9:0] residue=context_valid[prep_slot]?context_word[40:31]:11'd0;
- wire [9:0] error_acc=context_valid[prep_slot]?context_word[50:41]:11'd0;
- wire [9:0] remaining=context_valid[prep_slot]?context_word[60:51]:11'd0;
- wire sign_down=context_valid[prep_slot]?context_word[61]:1'b0;
- wire signed [19:0] old_current=current[prep_slot];
- reg signed [31:0] desired;
+ reg[3:0] context_slot_q;reg context_use_q,context_ready_q;
+ reg[63:0] context_q;reg signed[19:0] current_q;reg signed[31:0] desired_q;
+ reg signed[31:0] selected_desired;
+ always @(posedge clk)begin
+  if(rst)begin context_slot_q<=0;context_use_q<=0;context_ready_q<=0;context_q<=0;current_q<=0;desired_q<=0;end
+  else begin
+   context_ready_q<=prep_busy;
+   if(prep_busy)begin
+    context_slot_q<=prep_slot;context_use_q<=context_valid[prep_slot];
+    context_q<=context_word;current_q<=current[prep_slot];desired_q<=selected_desired;
+   end
+  end
+ end
+ wire signed [19:0] target=context_use_q?context_q[19:0]:reset_current(context_slot_q);
+ wire signed [10:0] increment=context_use_q?context_q[30:20]:32'd0;
+ wire [9:0] residue=context_use_q?context_q[40:31]:11'd0;
+ wire [9:0] error_acc=context_use_q?context_q[50:41]:11'd0;
+ wire [9:0] remaining=context_use_q?context_q[60:51]:11'd0;
+ wire sign_down=context_use_q?context_q[61]:1'b0;
+ wire signed [19:0] old_current=current_q;
+ wire signed[31:0] desired=desired_q;
  reg signed [19:0] delta,next_v;
  reg signed [10:0] step_v;
  reg [19:0] magnitude;
  reg [10:0] err_v;
  reg down_v;
- wire [10:0] ramp_length=prep_slot==9?11'd1024:11'd64;
- wire [31:0] ramp_mask=prep_slot==9?32'd1023:32'd63;
+ wire [10:0] ramp_length=context_slot_q==9?11'd1024:11'd64;
+ wire [31:0] ramp_mask=context_slot_q==9?32'd1023:32'd63;
  always @*begin
-  if(prep_slot<3)desired=(!config_data[3]&&config_data[prep_slot]&&!clearing[prep_slot]&&!clear_request[prep_slot])?32768:0;
-  else if(prep_slot<6)desired=(!config_data[3]&&!clearing[prep_slot-3]&&!clear_request[prep_slot-3])?config_data[(prep_slot+5)*32+:32]:0;
+  if(prep_slot<3)selected_desired=(!config_data[3]&&config_data[prep_slot]&&!clearing[prep_slot]&&!clear_request[prep_slot])?32768:0;
+  else if(prep_slot<6)selected_desired=(!config_data[3]&&!clearing[prep_slot-3]&&!clear_request[prep_slot-3])?config_data[(prep_slot+5)*32+:32]:0;
   else case(prep_slot)
-   6:desired=config_data[95:64];7:desired=config_data[223:192];
-   8:desired=config_data[255:224];default:desired=config_data[191:160];
+   6:selected_desired=config_data[95:64];7:selected_desired=config_data[223:192];
+   8:selected_desired=config_data[255:224];default:selected_desired=config_data[191:160];
   endcase
+ end
+ always @*begin
   next_context={2'd0,sign_down,remaining,error_acc,residue,increment,target};
   next_current=old_current;
   delta=desired-old_current;down_v=delta<0;magnitude=down_v?-delta:delta;
-  step_v=prep_slot==9?$signed(magnitude>>10):$signed(magnitude>>6);
+  step_v=context_slot_q==9?$signed(magnitude>>10):$signed(magnitude>>6);
   if(down_v)step_v=-step_v;
   err_v={1'b0,error_acc}+{1'b0,residue};
   next_v=old_current+increment;
@@ -78,7 +93,7 @@ module fx_frame_control_scheduled(
   end
  end
  for(genvar n=0;n<16;n=n+1)begin: context_memory
-  RAM16SDP4 memory(.CLK(clk),.WRE(!rst&&prep_busy),.WAD(prep_slot),.RAD(prep_slot),
+  RAM16SDP4 memory(.CLK(clk),.WRE(!rst&&context_ready_q),.WAD(context_slot_q),.RAD(prep_slot),
    .DI(next_context[n*4+:4]),.DO(context_word[n*4+:4]));
  end
  for(genvar s=0;s<10;s=s+1)begin: states
@@ -86,14 +101,14 @@ module fx_frame_control_scheduled(
   always @(posedge clk)begin
    if(rst)current[s]<=reset_current(s);
    else if(start)current[s]<=prepared_current[s];
-   if(!rst&&prep_busy&&prep_slot==s)prepared_current[s]<=next_current;
+   if(!rst&&context_ready_q&&context_slot_q==s)prepared_current[s]<=next_current;
   end
  end
  // synthesis translate_off
- always @(posedge clk)if(!rst&&prep_busy)begin
+ always @(posedge clk)if(!rst&&context_ready_q)begin
   if(desired<0 || desired>447392)$fatal(1,"FX_CONTROL_TARGET_RANGE");
-  if($signed(current[prep_slot])<0 || $signed(next_current)<0)$fatal(1,"FX_CONTROL_CURRENT_RANGE");
-  if($signed(step_v)!=(down_v?-$signed(prep_slot==9?(magnitude>>10):(magnitude>>6)):$signed(prep_slot==9?(magnitude>>10):(magnitude>>6))))$fatal(1,"FX_CONTROL_STEP_RANGE");
+  if($signed(current_q)<0 || $signed(next_current)<0)$fatal(1,"FX_CONTROL_CURRENT_RANGE");
+  if($signed(step_v)!=(down_v?-$signed(context_slot_q==9?(magnitude>>10):(magnitude>>6)):$signed(context_slot_q==9?(magnitude>>10):(magnitude>>6))))$fatal(1,"FX_CONTROL_STEP_RANGE");
  end
  // synthesis translate_on
  assign effective_bypass=current[3]==0&&current[4]==0&&current[5]==0;
@@ -103,9 +118,12 @@ module fx_frame_control_scheduled(
   else begin
    if(sample_tick)begin prep_slot<=0;prep_busy<=1;prepared<=0;end
    if(prep_busy)begin
-    context_valid[prep_slot]<=1;
-    if(prep_slot==9)begin prep_busy<=0;prepared<=1;end
+    if(prep_slot==9)begin prep_busy<=0;end
     else prep_slot<=prep_slot+1'b1;
+   end
+   if(context_ready_q)begin
+    context_valid[context_slot_q]<=1;
+    if(context_slot_q==9)prepared<=1;
    end
    if(start)begin
     prepared<=0;
@@ -126,10 +144,10 @@ module fx_frame_control_scheduled(
   else begin
    capture_config<=sample_tick;
    if(capture_config)begin preparing_config<=config_data;preparing_clear<=clear_request;end
-   if((prep_busy&&!capture_config)||prepared)
+   if((prep_busy&&!capture_config)||context_ready_q||prepared)
     if({config_data,clear_request}!={preparing_config,preparing_clear})$fatal(1,"FX_PREP_CONFIG_CHANGED");
-   if(sample_tick&&(prep_busy||prepared))$fatal(1,"FX_PREP_FRAME_OVERLAP");
-   if(start&&(!prepared||prep_busy||sample_tick))$fatal(1,"FX_PREP_DEADLINE");
+   if(sample_tick&&(prep_busy||context_ready_q||prepared))$fatal(1,"FX_PREP_FRAME_OVERLAP");
+   if(start&&(!prepared||prep_busy||context_ready_q||sample_tick))$fatal(1,"FX_PREP_DEADLINE");
   end
  end
  // synthesis translate_on

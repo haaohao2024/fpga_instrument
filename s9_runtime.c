@@ -2,7 +2,12 @@
 /* Three owners: protocol owns session/router, file owns every FatFs call,
  * bus owns every SPI operation. BLE callbacks only touch bounded mailboxes. */
 #include "s9_runtime.h"
+#include "live_loop_runtime.h"
+#include "ensemble.h"
+#include "live_loop_wire.h"
 #include "s9_protocol.h"
+#include "link_diag.h"
+#include "sd_spi.h"
 #include "s9_router.h"
 #include "s9_ble_queue.h"
 #include "s9_gatt.h"
@@ -21,6 +26,10 @@
 #include "s10_runtime.h"
 #endif
 #include <string.h>
+#include "diag_trace.h"
+#include "link_diag.h"
+#include "link_startup.h"
+volatile int r76_bt_phase,r76_clock_result=9999,r76_gatt_result=9999,r76_adv_result=9999,r76_media_result=9999;
 typedef struct {uint32_t generation;uint16_t length;uint8_t bytes[548];} file_command;
 typedef struct {uint32_t generation;uint8_t session[16],result[36];} file_result;
 typedef struct {uint32_t generation;uint16_t length;uint8_t bytes[548];} record_notice;
@@ -43,6 +52,10 @@ static uint32_t file_quota_at,file_quota=500000;
 static uint8_t record_session[16];static uint32_t record_generation,record_request_sequence,last_record_info_crc;
 typedef struct {uint32_t generation,sequence,target;uint8_t session[16],pending;} record_result_pending;
 static record_result_pending record_results[2];
+/* Phone GATT permits up to 3s for an operation. This peer grace is separate
+ * from the FPGA 500ms lease, which the bus task continues to refresh at100ms.
+ * A real LE disconnect still invokes immediate session/source cleanup. */
+#define PHONE_PEER_GRACE_MS 3000u
 static uint32_t now_ms(void){return (uint32_t)(hal_time_us()/1000);}
 static uint32_t connected(void){
  uint32_t gen=0;taskENTER_CRITICAL();
@@ -52,7 +65,7 @@ static uint32_t connected(void){
 static void disconnected(uint32_t gen){
  taskENTER_CRITICAL();if(gen==connected_generation){connected_generation=0;retired_generation=gen;callback_ready=0;upload_abort=1;s9_ble_queue_discard(&received,gen);}taskEXIT_CRITICAL();
  if(file_busy)s9_tasks_bus_abort_disk(1);
- if(s11_service_active())(void)s11_service_stop(s11_service_statistics()->recording_id);
+ if(s11_service_active()&&!s11_service_ram_owned())(void)s11_service_stop(s11_service_statistics()->recording_id);
 }
 static int receive(uint32_t gen,uint8_t ch,const uint8_t *data,unsigned n){
  int r;taskENTER_CRITICAL();
@@ -62,11 +75,12 @@ static int receive(uint32_t gen,uint8_t ch,const uint8_t *data,unsigned n){
 static void snapshot(uint8_t out[64]){taskENTER_CRITICAL();memcpy(out,info,64);taskEXIT_CRITICAL();}
 static const s9_gatt_hooks hooks={connected,disconnected,receive,snapshot};
 static void bluetooth_ready(int error){
- stack_ready=error?-1:(s9_gatt_init(&hooks)?-1:1);
+ r76_gatt_result=error?error:s9_gatt_init(&hooks);
+ stack_ready=r76_gatt_result?-1:1;
 #ifdef S10_MEDIA_RUNTIME
  /* Same successful bt_enable, no second controller/Host initialization.
   * A media setup error does not tear down the existing BLE controls. */
- if(stack_ready==1)(void)s10_runtime_bluetooth_ready();
+ /* BR/EDR activation is owned by protocol_task after BLE advertising. */
 #endif
 }
 static int storage_cancelled(void *unused){(void)unused;return upload_abort||current_file.generation!=connected_generation;}
@@ -89,6 +103,7 @@ static int record_notice_send(uint32_t generation,const uint8_t sid[16],uint32_t
  return xQueueSend(record_notices,&n,0)==pdTRUE?0:S9_E_BUSY;
 }
 static void record_file_step(void){
+ if(s11_service_ram_owned())return;
  const s11_storage_stats *before=s11_storage_statistics();uint32_t old_written=before->written_pcm+before->written_event;
  const s11_service_stats *pending=s11_service_statistics();
  (void)s11_service_card_progress(hal_time_us(),0,pending->pcm_buffered+pending->event_buffered);
@@ -120,13 +135,16 @@ static void recorder_command(const file_command *c){
   if(result_slot==2){file_reply(c,7,S9_E_BUSY,0);return;}
  }
  if(op==S11_APP_START){
-  if(s9_storage_statistics()->active||s11_service_active())r=S9_E_BUSY;
+  int loop_claim=ll_runtime_shared_enter(LL_SHARED_RECORD);
+  if(loop_claim)r=loop_claim;
+  else if(s9_storage_statistics()->active||s11_service_active())r=S9_E_BUSY;
   else if((r=s11_service_can_start(id,p[8]))!=0){}
 #ifdef S10_MEDIA_RUNTIME
   else r=s10_runtime_record_start(id,p[8]);
 #else
   else if((r=s11_storage_prepare(id,p[8]))==0){taskENTER_CRITICAL();r=s11_service_start(id,p[8]);taskEXIT_CRITICAL();}
 #endif
+  if(!loop_claim)ll_runtime_shared_leave(LL_SHARED_RECORD);
  }else if(op==S11_APP_STOP){taskENTER_CRITICAL();r=s11_service_stop(id);taskEXIT_CRITICAL();}
  else if(op==S11_APP_STATUS){if(id!=s11_storage_statistics()->recording_id)r=s11_storage_select(id);}
  else if(op==S11_APP_DOWNLOAD_CANCEL){if(id!=s11_storage_statistics()->recording_id)r=S9_E_STALE;}
@@ -147,7 +165,13 @@ static void recorder_command(const file_command *c){
 #endif
   else r=s11_storage_export(id);
  }else r=S9_E_FORMAT;
- if(r){file_reply(c,7,r,0);return;}
+ if(r){
+#ifdef ENSEMBLE_CAPTURE_DIAG
+  const sd_diagnostics *d=sd_get_diagnostics();
+  link_diag_event(22,op,(uint32_t)r,d->io_errors);
+  link_diag_event(23,d->deadline_errors,d->max_selected_us,d->reads);
+#endif
+  file_reply(c,7,r,0);return;}
  if(op==S11_APP_START||op==S11_APP_STOP){memcpy(record_session,c->bytes+8,16);record_generation=c->generation;record_request_sequence=s9_get32(c->bytes+24);record_result_pending *q=&record_results[result_slot];q->generation=record_generation;q->sequence=record_request_sequence;q->target=s11_service_command_target();memcpy(q->session,record_session,16);q->pending=1;last_record_info_crc=0;file_reply(c,2,0,0);}
  else{file_reply(c,3,0,0);uint8_t payload[72];s11_service_info(payload);(void)record_notice_send(c->generation,c->bytes+8,s9_get32(c->bytes+24),S11_APP_RECORD_INFO,payload,sizeof payload);}
 }
@@ -172,7 +196,7 @@ static void file_task(void *unused){
   }
   const s11_service_stats *record_stats=s11_service_statistics();
   int urgent=player.pending&&player.command!=1;
-  if(s11_score_slot(now_ms(),last_record_score,s11_service_active(),record_stats->pcm_buffered+record_stats->event_buffered,urgent)){
+  if(s11_score_slot(now_ms(),last_record_score,s11_service_active()&&!s11_service_ram_owned(),record_stats->pcm_buffered+record_stats->event_buffered,urgent)){
    s9_player_step(&player,now_ms());last_record_score=now_ms();
   }
   int done;
@@ -241,6 +265,9 @@ static int local_result(const s9_message *m,unsigned phase,int error){
 static int dispatch(void){
  unsigned slot,n;s9_message m;const uint8_t *raw;
  if(!s9_router_peek(&router,&slot,&m,&raw,&n))return 0;
+ if(m.channel==1&&((m.opcode>=LL_APP_BEGIN&&m.opcode<=LL_APP_PLAY)||(m.opcode>=ENS_START&&m.opcode<=ENS_STATUS))){
+  int r=ll_runtime_request(&m);s9_router_sent(&router,slot);if(r)local_result(&m,7,r);return 1;
+ }
  if(m.channel==1&&m.opcode==S9_OP_KEEPALIVE){
   s9_router_sent(&router,slot);local_result(&m,3,0);return 1;
  }
@@ -263,28 +290,44 @@ static int dispatch(void){
 }
 static void protocol_task(void *unused){
  (void)unused;
- btble_controller_init(configMAX_PRIORITIES-1);hci_driver_init();bt_enable(bluetooth_ready);
+ r76_bt_phase=1;btble_controller_init(configMAX_PRIORITIES-1);r76_bt_phase=2;
+ r76_clock_result=diag_fix_26m_clock();r76_bt_phase=3;
+ if(r76_clock_result<0){stack_ready=-1;vTaskDelete(NULL);return;}
+ r76_bt_phase=4;hci_driver_init();r76_bt_phase=5;bt_enable(bluetooth_ready);r76_bt_phase=6;
  uint32_t active=0,last_peer=0;unsigned link_state=0,advertising=0;
+ link_startup_gate startup={0};
  uint8_t session[16]={0},status[64],last_result[36]={0},notice[548],fragment[244];unsigned notice_size=0,notice_offset=0;
  for(;;){
   uint32_t now=now_ms();
 #ifdef S10_MEDIA_RUNTIME
-  if(stack_ready==1)(void)s10_runtime_bluetooth_ready();
+  if(stack_ready==1 && r76_adv_result==0)r76_media_result=s10_runtime_bluetooth_ready();
 #endif
   uint32_t elapsed=now-file_quota_at;file_quota_at=now;
   if(elapsed>=1000)file_quota=500000;
   else {file_quota+=elapsed*16384u;if(file_quota>500000)file_quota=500000;}
   if(retired_generation){
    taskENTER_CRITICAL();retired_generation=0;taskEXIT_CRITICAL();
-   s9_router_disconnect(&router);s9_tasks_bus_close();notice_size=0;active=0;advertising=0;callback_ready=0;
+   ll_runtime_disconnect();s9_router_disconnect(&router);s9_tasks_bus_close();notice_size=0;active=0;advertising=0;callback_ready=0;link_startup_reset(&startup,0,now);
   }
   if(connected_generation&&connected_generation!=active){
    active=connected_generation;s9_put64(session,boot_identity);s9_put64(session+8,active);
    s9_router_reset(&router,session,active);memset(last_result,0,36);notice_size=0;last_peer=now;
-   s9_tasks_bus_peer_deadline(now+5000);s9_tasks_bus_open(session);link_state=1;
+   link_state=0;link_startup_reset(&startup,active,now);
+  }
+  if(active && !startup.opened){
+   int gate=link_startup_poll(&startup,active,now,s9_gatt_transport_ready(active));
+   if(gate<0){link_diag_event(LD_INIT_TIMEOUT,active,now,startup.started);s9_gatt_disconnect();}
+   else if(gate>0){
+    s9_tasks_bus_peer_deadline(now+5000);
+    if(!s9_tasks_bus_open(session)){
+     startup.opened=1;last_peer=now;link_state=1;
+     link_diag_event(LD_OPEN,active,now,now+5000);
+    }
+   }
   }
   while(s9_tasks_bus_status(status)){
    if(memcmp(status+8,session,16))continue;
+   if(link_state!=status[5])link_diag_event(LD_BUS_STATE,active,link_state,status[5]);
    link_state=status[5];
    if(active&&link_state==2){s9_router_ready(&router,1);callback_ready=1;}
    else if(active&&router.ready){callback_ready=0;s9_gatt_disconnect();}
@@ -305,7 +348,7 @@ static void protocol_task(void *unused){
    }
   }
   if(stack_ready==1&&s9_tasks_bus_initialized()&&!s9_gatt_connected()&&!active&&!file_busy&&!link_state&&!advertising){
-   advertise_allowed=1;if(!s9_gatt_advertise())advertising=1;
+   advertise_allowed=1;r76_adv_result=s9_gatt_advertise();if(!r76_adv_result)advertising=1;
   }
   /* The router cannot consume a fragment while its transient error awaits
    * notification. Leave that fragment in the bounded callback queue; GATT
@@ -314,14 +357,28 @@ static void protocol_task(void *unused){
   if(!router.error_dirty){taskENTER_CRITICAL();got=s9_ble_queue_pop(&received,&rx);taskEXIT_CRITICAL();}
   if(got==S9_COMPLETE){
    int r=s9_router_fragment(&router,rx.generation,rx.channel,rx.bytes,rx.length,now);
-   if(r>=0){last_peer=now;s9_tasks_bus_peer_deadline(now+500);}
+   if(r>=0){last_peer=now;s9_tasks_bus_peer_deadline(now+PHONE_PEER_GRACE_MS);}
   }
-  if(active&&router.ready&&(uint32_t)(now-last_peer)>5000){s9_tasks_bus_close();s9_gatt_disconnect();}
+  if(active&&router.ready&&(uint32_t)(now-last_peer)>5000){link_diag_event(LD_PEER_TIMEOUT,active,now,last_peer);s9_tasks_bus_close();s9_gatt_disconnect();}
   file_result fr;
   while(xQueueReceive(file_results,&fr,0)==pdTRUE)(void)s9_router_result(&router,fr.generation,fr.session,fr.result);
+  for(unsigned i=0;i<4;i++)if(!ll_runtime_step())break;
+  uint8_t loop_result[36];while(ll_runtime_result(loop_result))if(active)(void)s9_router_result(&router,active,session,loop_result);
   s9_router_control_step(&router);
   for(unsigned i=0;i<3;i++)dispatch();
   if(!notice_size){int n=s9_router_notice(&router,notice,sizeof notice);if(n>0){notice_size=(unsigned)n;notice_offset=0;}else{record_notice rn;if(xQueueReceive(record_notices,&rn,0)==pdTRUE&&rn.generation==active&&router.notification_sequence){memcpy(notice,rn.bytes,rn.length);s9_put32(notice+24,router.notification_sequence++);s9_put32(notice+rn.length-4,s9_crc32(notice,rn.length-4));notice_size=rn.length;notice_offset=0;}}}
+  if(!notice_size&&active&&router.ready&&router.notification_sequence){
+   uint8_t loop_info[64];if(ll_runtime_notice(loop_info)){
+    int n=s9_encode(notice,sizeof notice,3,LL_APP_INFO,session,router.notification_sequence++,loop_info,64);
+    if(n>0){notice_size=(unsigned)n;notice_offset=0;}
+   }
+  }
+  if(!notice_size&&active&&router.ready&&router.notification_sequence){
+   uint8_t ensemble_info[64];if(ll_runtime_ensemble_notice(ensemble_info)){
+    int n=s9_encode(notice,sizeof notice,3,ENS_INFO,session,router.notification_sequence++,ensemble_info,64);
+    if(n>0){notice_size=(unsigned)n;notice_offset=0;}
+   }
+  }
   if(notice_size&&active){
    unsigned mtu=s9_gatt_mtu(),n=notice_size-notice_offset;if(n>mtu-11)n=mtu-11;
    s9_put32(fragment,s9_get32(notice+24));s9_put16(fragment+4,(uint16_t)notice_offset);s9_put16(fragment+6,(uint16_t)n);memcpy(fragment+8,notice+notice_offset,n);
@@ -335,6 +392,7 @@ int s9_runtime_start(uint64_t nonce,uint64_t epoch){
 #ifdef S10_MEDIA_RUNTIME
  if(s10_runtime_prepare())return -1;
 #endif
+ ll_runtime_init();
  boot_identity=nonce;s9_ble_queue_init(&received);s9_player_init(&player,epoch);
  file_commands=xQueueCreate(2,sizeof(file_command));file_results=xQueueCreate(8,sizeof(file_result));record_notices=xQueueCreate(2,sizeof(record_notice));
  if(!file_commands||!file_results||!record_notices||s9_tasks_bus_init())return -1;

@@ -2,6 +2,13 @@
 #include "s11_storage.h"
 #include "s9_protocol.h"
 #include <string.h>
+#ifdef ENSEMBLE_CAPTURE_DIAG
+#include "link_diag.h"
+#define CAP_DIAG(k,a,b,c) link_diag_event(k,(uint32_t)(a),(uint32_t)(b),(uint32_t)(c))
+#else
+#define CAP_DIAG(k,a,b,c) ((void)0)
+#endif
+
 static uint8_t pcm[32768],events[4096];
 static uint32_t pcm_write,pcm_read,event_write,event_read;
 static uint64_t pcm_first;
@@ -15,18 +22,36 @@ static uint32_t next_block[2];
 static uint8_t sent_ack_kind;static uint32_t sent_ack_sequence;
 static uint64_t last_record_id;
 static uint8_t stop_after_start;
+static volatile uint8_t ram_sink;
 static uint32_t rolling(uint64_t now,int sd);
 static uint32_t pcm_pending(void){return __atomic_load_n(&pcm_write,__ATOMIC_ACQUIRE)-__atomic_load_n(&pcm_read,__ATOMIC_ACQUIRE);}
 static uint32_t event_pending(void){return __atomic_load_n(&event_write,__ATOMIC_ACQUIRE)-__atomic_load_n(&event_read,__ATOMIC_ACQUIRE);}
-void s11_service_init(void){memset(&stats,0,sizeof stats);memset(history,0,sizeof history);memset(next_block,0,sizeof next_block);last_record_id=0;pcm_write=pcm_read=event_write=event_read=0;sd_active=0;backlog_started=0;card_completed=0;sent_ack_kind=0;sent_ack_sequence=0;stop_after_start=0;}
+void s11_service_init(void){memset(&stats,0,sizeof stats);memset(history,0,sizeof history);memset(next_block,0,sizeof next_block);last_record_id=0;pcm_write=pcm_read=event_write=event_read=0;sd_active=0;backlog_started=0;card_completed=0;sent_ack_kind=0;sent_ack_sequence=0;stop_after_start=0;ram_sink=0;}
 const s11_service_stats *s11_service_statistics(void){return &stats;}
 int s11_service_active(void){return stats.active;}
 int s11_service_can_start(uint64_t id,unsigned mask){
  if(!id||!mask||(mask&~3u))return S9_E_RANGE;
- if(stats.active||pcm_pending()||event_pending())return S9_E_BUSY;
+ if(ram_sink||stats.active||pcm_pending()||event_pending())return S9_E_BUSY;
  if(id<=last_record_id)return S9_E_STALE;
  if(stats.command_sequence==UINT32_MAX)return S9_E_RANGE;
  return 0;
+}
+int s11_service_ram_owned(void){return ram_sink;}
+uint64_t s11_service_next_id(void){return last_record_id==UINT64_MAX?0:last_record_id+1;}
+int s11_service_ram_start(uint64_t id){int r=s11_service_start(id,2);if(!r)ram_sink=1;return r;}
+int s11_service_ram_caught_up(void){return ram_sink&&!pcm_pending()&&!event_pending()&&!stats.command&&!stats.ack_pending&&!stats.error;}
+unsigned s11_service_ram_pop(uint8_t *out,unsigned max_cells){
+ if(!ram_sink||!out)return 0;
+ unsigned n=event_pending()/32;if(n>max_cells)n=max_cells;uint32_t head=event_read;
+ for(unsigned i=0;i<n*32;i++)out[i]=events[(head+i)%sizeof events];
+ __atomic_store_n(&event_read,head+n*32,__ATOMIC_RELEASE);stats.stored_cells+=n;stats.event_buffered=(uint16_t)event_pending();
+ return n;
+}
+int s11_service_ram_release(void){
+ if(!ram_sink)return 0;
+ if(pcm_pending()||event_pending()||stats.command||stats.ack_pending||
+   (stats.wire_state!=S11_CLOSED&&stats.wire_state!=S11_INCOMPLETE&&stats.wire_state!=S11_ERROR))return S9_E_BUSY;
+ stats.active=0;ram_sink=0;return 0;
 }
 int s11_service_start(uint64_t id,unsigned mask){
  int r=s11_service_can_start(id,mask);if(r)return r;
@@ -40,7 +65,7 @@ int s11_service_stop(uint64_t id){if(id!=stats.recording_id)return S9_E_STALE;if
  stats.command_sequence++;stats.command=S11_REC_STOP;return 0;
 }
 uint32_t s11_service_command_target(void){return stats.command_sequence+(stop_after_start==1);}
-void s11_service_fail(int reason,uint64_t missing){if(!stats.error){stats.error=(uint8_t)(reason?reason:S11_E_SERVICE);stats.missing_frame=missing;stats.service_violations++;(void)s11_service_stop(stats.recording_id);}}
+void s11_service_fail(int reason,uint64_t missing){if(!stats.error){CAP_DIAG(18,reason,stats.wire_state,stats.received_cells);stats.error=(uint8_t)(reason?reason:S11_E_SERVICE);stats.missing_frame=missing;stats.service_violations++;(void)s11_service_stop(stats.recording_id);}}
 unsigned s11_service_request_mode(uint8_t p[S11_WIRE_BYTES],const uint8_t *media,unsigned length,unsigned reverse_capacity){
  memset(p,0,S11_WIRE_BYTES);memcpy(p,"S11P",4);p[4]=1;
  if(media&&length>=36){memcpy(p+5,media+5,27);unsigned n=s9_get16(media+6);if(media[5]==S11_MEDIA_DATA&&n<=128&&length>=36+4*n)memcpy(p+64,media+32,4*n);}
@@ -58,7 +83,7 @@ int s11_service_response_bytes(const uint8_t *p,unsigned length){
  if(stats.last_command==stats.command_sequence)stats.command=0;
  if(stop_after_start==1&&!stats.command){stop_after_start=2;stats.command_sequence++;stats.command=S11_REC_STOP;}
  unsigned first_fault=(p[7]&2)&&!stats.error;
- if(first_fault){stats.error=(uint8_t)s9_get32(p+52);if(!stats.error)stats.error=S11_E_STORAGE;}
+ if(first_fault){CAP_DIAG(19,s9_get32(p+52),p[6],s9_get32(p+40));stats.error=(uint8_t)s9_get32(p+52);if(!stats.error)stats.error=S11_E_STORAGE;}
  if((p[7]&3)==2)stats.missing_frame=s9_get64(p+40);
  /* Either recorder fault stops the pair of requested recorders. The FPGA
   * still drains its valid prefix under DRAINING+incomplete; no closed file
@@ -88,6 +113,7 @@ int s11_service_response_bytes(const uint8_t *p,unsigned length){
 }
 int s11_service_response(const uint8_t p[S11_WIRE_BYTES]){return s11_service_response_bytes(p,580);}
 int s11_service_file_step(int media){
+ if(ram_sink)return 0;
  uint8_t b[512];int r=0;
  if(pcm_pending()){unsigned n=pcm_pending();if(n>512)n=512;uint32_t head=pcm_read;for(unsigned i=0;i<n;i++)b[i]=pcm[(head+i)%sizeof pcm];r=s11_storage_pcm(stats.recording_id,stats.first_frame+stats.stored_pcm,b,n/4);if(!r){__atomic_store_n(&pcm_read,head+n,__ATOMIC_RELEASE);pcm_first=stats.first_frame+stats.stored_pcm+n/4;stats.stored_pcm+=n/4;}}
  if(!r&&event_pending()){unsigned n=event_pending();if(n>480)n=480;uint32_t head=event_read;for(unsigned i=0;i<n;i++)b[i]=events[(head+i)%sizeof events];r=s11_storage_events(stats.recording_id,b,n/32);if(!r){__atomic_store_n(&event_read,head+n,__ATOMIC_RELEASE);stats.stored_cells+=n/32;}}
@@ -109,24 +135,24 @@ void s11_service_info(uint8_t b[72]){
 void s11_service_wire(uint64_t now,uint32_t duration,int sd){
  uint64_t start=now>=duration?now-duration:0;
  while(start<now){uint64_t ms=start/1000,end=(ms+1)*1000;if(end>now)end=now;occupancy *p=&history[ms%101];if(p->millisecond!=ms){p->millisecond=ms;p->total=p->sd=0;}p->total=(uint16_t)(p->total+end-start);if(sd)p->sd=(uint16_t)(p->sd+end-start);start=end;}
- if(!sd&&stats.active&&rolling(now,0)>80000)s11_service_fail(S11_E_SERVICE,stats.received_pcm?stats.last_frame+1:UINT64_MAX);
+ if(!sd&&stats.active&&rolling(now,0)>S11_TOTAL_BUS_BUDGET_US)s11_service_fail(S11_E_SERVICE,stats.received_pcm?stats.last_frame+1:UINT64_MAX);
 }
 static uint32_t rolling(uint64_t now,int sd){uint64_t lower=now>100000?now-100000:0;uint32_t sum=0;for(unsigned i=0;i<101;i++)if(history[i].millisecond*1000+1000>lower&&history[i].millisecond*1000<=now)sum+=sd?history[i].sd:history[i].total;return sum;}
 int s11_service_wire_begin(uint64_t now,uint32_t duration){
  if(!stats.active)return 0;
- if(sd_active||duration>80000||rolling(now,0)>80000-duration){stats.wire_waits++;return S9_E_BUSY;}
+ if(sd_active||duration>S11_TOTAL_BUS_BUDGET_US||rolling(now,0)>S11_TOTAL_BUS_BUDGET_US-duration){stats.wire_waits++;return S9_E_BUSY;}
  return 0;
 }
 int s11_service_sd_begin(uint64_t now,int stock){return s11_service_sd_reserve(now,stock,2000);}
 int s11_service_sd_reserve(uint64_t now,int stock,uint32_t limit){
  if(sd_active||!stock||!limit||limit>2000)return S9_E_BUSY;
- if(rolling(now,1)>30000-limit||rolling(now,0)>80000-limit)return S9_E_BUSY;
+ if(rolling(now,1)>30000-limit||rolling(now,0)>S11_TOTAL_BUS_BUDGET_US-limit)return S9_E_BUSY;
  sd_started=now;sd_active=1;sd_limit=limit;return 0;
 }
 int s11_service_sd_end(uint64_t now,uint64_t occupied){
  if(!sd_active||now<sd_started)return S9_E_STATE;
  sd_active=0;s11_service_wire(now,(uint32_t)occupied,1);
- if(occupied>sd_limit||rolling(now,1)>30000||rolling(now,0)>80000){s11_service_fail(S11_E_SERVICE,pcm_first);return S9_E_TIMEOUT;}return 0;
+ if(occupied>sd_limit||rolling(now,1)>30000||rolling(now,0)>S11_TOTAL_BUS_BUDGET_US){s11_service_fail(S11_E_SERVICE,pcm_first);return S9_E_TIMEOUT;}return 0;
 }
 int s11_service_card_progress(uint64_t now,uint32_t bytes,uint32_t pending){
  card_completed+=bytes;

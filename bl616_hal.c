@@ -12,13 +12,13 @@ static struct bflb_spi_config_s config={.freq=400000,.role=SPI_ROLE_MASTER,.mode
  .data_width=SPI_DATA_WIDTH_8BIT,.bit_order=SPI_BIT_MSB,.byte_order=SPI_BYTE_LSB,.tx_fifo_threshold=0,.rx_fifo_threshold=0};
 static int selected;
 int hal_platform_init(void){
- board_init();gpio=bflb_device_get_by_name("gpio");spi=bflb_device_get_by_name("spi0");if(!gpio||!spi)return -1;
+ /* board_init already completed by R76 main. */gpio=bflb_device_get_by_name("gpio");spi=bflb_device_get_by_name("spi0");if(!gpio||!spi)return -1;
  for(unsigned pin=0;pin<4;pin++)bflb_gpio_init(gpio,pin,GPIO_INPUT|GPIO_PULL_NONE|GPIO_SMT_EN);
  for(unsigned pin=0;pin<4;pin++)bflb_gpio_init(gpio,pin,GPIO_INPUT|GPIO_PULL_NONE|GPIO_SMT_EN);
  for(unsigned pin=0;pin<4;pin++)bflb_gpio_init(gpio,pin,GPIO_INPUT|GPIO_PULL_NONE|GPIO_SMT_EN);
- bflb_gpio_init(gpio,10,GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
- bflb_gpio_init(gpio,11,GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
- bflb_gpio_init(gpio,12,GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
+ bflb_gpio_init(gpio,10,GPIO_INPUT|GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
+ bflb_gpio_init(gpio,11,GPIO_INPUT|GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
+ bflb_gpio_init(gpio,12,GPIO_INPUT|GPIO_OUTPUT|GPIO_PULLUP|GPIO_SMT_EN|GPIO_DRV_1);
  bflb_gpio_set(gpio,10);bflb_gpio_set(gpio,11);bflb_gpio_set(gpio,12);
  // SDK board_gpio.c native pads18/19 are MISO/MOSI. Dock14/15 are
  // MOSI/MISO, requiring explicit SPI data swap rather than inherited boot state.

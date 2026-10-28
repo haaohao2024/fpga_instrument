@@ -2,7 +2,7 @@
 // verification contract; this module does not qualify physical IO timing.
 // Two 512-byte synchronous byte RAMs own each accepted packet until its
 // stereo pairs handshake or an explicit stream barrier discards them.
-module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARATE=0, WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
+module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINNED_RECORD_PREFIX=0,COMM_SEPARATE=0, WATCHDOG_CLOCKS=500000, ENABLE_S11=0, STREAM_STATUS_CRC=0, DEFER_LEGACY_CRC=0)(
  input wire comm_clk,clk,rst,spi_sck,score_cs_n,control_cs_n,sd_cs_n,spi_mosi,
  input wire [255:0] legacy_status_bytes,
  input wire [11:0] stream_buffered,input wire [31:0] stream_generation,
@@ -24,13 +24,13 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  output reg [1:0] record_cmd,output reg [63:0] record_cmd_id,
  output reg [7:0] record_cmd_mask,record_ack_kind,
  output reg [31:0] record_cmd_sequence,record_ack_sequence,
- input wire [2:0] record_state,input wire record_incomplete,
+ input wire [2:0] record_state,input wire record_incomplete,record_missing_is_event,
  input wire [7:0] record_mask,input wire [63:0] record_id,
  input wire [31:0] record_last_command,record_error,record_captured_pcm,input wire [63:0] record_first_missing_frame,
  input wire record_block_valid,input wire [7:0] record_block_kind,
  input wire [31:0] record_block_sequence,input wire [63:0] record_block_first,
  input wire [15:0] record_block_bytes,record_block_items,
- output wire [8:0] record_peek_address,input wire [7:0] record_peek_data,
+ output wire [10:0] record_peek_address,input wire [7:0] record_peek_data,
  output wire [540:0] shared_score_rx
 );
  wire r54_equal_0;
@@ -65,9 +65,9 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  reg extension_telemetry;
  wire [511:0] response={legacy_snapshot,extension_telemetry?telemetry_snapshot:status_snapshot};
  reg [31:0] rx_crc,footer,watchdog,request_header_crc;
- reg [9:0] byte_count,expected_bytes,wire_length;
- reg [2:0] bit_count;reg [7:0] rx_shift;reg [12:0] tx_index;
- assign shared_score_rx={legacy_snapshot,header[255:0],byte_count,bit_count,rx_shift,
+ reg [11:0] byte_count,expected_bytes,wire_length;
+ reg [2:0] bit_count;reg [7:0] rx_shift;reg [14:0] tx_index;
+ assign shared_score_rx={legacy_snapshot,header[255:0],byte_count[9:0],bit_count,rx_shift,
    fast_fall,fast_start,phy_bit,phy_selected,select_end,select_start,fast_selected,rise};
  wire [1:0] footer_lane=byte_count[1:0]-expected_bytes[1:0];
  wire [7:0] next_byte={rx_shift[6:0],phy_bit};
@@ -90,10 +90,10 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  wire s11_serial_bit;wire [511:0] s11_snapshot;wire s11_payload_ready;
  wire short_s11=route_s11&&header[431:416]==0;
  generate if(ENABLE_S11)begin: s11_response_enabled
-  s11_spi_response #(.PINNED_PREFIX(PINNED_RECORD_PREFIX),.COMM_SEPARATE(COMM_SEPARATE),.STREAM_HEADER_CRC(1)) response_encoder(.comm_clk(comm_clk),.fast_fall(fast_fall),.fast_start(fast_start),.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.tx_bit_index(tx_index),
+  s11_spi_response #(.S11_VERSION(S11_VERSION),.SOURCE_SYNC_TX(SOURCE_SYNC_TX),.PINNED_PREFIX(PINNED_RECORD_PREFIX),.COMM_SEPARATE(COMM_SEPARATE),.STREAM_HEADER_CRC(1)) response_encoder(.spi_sck(spi_sck),.spi_cs_n(score_cs_n),.comm_clk(comm_clk),.fast_fall(fast_fall),.fast_start(fast_start),.clk(clk),.rst(rst),.select_start(select_start),.transaction(transaction),.short_transaction(short_s11),.bulk_transaction(route_s11&&header[431:416]==2048),.tx_bit_index(tx_index),
    .media_state(state),.media_epoch(stream_epoch),.media_last_sequence(last_sequence),.media_credit(free_pair_credit),
    .recorder_state(record_state),.recorder_incomplete(record_incomplete),.recorder_mask(record_mask),.recorder_id(record_id),
-   .recorder_command_sequence(record_last_command),.recorder_error(record_error),.captured_pcm_pairs(record_captured_pcm),.first_missing_frame(record_first_missing_frame),
+   .recorder_command_sequence(record_last_command),.recorder_error(record_error),.captured_pcm_pairs(record_captured_pcm),.missing_is_event(record_missing_is_event),.first_missing_frame(record_first_missing_frame),
    .block_valid(record_block_valid),.block_kind(record_block_kind),.block_sequence(record_block_sequence),.block_first_frame(record_block_first),
    .block_bytes(record_block_bytes),.block_items(record_block_items),.peek_byte_address(record_peek_address),.peek_byte_data(record_peek_data),
    .serial_bit(s11_serial_bit),.snapshot_header(s11_snapshot),.payload_ready(s11_payload_ready));
@@ -101,7 +101,7 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
   assign s11_serial_bit=0;assign s11_snapshot=0;assign s11_payload_ready=0;assign record_peek_address=0;
  end endgenerate
  assign spi_miso_oe=!rst&&!score_cs_n&&control_cs_n&&sd_cs_n&&fast_selected
-                     &&(tx_index<256||(route_s10&&tx_index<512)||(route_s11&&tx_index<(short_s11?544:4640)));
+                     &&(tx_index<256||(route_s10&&tx_index<512)||(route_s11&&tx_index<(short_s11?544:(header[431:416]==2048?16928:4640))));
  // First byte keeps the original CS snapshot edge. Subsequent bytes are
  // loaded on their preceding byte's final falling edge; only 8 bits shift.
  reg[7:0] media_tx_byte;
@@ -111,9 +111,37 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  // RX route from the previous transaction must not select its first bits.
  wire tx_route_s11=route_s11&&(tx_index>=32);
  wire[5:0] media_next_index=tx_index[8:3]+6'd1;
- wire[7:0] media_next_byte=response[{~media_next_index,3'b111}-:8];
- assign spi_miso=tx_route_s11?s11_serial_bit:(tx_index<8?
-  first_tx_byte[~tx_index[2:0]]:(tx_index<512?media_tx_byte[7]:1'b0));
+ reg[31:0] media_prefetch_word;reg[1:0] media_prefetch_lane;
+ wire[7:0] media_next_byte=media_prefetch_word[{~media_prefetch_lane,3'b111}-:8];
+ wire tx_reset=rst||score_cs_n;
+ // Clock data out on the actual SCK falling edge. CS provides async reset
+ // while the master guarantees >=200ns setup before its first rising edge.
+ // Snapshot/route data are frozen by the 40MHz receiver before use; byte
+ // look-ahead prevents a wide decode from entering the 20MHz half-cycle.
+ generate if(SOURCE_SYNC_TX)begin: source_sync_tx
+  always @(negedge spi_sck or posedge tx_reset)begin
+   if(tx_reset)begin
+    tx_index<=0;media_tx_byte<=0;media_prefetch_word<=0;media_prefetch_lane<=0;
+   end else begin
+    if(tx_index<16928)tx_index<=tx_index+1'b1;
+    if(tx_index<512)begin
+     if(tx_index[2:0]==3)begin
+      media_prefetch_word<=response[{~media_next_index[5:2],5'b11111}-:32];
+      media_prefetch_lane<=media_next_index[1:0];
+     end
+     if(tx_index[2:0]==7)media_tx_byte<=media_next_byte;
+     else media_tx_byte<={media_tx_byte[6:0],1'b0};
+    end
+   end
+  end
+ end else begin: oversampled_tx
+ always @(posedge serial_clk)begin
+  if(rst||fast_start)begin media_prefetch_word<=0;media_prefetch_lane<=0;end
+  else if(fast_selected&&fast_fall&&tx_index[2:0]==3&&tx_index<512)begin
+   media_prefetch_word<=response[{~media_next_index[5:2],5'b11111}-:32];
+   media_prefetch_lane<=media_next_index[1:0];
+  end
+ end
  always @(posedge serial_clk)begin
   if(rst||fast_start)media_tx_byte<=0;
   else if(fast_selected&&fast_fall&&tx_index<512)begin
@@ -123,8 +151,11 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
  end
  always @(posedge serial_clk)begin
   if(rst||fast_start)tx_index<=0;
-  else if(fast_selected&&fast_fall&&tx_index<4640)tx_index<=tx_index+1'b1;
+  else if(fast_selected&&fast_fall&&tx_index<16928)tx_index<=tx_index+1'b1;
  end
+ end endgenerate
+ assign spi_miso=tx_route_s11?s11_serial_bit:(tx_index<8?
+  first_tx_byte[~tx_index[2:0]]:(tx_index<512?media_tx_byte[7]:1'b0));
  always @(*)begin
   status_tmp=0;status_tmp[31:0]=32'h53303153;status_tmp[39:32]=1;
   status_tmp[47:40]={6'd0,state};status_tmp[63:48]={7'd0,free_pair_credit};
@@ -248,6 +279,7 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
        if(route_s11&&byte_count==59)request_header_crc<=~received_crc_next;
        if(route_s11&&byte_count==53)begin
         if({next_byte,header[423:416]}==0)begin expected_bytes<=68;wire_length<=68;end
+        else if({next_byte,header[423:416]}==2048)begin expected_bytes<=2116;wire_length<=2116;end
         else if({next_byte,header[423:416]}!=512)bad<=1;
        end
        if(route_s11&&byte_count==63&&{next_byte,header[503:480]}!=request_header_crc)bad<=1;
@@ -270,16 +302,16 @@ module s10_pcm_transport #(parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARAT
        0:footer[7:0]<=next_byte;1:footer[15:8]<=next_byte;2:footer[23:16]<=next_byte;3:footer[31:24]<=next_byte;
       endcase
       else if(next_byte!=0||byte_count>=wire_length)bad<=1;
-      if(byte_count<1023)byte_count<=byte_count+1;else bad<=1;
+      if(byte_count<4095)byte_count<=byte_count+1;else bad<=1;
      end
     end
 
     if(select_end)begin
      transaction<=0;
      if(route_s10)begin
-      if(cancel||bad||bit_count!=0||byte_count!=wire_length||footer!=~rx_crc||header[39:32]!=1||
+      if(cancel||bad||bit_count!=0||byte_count!=wire_length||footer!=~rx_crc||header[39:32]!=(route_s11?S11_VERSION:1)||
          (route_s11&&(header[327:320]>3||header[351:344]!=0||header[439:432]!=0||
-           (header[431:416]!=512&&header[431:416]!=0)||header[479:440]!=0||record_cmd_valid||
+           (header[431:416]!=512&&header[431:416]!=2048&&header[431:416]!=0)||header[479:440]!=0||record_cmd_valid||
            (short_s11&&(operation!=0&&operation!=OP_STATUS||request_pairs!=0||(header[327:320]!=0&&header[327:320]!=3)))))||
          (operation==OP_DATA?(request_pairs==0||request_pairs>128||flags!=0):
           (request_pairs!=0||request_sequence!=0||source_start!=0))||
@@ -411,7 +443,7 @@ module r12_media_crc_probe #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S1
  input wire record_block_valid,input wire [7:0] record_block_kind,
  input wire [31:0] record_block_sequence,input wire [63:0] record_block_first,
  input wire [15:0] record_block_bytes,record_block_items,
- output wire [8:0] record_peek_address,input wire [7:0] record_peek_data
+ output wire [10:0] record_peek_address,input wire [7:0] record_peek_data
 );
 s10_pcm_transport #(.ENABLE_S11(1),.STREAM_STATUS_CRC(STREAM_STATUS_CRC)) impl(.clk(clk),.rst(rst),.spi_sck(spi_sck),.score_cs_n(score_cs_n),.control_cs_n(control_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),.legacy_status_bytes(legacy_status_bytes),.stream_buffered(stream_buffered),.stream_generation(stream_generation),.stream_state(stream_state),.cancel(cancel),.spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.route_s10(route_s10),.pcm_valid(pcm_valid),.pcm_ready(pcm_ready),.pcm_l(pcm_l),.pcm_r(pcm_r),.pcm_epoch(pcm_epoch),.ctrl_valid(ctrl_valid),.ctrl_ready(ctrl_ready),.ctrl_cmd(ctrl_cmd),.ctrl_epoch(ctrl_epoch),.ctrl_rate(ctrl_rate),.ctrl_track(ctrl_track),.state(state),.bank_count(bank_count),.free_pair_credit(free_pair_credit),.reserved_pair_count(reserved_pair_count),.resident_pairs(resident_pairs),.accepted_pair_count(accepted_pair_count),.delivered_pair_count(delivered_pair_count),.discard_pair_count(discard_pair_count),.accepted_packets(accepted_packets),.duplicate_packets(duplicate_packets),.rejected_transactions(rejected_transactions),.cs_conflicts(cs_conflicts),.timeout_count(timeout_count),.last_sequence(last_sequence),.stream_epoch(stream_epoch),.next_source_start(next_source_start),.route_s11(route_s11),.record_cmd_valid(record_cmd_valid),.record_cmd_ready(record_cmd_ready),.record_cmd(record_cmd),.record_cmd_id(record_cmd_id),.record_cmd_mask(record_cmd_mask),.record_ack_kind(record_ack_kind),.record_cmd_sequence(record_cmd_sequence),.record_ack_sequence(record_ack_sequence),.record_state(record_state),.record_incomplete(record_incomplete),.record_mask(record_mask),.record_id(record_id),.record_last_command(record_last_command),.record_error(record_error),.record_captured_pcm(record_captured_pcm),.record_first_missing_frame(record_first_missing_frame),.record_block_valid(record_block_valid),.record_block_kind(record_block_kind),.record_block_sequence(record_block_sequence),.record_block_first(record_block_first),.record_block_bytes(record_block_bytes),.record_block_items(record_block_items),.record_peek_address(record_peek_address),.record_peek_data(record_peek_data));
 endmodule

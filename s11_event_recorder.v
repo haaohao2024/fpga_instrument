@@ -77,6 +77,19 @@ module s11_event_recorder #(
     wire checked_ack=ack_valid && block_valid && ack_record_id==record_id && ack_block_sequence==block_sequence;
     wire accepted_ack=TRUSTED_ACK?ack_accepted:checked_ack;
     wire [8:0] ack_count=accepted_ack?block_cell_count:9'd0;
+    // Evaluate both capacity cases in parallel. The late command/snapshot
+    // path selects an already-computed decision, never drives the adder.
+    // Explicit 32-bit unsigned intermediates preserve original expression
+    // width and wrap behavior, including invalid-input negative tests.
+    wire [31:0] requested_without_ack={23'd0,buffered_cells}+{26'd0,tx_count};
+    wire [31:0] requested_with_ack={23'd0,buffered_cells}-{23'd0,block_cell_count[8:0]}+{26'd0,tx_count};
+    wire space_available=accepted_ack?(requested_with_ack<=CAPACITY):(requested_without_ack<=CAPACITY);
+    // synthesis translate_off
+    always @(posedge clk)if(!rst)
+      if(space_available !== (buffered_cells-ack_count+tx_count<=CAPACITY))
+        $fatal(1,"ACK_CAPACITY_DECISION_MISMATCH");
+    // synthesis translate_on
+
     wire commit=writer_busy && cell_available && write_word==7 && write_index+1'b1==reserved_count && !clear_valid;
     // The producer holds the accepted batch until tx_done; only the read
     // index changes during its original eight-clock-per-cell write cadence.
@@ -97,7 +110,7 @@ module s11_event_recorder #(
     assign start_ready=!rst && !active && !writer_busy && buffered_cells==0 && !block_valid;
     assign tx_ready=!rst && record_id!=0 && !incomplete && !writer_busy &&
         tx_count!=0 && tx_count<=MAX_TRANSACTION &&
-        buffered_cells-ack_count+tx_count<=CAPACITY && !clear_valid && !fault_valid;
+        space_available && !clear_valid && !fault_valid;
     function [PTR_W-1:0] advance;
         input [PTR_W-1:0] ptr;
         input [15:0] amount;
@@ -140,7 +153,7 @@ module s11_event_recorder #(
             end
             if(tx_valid && !writer_busy && !incomplete && record_id!=0 &&
                (tx_count==0 || tx_count>MAX_TRANSACTION ||
-                buffered_cells-ack_count+tx_count>CAPACITY))begin
+                !space_available))begin
                 active<=0;incomplete<=1;error_code<=8'd2;
             end
             if(fault_valid)begin active<=0;incomplete<=1;error_code<=fault_code;end

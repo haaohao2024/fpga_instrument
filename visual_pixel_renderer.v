@@ -125,7 +125,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
     if(count_active)begin
      statistics_counts[0]<=statistics_counts[0]+6'd1;
      if(count_gate)statistics_counts[1]<=statistics_counts[1]+6'd1;
-     if(count_timbre<5)statistics_counts[histogram_index]<=histogram_next;
+     for(integer h=0;h<5;h=h+1)if(count_timbre==h)statistics_counts[h+3]<=statistics_counts[h+3]+6'd1;
     end
    end else if(statistics_phase==33)statistics_counts[2]<=statistics_counts[0]-statistics_counts[1];
    else begin

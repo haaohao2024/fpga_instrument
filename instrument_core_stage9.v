@@ -1,5 +1,6 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage9 #(
+    parameter integer AUDIO_RATE_HZ=48000,
     parameter integer EXTERNAL_SCORE_RX=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
@@ -19,12 +20,13 @@ module instrument_core_stage9 #(
  input wire  r18_snapshot_valid,
  output wire  r18_snapshot_ready,
  input wire  r18_query_valid,
- input wire [4:0] r18_query_slot,
+ input wire [5:0] r18_query_slot,
  output wire  r18_query_ready,
  output wire  r18_response_valid,
- output wire [4:0] r18_response_slot,
+ output wire [5:0] r18_response_slot,
  output wire [314:0] r18_response_word,
  input wire [63:0] r18_allocated_pid,
+ input wire r18_capture_caught_up,
  input wire [63:0] r18_clock_frame,
  input wire [15:0] r18_clock_subcycle,
  output wire  r18_fact_valid,
@@ -36,7 +38,7 @@ module instrument_core_stage9 #(
  output wire  r18_pan_ready,
  output wire  r18_pan_response_valid,
  output wire [1:0] r18_pan_result,
- output wire [4:0] r18_pan_response_slot,
+ output wire [5:0] r18_pan_response_slot,
  output wire [314:0] r18_pan_before,
  output wire [314:0] r18_pan_after,
 
@@ -68,7 +70,7 @@ module instrument_core_stage9 #(
     output wire [351:0] fx_cfg_data,
     output wire fx_error,
     output wire pan_valid,
-    output wire [4:0] pan_slot,
+    output wire [5:0] pan_slot,
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,
@@ -90,6 +92,7 @@ module instrument_core_stage9 #(
     output wire underrun,
     output wire observe_load,
     output wire signed [15:0] observe_l,observe_r,
+ output wire [47:0] observe_full_slot_valid,observe_full_slot_gate,
     output wire [31:0] observe_slot_valid,observe_slot_gate,
     output wire [95:0] observe_slot_timbres,
     output wire [351:0] observe_fx_config,
@@ -149,6 +152,7 @@ module instrument_core_stage9 #(
     output wire [31:0] observe_keymap_version,
     output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
+ wire [127:0] ensemble_metrics;
  wire  phone_session_flush;
  wire  phone_session_ready;
  wire [575:0] phone_presses;
@@ -161,7 +165,7 @@ module instrument_core_stage9 #(
  wire  phone_lookup_ready;
  wire  phone_response_valid;
  wire  phone_found;
- wire [4:0] phone_response_slot;
+ wire [5:0] phone_response_slot;
  wire [314:0] phone_response_word;
  wire [15:0] phone_response_tag;
 
@@ -184,7 +188,7 @@ module instrument_core_stage9 #(
   else millisecond_divider<=millisecond_divider+1'b1;
  end
  wire [31:0] session_now_ms_next=now_ms+32'(millisecond_divider==CLK_FREQ_HZ/1000-1);
- wire [4:0] pan_commit_slot;wire pan_commit_slot_live;
+ wire [5:0] pan_commit_slot;wire pan_commit_slot_live;
  wire pan_lookup_ready,config_payload_changed,pan_query_changed;
  wire phone_open,phone_close,phone_open_ready,phone_active,phone_close_done,session_flush,session_ready;
  wire [127:0] session_id;
@@ -240,7 +244,7 @@ module instrument_core_stage9 #(
  assign phone_session_flush=session_flush;assign phone_session_ready=session_ready;assign phone_presses=remote_press_ids;
  wire identity_stable=!observe_allocator_busy;
  r22_config_bridge #(.ENABLE_FIELD(ENABLE_S11),.DEFER_RESULT_CRC(1)) parameters(
-  .id_req_valid(phone_lookup_valid),.id_req_pan(phone_lookup_pan),.id_req_ready(phone_lookup_ready),.id_req_key(phone_lookup_key),
+  .ensemble_metrics(ensemble_metrics),.id_req_valid(phone_lookup_valid),.id_req_pan(phone_lookup_pan),.id_req_ready(phone_lookup_ready),.id_req_key(phone_lookup_key),
   .id_req_identity(phone_lookup_identity),.id_req_generation(phone_lookup_generation),.id_req_tag(phone_lookup_tag),
   .id_response_valid(phone_response_valid),.id_response_found(phone_found),.id_response_slot(phone_response_slot),.id_response_word(phone_response_word),.id_response_tag(phone_response_tag),
   .pan_ready(r18_pan_ready),.pan_response_valid(r18_pan_response_valid),.pan_result(r18_pan_result),.pan_response_slot(r18_pan_response_slot),
@@ -260,7 +264,7 @@ module instrument_core_stage9 #(
   .field_valid(field_cfg_valid),.field_start(field_cfg_start),.field_size(field_cfg_size),.field_ready(ENABLE_S11?field_ready:1'b1),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
   .lookup_valid(lookup_valid),.lookup_ready(lookup_ready),.lookup_channel(lookup_channel),.lookup_echo(lookup_echo),.lookup_sequence(lookup_sequence),.lookup_done(lookup_done),.lookup_error(lookup_error),.lookup_result(lookup_result),
   .result_valid(cfg_result_valid),.result_ready(cfg_result_ready),.result_slot(cfg_result_slot),.result_sequence(cfg_result_sequence),.result_bytes(cfg_result_bytes),.result_final(cfg_result_final));
- instrument_core_stage8 #(.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.STREAM_PHONE(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
+ instrument_core_stage8 #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.STREAM_PHONE(1),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),
   .ADC_ZERO(ADC_ZERO),
@@ -282,6 +286,7 @@ module instrument_core_stage9 #(
   .r18_response_slot(r18_response_slot),
   .r18_response_word(r18_response_word),
   .r18_allocated_pid(r18_allocated_pid),
+  .r18_capture_caught_up(r18_capture_caught_up),
   .r18_clock_frame(r18_clock_frame),
   .r18_clock_subcycle(r18_clock_subcycle),
   .r18_fact_valid(r18_fact_valid),
@@ -314,7 +319,7 @@ module instrument_core_stage9 #(
 
  
   .field_valid(merged_field_valid),.field_start(merged_field_start),.field_size(merged_field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running),
-   .observe_allocator_busy(observe_allocator_busy),
+   .observe_audio_metrics(ensemble_metrics),.observe_allocator_busy(observe_allocator_busy),
   .observe_batch_begin(observe_batch_begin),
   .observe_publish_ok(observe_publish_ok),
   .observe_batch_abort(observe_batch_abort),
@@ -395,7 +400,7 @@ module instrument_core_stage9 #(
   .observe_load(observe_load),
   .observe_l(observe_l),
   .observe_r(observe_r),
-  .observe_slot_valid(observe_slot_valid),
+  .observe_full_slot_valid(observe_full_slot_valid),.observe_full_slot_gate(observe_full_slot_gate),.observe_slot_valid(observe_slot_valid),
   .observe_slot_gate(observe_slot_gate),
   .observe_slot_timbres(observe_slot_timbres),
   .observe_fx_config(observe_fx_config),

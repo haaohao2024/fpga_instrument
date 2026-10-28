@@ -1,8 +1,11 @@
+#include "audio_timebase.h"
 #include "sd_spi.h"
 /* Runtime connections: one media worker, one SPI owner, one Bluetooth stack.
  * Startup still requires the existing unqualified-board gate; no board action.
  */
 #include "s10_runtime.h"
+#include "wire_probe.h"
+#include "live_loop_runtime.h"
 #include "s10_profile.h"
 #include "s10_media_pipeline.h"
 #include "s10_spi_dma.h"
@@ -12,6 +15,9 @@
 #include "s11_service.h"
 #include "s11_storage.h"
 #include "s9_protocol.h"
+#ifdef ENSEMBLE_CAPTURE_DIAG
+#include "link_diag.h"
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
@@ -63,11 +69,11 @@ int s10_runtime_media_available(void){
 }
 int s10_runtime_media_claim(void){
  taskENTER_CRITICAL();
- int r=(!bus_ready||file_reserved)?-1:0;
+ int r=(!bus_ready||file_reserved||ll_runtime_shared_enter(LL_SHARED_MEDIA))?-1:0;
  if(!r)media_reserved=1;
  taskEXIT_CRITICAL();return r;
 }
-void s10_runtime_media_release(void){taskENTER_CRITICAL();media_reserved=0;taskEXIT_CRITICAL();}
+void s10_runtime_media_release(void){taskENTER_CRITICAL();media_reserved=0;ll_runtime_shared_leave(LL_SHARED_MEDIA);taskEXIT_CRITICAL();}
 int s10_runtime_file_enter(void){
  taskENTER_CRITICAL();int r=media_reserved?-1:0;
  if(!r)file_reserved=1;
@@ -99,6 +105,8 @@ static void dma_wake(void *owner){
 int s10_runtime_bus_initialize(void){
  s10_dma_binding binding={0,dma_time,dma_owner,dma_select,dma_ram};
  if(!prepared||bus_ready)return -1;
+ /* Diagnostic only, one bus owner before normal DMA binding and SD work. */
+ if(wire_probe_run()){for(;;)vTaskDelay(pdMS_TO_TICKS(1000));}
  bus_task=xTaskGetCurrentTaskHandle();
  if(hal_media_dma_bind(&dma,&binding)||s10_spi_dma_set_wakeup(&dma,dma_wake,bus_task)){++runtime_faults;return -1;}
  bus_ready=1;return 0;
@@ -118,14 +126,19 @@ int s10_runtime_bus_poll(void){
   if(s10_spi_dma_release(&dma,dma_ticket)){transport_fault(S10_MEDIA_TRANSPORT);return 1;}
   int completed=0;
   if(recorder_dma){
-   if(success){int rr=s11_service_response_bytes(recorder_rx,recorder_wire_bytes);if(rr<0&&rr!=S9_E_BUSY&&rr!=S9_E_STALE){s11_service_fail(S11_E_CRC,UINT64_MAX);success=0;}}
+   if(success){int rr=s11_service_response_bytes(recorder_rx,recorder_wire_bytes);if(rr<0&&rr!=S9_E_BUSY&&rr!=S9_E_STALE){
+#ifdef ENSEMBLE_CAPTURE_DIAG
+    link_diag_bad_response(rr,recorder_wire_bytes,recorder_tx,recorder_rx);
+    link_diag_event(24,(uint32_t)rr,recorder_wire_bytes,s11_service_statistics()->received_cells);
+#endif
+    s11_service_fail(S11_E_CRC,UINT64_MAX);success=0;}}
    if(success){
     uint64_t received=s11_service_statistics()->received_pcm;
     if(received>recorder_received){
      uint64_t delta=received-recorder_received;
      if(!recorder_received)recorder_due=hal_time_us();
      uint64_t period=delta*1000000u+recorder_fraction;
-     recorder_due+=period/48000u;recorder_fraction=(unsigned)(period%48000u);recorder_received=received;
+     recorder_due+=period/INSTRUMENT_AUDIO_HZ;recorder_fraction=(unsigned)(period%INSTRUMENT_AUDIO_HZ);recorder_received=received;
     }
    }
    if(recorder_media_job){
@@ -171,7 +184,8 @@ int s10_runtime_bus_service(void){
  int have_media=record_job_ready||(!short_ack&&(demand_status?s10_pcm_tx_status_next(&transport,hal_time_us(),&job):s10_pcm_tx_next(&transport,hal_time_us(),&job))==0);
  if(have_media)record_job_ready=1;
  if(!have_media){
-  if(!record||(!short_ack&&hal_time_us()<recorder_due+5334))return 0;
+  uint64_t due=s11_service_ram_owned()?recorder_due:recorder_due+(256000000u+INSTRUMENT_AUDIO_HZ-1u)/INSTRUMENT_AUDIO_HZ;
+  if(!record||(!short_ack&&!s11_service_statistics()->command&&hal_time_us()<due))return 0;
   if(!transport.next_ticket){s11_service_fail(S11_E_GENERATION,UINT64_MAX);return 0;}
   memset(&job,0,sizeof job);
  }
@@ -185,6 +199,12 @@ int s10_runtime_bus_service(void){
  int r;
  if(use_record){
   recorder_wire_bytes=s11_service_request_mode(recorder_tx,have_media?job.tx:0,have_media?job.length:0,effective_short?0:512);memset(recorder_rx,0,sizeof recorder_rx);
+  /* A changing physical key emits an expression plus publication marker
+   * per ~205us ADC frame. 5ms/16 cells cannot sustain even one key.
+   * 1ms admits <=648us of full DATA+short ACK at 8MHz; the existing
+   * rolling 80% bus budget and ownership checks still apply. This bounds
+   * the polling floor, not a promise of arbitrary eight-key change rate. */
+  if(s11_service_ram_owned()&&!effective_short)recorder_due=hal_time_us()+1000;
   r=s10_spi_dma_begin(&dma,job.ticket,BUS_FPGA,FPGA_SPI_HZ,recorder_tx,sizeof recorder_tx,recorder_rx,sizeof recorder_rx,recorder_wire_bytes,4000);
   recorder_dma=1;recorder_media_job=have_media;
 

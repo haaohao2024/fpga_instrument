@@ -4,6 +4,12 @@
 #include "ff.h"
 #include "diskio.h"
 #include <string.h>
+#ifdef ENSEMBLE_CAPTURE_DIAG
+#include "link_diag.h"
+#define SD_DIAG(k,a,b,c) link_diag_event(k,a,b,c)
+#else
+#define SD_DIAG(k,a,b,c) ((void)0)
+#endif
 static FATFS fs;
 static FIL file;
 static uint8_t owner_id[16],page[512];
@@ -44,7 +50,9 @@ static int validate_saved(const char *name){
 int s9_storage_recover(void){
  if(stats.active||opened)return S9_E_STATE;
  f_mount(0,"0:",0);
- if(f_mount(&fs,"0:",1)!=FR_OK||fs.fs_type!=FS_FAT32)return S9_E_IO;
+ FRESULT mount_result=f_mount(&fs,"0:",1);
+ SD_DIAG(20,mount_result,fs.fs_type,stats.active);
+ if(mount_result!=FR_OK||fs.fs_type!=FS_FAT32)return S9_E_IO;
  int current=validate_saved("0:/SCORE.EVT");
  if(!current)return 0;
  if(current==S9_E_IO)return current;
@@ -60,7 +68,9 @@ int s9_storage_begin(const uint8_t id[16],uint32_t bytes,uint32_t crc,int stoppe
  if(aborted())return S9_E_STATE;
  memset(&stats,0,sizeof stats);opened=0;memcpy(owner_id,id,16);expected_bytes=bytes;expected_crc=crc;
  f_mount(0,"0:",0);
- if(f_mount(&fs,"0:",1)!=FR_OK||fs.fs_type!=FS_FAT32)return S9_E_IO;
+ FRESULT mount_result=f_mount(&fs,"0:",1);
+ SD_DIAG(20,mount_result,fs.fs_type,stats.active);
+ if(mount_result!=FR_OK||fs.fs_type!=FS_FAT32)return S9_E_IO;
  /* Recover only the unambiguous missing-current / present-backup case.
   * Existing files are still validated by the score reader; no powerfail claim. */
  int current=exists("0:/SCORE.EVT"),backup=exists("0:/SCORE.BAK");

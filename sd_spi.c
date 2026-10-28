@@ -30,7 +30,7 @@ static unsigned admission_denied;
 void sd_set_admission(sd_admission_fn before,sd_retired_fn after,void *context){admission=before;retired=after;admission_context=context;}
 void sd_set_service(sd_service_fn f,void *context){service=f;service_context=context;}
 const sd_diagnostics *sd_get_diagnostics(void){return &diag;}
-int sd_set_recording_mode(int enabled){if(selected)return -1;recording_mode=enabled!=0;if(!status)frequency=recording_mode?8000000:2000000;return 0;}
+int sd_set_recording_mode(int enabled){if(selected)return -1;recording_mode=enabled!=0;if(!status)frequency=recording_mode?RECORD_SD_SPI_HZ:2000000;return 0;}
 static uint32_t selected_limit(void){return recording_mode&&!status?reservation_us-2u:8000u;}
 static uint16_t crc16(const uint8_t *b,unsigned n){uint16_t c=0;while(n--){c^=(uint16_t)*b++<<8;for(int i=0;i<8;i++)c=c&0x8000?(c<<1)^0x1021:c<<1;}return c;}
 static int failed(void){
@@ -141,7 +141,7 @@ DSTATUS disk_initialize(BYTE drive){
  uint8_t csd[16];if(read_block(csd,16)||csd[0]>>6!=1)goto fail;release();
  uint32_t size=((uint32_t)(csd[7]&63)<<16)|((uint32_t)csd[8]<<8)|csd[9];
  if(size==0x3fffff)goto fail;
- sectors=(size+1)*1024;frequency=recording_mode?8000000:2000000;hal_frequency(frequency);status=0;return status;
+ sectors=(size+1)*1024;frequency=recording_mode?RECORD_SD_SPI_HZ:2000000;hal_frequency(frequency);status=0;return status;
  fail:release();diag.io_errors++;return status;
 }
 DSTATUS disk_status(BYTE drive){return drive?STA_NOINIT:status;}

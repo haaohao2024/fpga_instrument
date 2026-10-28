@@ -15,5 +15,6 @@ int s9_gatt_notify_fragment(uint32_t generation,const uint8_t *fragment,unsigned
 unsigned s9_gatt_mtu(void);
 int s9_gatt_advertise(void);
 int s9_gatt_connected(void);
+int s9_gatt_transport_ready(uint32_t generation);
 void s9_gatt_disconnect(void);
 #endif

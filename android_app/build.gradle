@@ -7,7 +7,7 @@ allprojects {
 }
 
 // Keep generated artifacts outside the formal source tree.
-def stage9BuildRoot = file(findProperty('instrumentBuildRoot') ?: 'C:/Users/Haobai/Documents/Codex/2026-09-24/new-chat-3/outputs/stage9b_20261002/android_build')
+def stage9BuildRoot = file(findProperty('instrumentBuildRoot') ?: 'D:/FPGA/formal_project/formal_one/android_build')
 allprojects {
     layout.buildDirectory.set(new File(stage9BuildRoot, project == rootProject ? '_root' : project.name))
 }

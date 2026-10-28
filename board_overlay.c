@@ -414,95 +414,33 @@ enum bflb_rtc_32k_clk_type board_get_rtc_32k_clk_type(void)
     return BFLB_RTC_32K_CLK_RC;
 }
 
+/* R76 bootstrap: reset PDS before clocks; finish SDK services in the boot task.
+ * Startup never waits for USB or DTR. Pin mapping and clock targets are retained. */
+extern void neo_pds_bootstrap(void);
 void board_init(void)
 {
-    int ret = -1;
-    uintptr_t flag;
-
-    uint32_t xtal_value = 0;
-
-    /* lock */
-    flag = bflb_irq_save();
-
-#ifndef CONFIG_BOARD_FLASH_INIT_SKIP
-    /* flash init */
-    ret = bflb_flash_init();
-#ifndef CONFIG_BOARD_FLASH_LOW_SPEED
-    /* flash clock frequency increased to 80MHz */
-    board_set_flash_80m();
-#endif
-#endif
-
-    /* system clock */
+    extern uint8_t diag_boot_reset_event;
+    HBN_Get_Reset_Event(&diag_boot_reset_event);
+    neo_pds_bootstrap();
+    uintptr_t flag=bflb_irq_save();
     system_clock_init();
-
-    bflb_rtc_init(NULL, board_get_rtc_32k_clk_type());
-
-#ifndef CONFIG_LPAPP
     peripheral_clock_init();
-#else
-    peripheral_clock_init_lp();
-#endif
-
-    /* irq init */
     bflb_irq_initialize();
-#ifdef CONFIG_WIFI6
-    extern void interrupt0_handler(void);
-    bflb_irq_attach(WIFI_IRQn, (irq_callback)interrupt0_handler, NULL);
-    bflb_irq_enable(WIFI_IRQn);
-#endif
-#ifdef CONFIG_HIGH_ISR_STACK
-    bflb_wfa_init();
-#endif
-
-#ifndef CONFIG_BSP_CONSOLE_USB_CDC
-    console_init();
-#endif
-
-    /* ram and heap init (including psram) */
     ram_heap_init();
-
-    /* boot info dump */
-#ifndef CONFIG_BOARD_SHOW_LOG_DISABLE
-    bl_show_log();
-#endif
-    /* version info dump */
-    bl_show_component_version();
-
-#if defined(CONFIG_ANTI_ROLLBACK) && !defined(CONFIG_BOOT2)
-    bflb_check_anti_rollback();
-#endif
-
-    /* chip info dump */
-    bl_show_chipinfo();
-    /* flash info dump */
-    bl_show_flashinfo();
-    if (ret != 0) {
-        printf("flash init fail !!!\r\n");
-    }
-
-    printf("uart  sig1:%08x, sig2:%08x\r\n", getreg32(GLB_BASE + GLB_UART_CFG1_OFFSET), getreg32(GLB_BASE + GLB_UART_CFG2_OFFSET));
-    printf("clock gen1:%08x, gen2:%08x\r\n", getreg32(GLB_BASE + GLB_CGEN_CFG1_OFFSET), getreg32(GLB_BASE + GLB_CGEN_CFG2_OFFSET));
-    HBN_Get_Xtal_Value(&xtal_value);
-    printf("xtal:%dHz(%s)\r\n", xtal_value, ((getreg32(AON_BASE + AON_XTAL_CFG_OFFSET) >> 3) & 0x01) ? "oscillator" : "crystal");
-
-    log_start();
-
-#if (defined(CONFIG_LUA) || defined(CONFIG_BFLB_LOG) || defined(CONFIG_FATFS))
-    rtc = bflb_device_get_by_name("rtc");
-#endif
-
-    bflb_sec_mutex_init();
-
-    /* unlock */
     bflb_irq_restore(flag);
-
-#ifdef CONFIG_BSP_CONSOLE_USB_CDC
-    usb_console_init();
-#endif
-
-    printf("board init done\r\n");
-    printf("===========================\r\n");
+    extern void diag_uart_init(void);
+    diag_uart_init();
+}
+int r61_board_step(unsigned step)
+{
+    switch(step) {
+    case 11: return bflb_flash_init();
+    case 12: bflb_rtc_init(NULL,board_get_rtc_32k_clk_type());return 0;
+    case 13: bl_show_log();bl_show_component_version();return 0;
+    case 14: bl_show_chipinfo();bl_show_flashinfo();return 0;
+    case 15: log_start();bflb_sec_mutex_init();return 0;
+    default: return -1;
+    }
 }
 
 void board_acomp_init(void)

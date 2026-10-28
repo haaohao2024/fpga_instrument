@@ -2,6 +2,8 @@
 // All state uses clk; synchronous HIGH-active rst. No device primitives.
 module local_performance_control #(
     parameter integer PRESSURE_PRENORMALIZED=0,
+    parameter integer HELD_PRESSURE_CYCLES=1,
+    parameter integer INPUT_HOLDS_FRAME=0,
     parameter integer ADC_ZERO = 0,
     parameter integer ADC_FULL = 1023,
     parameter integer DEADZONE = 8,
@@ -63,6 +65,15 @@ module local_performance_control #(
     endfunction
 
     // Valid octave limits fit [-5,+4], since all eight note codes must be 0..127.
+    // Continuous physical force is a control-rate signal. Gate edges remain
+    // immediate; retain the latest valid ADC value for the next held update.
+    localparam integer HELD_WIDTH=HELD_PRESSURE_CYCLES<2?1:$clog2(HELD_PRESSURE_CYCLES);
+    reg [HELD_WIDTH-1:0] held_counter;
+    wire held_update=HELD_PRESSURE_CYCLES<=1||held_counter==HELD_PRESSURE_CYCLES-1;
+    always @(posedge clk)begin
+        if(rst||held_update)held_counter<=0;
+        else held_counter<=held_counter+1'b1;
+    end
     reg signed [3:0] octave_shift;
     genvar pad;
     generate for (pad=0; pad<8; pad=pad+1) begin : pads
@@ -71,16 +82,23 @@ module local_performance_control #(
         wire signed [31:0] absolute_note = BASE_NOTE + $signed(octave_shift)*32'sd12;
         assign note_code[pad*7 +: 7] = absolute_note[6:0];
 
+        reg [7:0] latest_pressure;
         always @(posedge clk) begin
             if (rst) begin
+                latest_pressure<=0;
                 note_gate[pad] <= 0;
                 note_trigger[pad] <= 0;
                 pressure_value[pad*8 +: 8] <= 0;
             end else begin
                 // Events last one clk, even if the next ADC frame arrives later.
                 note_trigger[pad] <= 0;
+                if(held_update && note_gate[pad])
+                    pressure_value[pad*8 +: 8]<=INPUT_HOLDS_FRAME?normalized:(pressure_valid?normalized:latest_pressure);
                 if (pressure_valid) begin
-                    pressure_value[pad*8 +: 8] <= normalized;
+                    if(!INPUT_HOLDS_FRAME)latest_pressure<=normalized;
+                    // Attack/release and inactive values retain original timing.
+                    if(held_update || !note_gate[pad] || normalized<=RELEASE_THRESHOLD)
+                        pressure_value[pad*8 +: 8] <= normalized;
                     if (!note_gate[pad] && normalized >= PRESS_THRESHOLD) begin
                         note_gate[pad] <= 1;
                         note_trigger[pad] <= 1;
@@ -116,7 +134,18 @@ module local_performance_control #(
         end
     end
 
+    // INPUT_HOLDS_FRAME is enabled only for the complete-frame scanner output.
+    // pressure_scanner updates its published registers only alongside valid.
     // synthesis translate_off
+    reg [79:0] previous_frame;
+    always @(posedge clk)begin
+        if(rst)previous_frame<=0;
+        else begin
+            if(INPUT_HOLDS_FRAME && !pressure_valid && pressure_raw!==previous_frame)
+                $fatal(1,"PRESSURE_HELD_FRAME_CONTRACT_BROKEN");
+            previous_frame<=pressure_raw;
+        end
+    end
     initial begin
         if (ADC_ZERO < 0 || ADC_ZERO > 1023 || ADC_FULL < 0 || ADC_FULL > 1023 ||
             ADC_ZERO == ADC_FULL || DEADZONE < 0 || DEADZONE >= ADC_SPAN)

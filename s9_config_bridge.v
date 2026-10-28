@@ -2,7 +2,7 @@
 // COMMITTED follows the real configuration edge; EFFECTIVE names an observed
 // snapshot frame. It never asserts that a muted/cancelled sound was audible.
 module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, PREPARE_PAN=0, PIPE_PAN_COMMIT=0)(
- input wire pan_commit_slot_live,output wire [4:0] pan_commit_slot,
+ input wire pan_commit_slot_live,output wire [5:0] pan_commit_slot,
  input wire config_payload_changed,
  output wire pan_query_changed,
  input wire pan_lookup_ready,
@@ -16,11 +16,11 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, 
  output wire gain_local_mute,gain_external_mute,
  input wire gain_sample,input wire[31:0] gain_frame,gain_frame_version,gain_accepted,
  input wire[15:0] gain_l,gain_e,input wire[6:0] gain_remaining,
- output wire pan_valid,output wire[4:0] pan_slot,output wire[63:0] pan_id,
+ output wire pan_valid,output wire[5:0] pan_slot,output wire[63:0] pan_id,
  output wire[15:0] pan_generation,output wire[8:0] pan_value,
  input wire identity_stable,query_found,input wire[63:0] query_id,input wire[15:0] query_generation,
  output wire[7:0] query_key,output wire[63:0] query_press,
- input wire pan_found,input wire[4:0] pan_found_slot,
+ input wire pan_found,input wire[5:0] pan_found_slot,
  output wire[63:0] identity_pan_id,output wire[15:0] identity_pan_generation,
  input wire[287:0] snapshot_pan,input wire[2047:0] snapshot_ids,input wire[511:0] snapshot_generations,
  input wire[7:0] local_gate,input wire local_pending,output wire[55:0] keymap,
@@ -37,7 +37,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, 
  reg[31:0] seq[0:6],frame[0:6],version[0:6];reg[2:0] slot[0:6],phase[0:6];
  reg signed[15:0] error[0:6];
  reg[63:0] held_pan_id,reply_id;reg[15:0] held_pan_generation,reply_generation;
- reg[4:0] held_pan_slot;reg[8:0] held_pan_value;
+ reg[5:0] held_pan_slot;reg[8:0] held_pan_value;
  reg[15:0] target_l,target_e;reg[3:0] previous_local_glide;
  reg tick_d,pan_defer_snapshot;reg[31:0] tick_frame;
  reg lookup_busy,lookup_is_query,lookup_is_instance,lookup_ch;
@@ -61,7 +61,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, 
                      (!identity_needed||identity_stable)&&(opcode!=34||!PREPARE_PAN||pan_lookup_ready)&&(opcode!=86||!ENABLE_FIELD||field_ready);
  // The cache retains the complete command until actual COMMIT. Only
  // the validated destination/found bit need cross this preparation edge.
- reg pan_prepared_valid,pan_prepared_found;reg [4:0] pan_prepared_slot;
+ reg pan_prepared_valid,pan_prepared_found;reg [5:0] pan_prepared_slot;
  wire pan_prepare=config_valid&&opcode==34&&raw_config_ready&&!pan_prepared_valid;
  assign pan_commit_slot=pan_prepared_slot;
  assign config_ready=raw_config_ready&&(!PIPE_PAN_COMMIT||opcode!=34||pan_prepared_valid);

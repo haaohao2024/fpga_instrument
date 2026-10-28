@@ -32,7 +32,7 @@ module instrument_io_stage9 #(
     output wire [351:0] fx_cfg_data,
     output wire fx_error,
     output wire pan_valid,
-    output wire [4:0] pan_slot,
+    output wire [5:0] pan_slot,
     output wire [63:0] pan_id,
     output wire [15:0] pan_generation,
     output wire [8:0] pan_value,

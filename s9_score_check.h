@@ -3,7 +3,7 @@
 #include <stdint.h>
 typedef struct {
     uint64_t recent[128],last_time,end_time;
-    uint32_t records,seen,held,next_page;
+    uint32_t rate,records,seen,held,next_page;
     uint16_t recent_head,recent_count,group;
     uint8_t closed,ended,initialized;
 } s9_score_check;

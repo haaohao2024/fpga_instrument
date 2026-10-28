@@ -183,7 +183,7 @@ module r22_event_endpoint #(parameter integer SHARED_STORE=0,STREAM_CLEAN=0)(
  localparam IDLE=0,OFFER=1,ACCOUNT=2,WAIT_DONE=3,RETIRE=4,CLEAN_READ=5,CLEAN_OFFER=6,CLEAN_WAIT=7;
  reg[2:0] state;reg[95:0] maps[0:8];reg maps_locked;
  wire capture_map=fact_valid && buffer_busy && fact_item[31:28]==2 &&
-   fact_item[27:24]==1 && fact_index<9 && fact_outcome==1 && fact_slot<32;
+   fact_item[27:24]==1 && fact_index<9 && fact_outcome==1 && fact_slot<48;
  always @(posedge clk)begin
   map_data<=maps[map_address];
   if(!rst&&capture_map)maps[fact_index]<={8'd1,2'd0,fact_slot,fact_after[58:43],fact_after[122:59]};
@@ -291,3 +291,4 @@ module r22_event_endpoint #(parameter integer SHARED_STORE=0,STREAM_CLEAN=0)(
  end
  // synthesis translate_on
 endmodule
+

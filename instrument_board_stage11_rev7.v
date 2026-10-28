@@ -23,17 +23,16 @@ module instrument_board_stage11_rev7 #(
     output wire pa_disable,
     output wire [3:0] video_p, video_n
 );
-    // Free-running divide-by-two: reset must not truncate clock pulses.
-    // Physical global-clock routing still requires target-device P&R verification.
-    (* syn_keep = 1 *) reg system_clk_div2 = 1'b0;
-    always @(posedge sys_clk) system_clk_div2 <= ~system_clk_div2;
-    wire system_clk = SYSTEM_DIVIDE == 2 ? system_clk_div2 : sys_clk;
-    localparam integer SYSTEM_CLK_HZ = CLK_FREQ_HZ / SYSTEM_DIVIDE;
-    // Reuse the existing board reset contract: asynchronous assertion,
-    // two-clock release, and an initialized power-on reset request.
+    // Experiment: dedicated PLL, leaving video clocks and communication at
+    // their original frequencies. Hold the system in reset until PLL locks.
+    wire system_clk, system_locked, comm_clock;
+    system_pll_30m system_pll(.lock(system_locked),.clkout0(system_clk),
+        .clkout1(comm_clock),.clkin(sys_clk),.reset(!rst_n));
+    localparam integer SYSTEM_CLK_HZ = 40_000_000;
+    wire system_reset_n = rst_n && system_locked;
     reg [1:0] reset_release = 2'b11;
-    always @(posedge system_clk or negedge rst_n) begin
-        if (!rst_n) reset_release <= 2'b11;
+    always @(posedge system_clk or negedge system_reset_n) begin
+        if (!system_reset_n) reset_release <= 2'b11;
         else reset_release <= {reset_release[0], 1'b0};
     end
     wire rst = reset_release[1];
@@ -73,11 +72,12 @@ module instrument_board_stage11_rev7 #(
     assign ws2812_data = (!rst_n || rst) ? 1'b0 : guide_wave;
 
     instrument_io_stage11 #(
+        .AUDIO_RATE_HZ(128000),
         .CLK_FREQ_HZ(SYSTEM_CLK_HZ), .SPI_CLK_HZ(ADC_SPI_CLK_HZ), .EXTERNAL_VIDEO_REFERENCE(1), .COMM_SEPARATE(1),
         .EC11_DEBOUNCE_US(500), .GLIDE_EC11_DEBOUNCE_US(1000),
         .EC11_TRANSITIONS_PER_STEP(4), .EC11_DIR_INVERT(0)
     ) u_instrument (
-        .clk(system_clk), .video_ref_clk(sys_clk), .comm_clk(sys_clk), .rst(rst),
+        .clk(system_clk), .video_ref_clk(sys_clk), .comm_clk(comm_clock), .rst(rst),
         .adc_dout(adc_miso), .adc_cs_n(adc_cs_n),
         .adc_sclk(adc_sclk), .adc_din(adc_mosi),
         .ec11_s1(enc1_a), .ec11_s2(enc1_b),
@@ -89,7 +89,7 @@ module instrument_board_stage11_rev7 #(
         .control_cs_n(mcu_cs2_n), .spi_miso(reply_bit),
         .spi_miso_oe(protocol_oe), .guide_led_dout(guide_wave),
         .guide_cfg_valid(1'b1), .guide_cfg_prefix(1'b0),
-        .guide_cfg_order(24'hfac688), .guide_cfg_lead(14'd4800),
+        .guide_cfg_order(24'hfac688), .guide_cfg_lead(14'd6400),
         .display_reset(1'b0), .display_scale(2'd0),
         .display_test_pattern(1'b0), .video_p(video_p), .video_n(video_n),
         .dac_bck(audio_bclk), .dac_ws(audio_lrck), .dac_din(audio_din),
