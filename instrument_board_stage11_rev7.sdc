@@ -84,6 +84,9 @@ report_exceptions -hold -to [get_pins {*exchange*front_metadata_*/D}] -max_paths
 # original removal edge. Do not use these exceptions with ungated FCLK.
 set_multicycle_path -setup -end 4 -from [get_pins {*display/rb/p_2_s0/Q}] -through [get_pins {*display/tx/phy/lane*/RESET}] -to [get_clocks {video_serial_clk}]
 set_multicycle_path -hold -end 3 -from [get_pins {*display/rb/p_2_s0/Q}] -through [get_pins {*display/tx/phy/lane*/RESET}] -to [get_clocks {video_serial_clk}]
+# Same register when synthesis replicates p[2] (gowin_replicate_reg_serializer_rst_*).
+set_multicycle_path -setup -end 4 -from [get_pins {*display/rb/gowin_replicate_reg_serializer_rst*/Q}] -through [get_pins {*display/tx/phy/lane*/RESET}] -to [get_clocks {video_serial_clk}]
+set_multicycle_path -hold -end 3 -from [get_pins {*display/rb/gowin_replicate_reg_serializer_rst*/Q}] -through [get_pins {*display/tx/phy/lane*/RESET}] -to [get_clocks {video_serial_clk}]
 # DHCE's native four-stage enable synchronizer permits a bounded enable
 # arrival during the reset guard window. Source holds each run/stop level
 # across that window; normal operation never modulates this clock.

@@ -32,7 +32,7 @@ static void status_task(void *arg){
   diag_uart_pump();link_diag_pump();bus_fault_pump();TickType_t now=xTaskGetTickCount();
   if(now-previous>=pdMS_TO_TICKS(2000)){
    uint32_t cycle;__asm__ volatile("rdcycle %0":"=r"(cycle));
-   char text[480];
+   char text[640];
    const s11_service_stats *rec=s11_service_statistics();
    snprintf(text,sizeof text,"O48BULK128 status tick=%lu boot=%u err=%d bt=%d clock=%d gatt=%d adv=%d media=%d pds=%u idle=%lu cycles=%lu period_ms=%lu stack=%lu heap=%lu buf=%lu recv=%lu stored=%lu\r\n",
     (unsigned long)now,boot_stage,s9_startup_error,r76_bt_phase,r76_clock_result,r76_gatt_result,r76_adv_result,r76_media_result,neo_pds_reset_count,

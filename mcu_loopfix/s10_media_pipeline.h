@@ -69,6 +69,8 @@ typedef struct {
  * pointer is immutable until matching release(), including after retirement.
  * One worker owns worker_step(); the sole bus task owns bus_step(). All other
  * entry points are bounded callback/task operations using binding.lock. */
+/* Playback gain from the phone's AVRCP absolute volume (0..127, 127 = unity). */
+extern volatile uint8_t s10_media_volume;
 int s10_media_init(s10_media_pipeline *p, const s10_media_binding *binding);
 /* Invoke only for a proven accepted media start, with its original identity.
  * rate=0 means UNKNOWN, not 48 kHz: wait for the first COMPLETE public SBC

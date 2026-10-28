@@ -50,11 +50,19 @@ module s11_spi_response #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,COMM_
  wire match_payload=block_valid&&prepared&&same_context;
  assign payload_ready=match_payload;
  wire [11:0] wire_byte=tx_bit_index>>3;
+ reg [7:0] payload_tx_byte;
+ wire serial_clk=COMM_SEPARATE?comm_clk:clk;
+ // With SOURCE_SYNC_TX the bit index is clocked by SCK. Sample it into the
+ // serial clock first, so the address decode below is a same-clock path
+ // instead of being timed against half an SCK period. The byte index only moves
+ // at bit4 and then holds for eight SCK bits, so one extra cycle is harmless.
+ reg [14:0] tx_bit_sampled;
+ always @(posedge serial_clk)tx_bit_sampled<=tx_bit_index;
+ wire [14:0] address_bit_index=COMM_SEPARATE?tx_bit_sampled:tx_bit_index;
  // At bit4 request the following byte; capture at bit7's falling edge.
  // This gives the 25MHz synchronous recorder port >=600ns to respond at 5MHz SPI.
  wire [11:0] read_byte=wire_byte+(((COMM_SEPARATE||SOURCE_SYNC_TX)&&tx_bit_index[2:0]>=4)?12'd1:12'd0);
- reg [7:0] payload_tx_byte;
- wire serial_clk=COMM_SEPARATE?comm_clk:clk;
+ wire [11:0] address_byte=(address_bit_index>>3)+(((COMM_SEPARATE||SOURCE_SYNC_TX)&&address_bit_index[2:0]>=4)?12'd1:12'd0);
  generate if(!SOURCE_SYNC_TX)begin: old_payload_capture
  always @(posedge serial_clk)begin
   if(rst||fast_start)payload_tx_byte<=0;
@@ -63,7 +71,7 @@ module s11_spi_response #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,COMM_
  end else begin: unused_payload_capture
   always @(*)payload_tx_byte=8'd0;
  end endgenerate
- wire [10:0] decoded_payload_address=read_byte>=64&&read_byte<2112?read_byte-64:11'd0;
+ wire [10:0] decoded_payload_address=address_byte>=64&&address_byte<2112?address_byte-64:11'd0;
  reg [10:0] registered_payload_address;
  // Bit4 look-ahead is retained. One 80MHz edge for address decoding still
  // leaves >300ns before bit7 capture at 8MHz SPI. CRC scan stays unpipelined.

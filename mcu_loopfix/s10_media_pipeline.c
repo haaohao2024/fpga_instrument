@@ -81,6 +81,7 @@ static int synchronize_worker(s10_media_pipeline *p)
     }
     unlock(p);return r?S10_MEDIA_DECODE:1;
 }
+volatile uint8_t s10_media_volume=127u;
 static int publish_normal(s10_media_pipeline *p,uint64_t generation)
 {
     lock(p);
@@ -93,7 +94,14 @@ static int publish_normal(s10_media_pipeline *p,uint64_t generation)
     if(p->pcm_count==S10_MEDIA_PCM_SLOTS){unlock(p);return S10_MEDIA_BUSY;}
     unsigned at=(p->pcm_head+p->pcm_count)%S10_MEDIA_PCM_SLOTS;
     s10_media_pcm_slot *slot=&p->pcm[at];
-    memcpy(slot->samples,p->normalized,p->normal_count*4u);
+    unsigned vol=s10_media_volume;
+    if(vol>=127u)memcpy(slot->samples,p->normalized,p->normal_count*4u);
+    else{
+        /* Phone AVRCP absolute volume 0..127, square law: 64 ~ -12 dB, 32 ~ -24 dB. */
+        int32_t g=(int32_t)((vol*vol*32768u)/16129u);
+        const int16_t *src=&p->normalized[0][0];int16_t *dst=&slot->samples[0][0];
+        for(unsigned i=0;i<2u*p->normal_count;i++)dst[i]=(int16_t)((src[i]*g)>>15);
+    }
     slot->epoch=p->epoch;slot->generation=generation;slot->pairs=p->normal_count;slot->ready=1;
     p->published_pairs+=p->normal_count;p->normal_count=0;++p->pcm_count;
     unlock(p);return 1;

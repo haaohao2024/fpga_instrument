@@ -70,9 +70,11 @@ static void media_task(void *unused){
  for(;;){
   uint32_t c0,c1;__asm__ volatile("rdcycle %0":"=r"(c0));
   s10_profile_step();
-  for(unsigned i=0;i<8;i++){int r=s10_media_worker_step(&media);if(r<=0)break;}
+  int busy=1;
+  for(unsigned i=0;i<8;i++){int r=s10_media_worker_step(&media);if(r<=0){busy=0;break;}}
   __asm__ volatile("rdcycle %0":"=r"(c1));media_cycles+=c1-c0;
-  vTaskDelay(pdMS_TO_TICKS(1));
+  /* Still backlogged: yield to equal-priority bus/BT RX instead of losing a tick. */
+  if(busy){taskYIELD();}else{vTaskDelay(pdMS_TO_TICKS(1));}
  }
 }
 int s10_runtime_prepare(void){
@@ -112,7 +114,7 @@ int s10_runtime_file_enter(void){
  taskEXIT_CRITICAL();return r;
 }
 void s10_runtime_file_leave(void){taskENTER_CRITICAL();file_reserved=0;taskEXIT_CRITICAL();}
-int s10_runtime_start_task(void){return prepared&&xTaskCreate(media_task,"s10_media",1024,0,4,0)==pdPASS?0:-1;}
+int s10_runtime_start_task(void){return prepared&&xTaskCreate(media_task,"s10_media",1024,0,5,0)==pdPASS?0:-1;}
 RECORD_HOT static int contains(const void *base,size_t capacity,const void *ptr,size_t n){
  uintptr_t a=(uintptr_t)base,b=(uintptr_t)ptr;
  return b>=a&&b-a<=capacity&&n<=capacity-(b-a);
@@ -256,7 +258,10 @@ RECORD_HOT int s10_runtime_bus_poll(void){
   * an obsolete epoch. Do this before a new pipeline can open TX. */
  if(transport.state==S10_TX_CLOSED&&!transport.dma_active&&!admission.active&&admission.need_refill){admission.need_refill=0;++refill_cancelled;}
  if(s11_service_active()&&recorder_only_closed())return 0;
- int moved=s10_media_bus_step(&media,&transport);
+ /* Drain every ready PCM slot, not one per bus cycle: one-at-a-time capped
+  * the media->TX handoff below real time and overflowed the A2DP ingress. */
+ int moved;unsigned hops=0;
+ do moved=s10_media_bus_step(&media,&transport);while(moved>0&&++hops<S10_MEDIA_PCM_SLOTS+2u);
  if(moved<0&&moved!=S10_MEDIA_BUSY)transport_fault(S10_MEDIA_TRANSPORT);
  if(!s10_pcm_tx_conserved(&transport)||!s10_media_conserved(&media))transport_fault(S10_MEDIA_TRANSPORT);
  return 0;
@@ -270,7 +275,7 @@ RECORD_HOT int s10_runtime_bus_service(void){
   * job. Finish any already-reserved job first; do not change its ownership. */
  taskENTER_CRITICAL();
  if(!record&&!record_preparing&&transport.record_feedback&&!record_job_ready&&!transport.dma_active){
-  transport.service=(s10_tx_service_config){474,896,2560,32,64,5000};
+  transport.service=(s10_tx_service_config){768,896,2560,32,64,5000};
   transport.record_feedback=transport.record_burst=0;record_sd_waiting=0;
  }
  taskEXIT_CRITICAL();
@@ -523,7 +528,8 @@ int s10_runtime_media_diag(char *text,unsigned size){
   (unsigned long)transport.state,(unsigned long)transport.committed,(unsigned long)transport.failures,(unsigned long)transport.discarded,(unsigned long)transport.bad_status,(unsigned long)transport.source_rejections};
  long e=media.last_error;int b=bus_ready,mr=media_reserved,fr=file_reserved;unsigned long sr=transport.stale_recoveries,wo=(unsigned long)transport.wire_offset,rp=transport.reprimes,ue=(unsigned long)transport.unexpected_stream_ends,mc=media_cycles/1000000u;media_cycles=0;
  extern volatile uint32_t s10_decode_cycles,s10_resample_cycles;unsigned long dc=s10_decode_cycles/1000000u,rc=s10_resample_cycles/1000000u;s10_decode_cycles=s10_resample_cycles=0;
+ unsigned long gm=transport.gap_max_us,bm=transport.buffered_min,dn=transport.data_count;transport.gap_max_us=0;transport.buffered_min=0xffff;transport.data_count=0;
  taskEXIT_CRITICAL();
- return snprintf(text,size,"A2DP_PIPE st=%lu rate=%lu sdu=%lu dec=%lu pub=%lu bus=%lu disc=%lu errs=%lu resync=%lu stops=%lu last=%ld bus_ready=%d mres=%d fres=%d TX st=%lu commit=%lu fail=%lu disc=%lu bad=%lu rej=%lu stale=%lu woff=%lu reprime=%lu ends=%lu media_mcyc=%lu dec_mcyc=%lu rs_mcyc=%lu",
-  v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8],v[9],e,b,mr,fr,v[10],v[11],v[12],v[13],v[14],v[15],sr,wo,rp,ue,mc,dc,rc);
+ return snprintf(text,size,"A2DP_PIPE st=%lu rate=%lu sdu=%lu dec=%lu pub=%lu bus=%lu disc=%lu errs=%lu resync=%lu stops=%lu last=%ld bus_ready=%d mres=%d fres=%d TX st=%lu commit=%lu fail=%lu disc=%lu bad=%lu rej=%lu stale=%lu woff=%lu reprime=%lu ends=%lu media_mcyc=%lu dec_mcyc=%lu rs_mcyc=%lu gap_max_us=%lu buf_min=%lu data=%lu vol=%u",
+  v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8],v[9],e,b,mr,fr,v[10],v[11],v[12],v[13],v[14],v[15],sr,wo,rp,ue,mc,dc,rc,gm,bm,dn,(unsigned)s10_media_volume);
 }

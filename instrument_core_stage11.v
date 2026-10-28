@@ -78,7 +78,7 @@ module instrument_core_stage11 #(
  output wire [3:0] glide_code,
  output wire [63:0] media_accepted_pairs,media_delivered_pairs,media_discard_pairs,
  output wire [31:0] media_packets,media_duplicates,media_rejected,media_conflicts,media_timeouts,
-    input wire field_valid,field_start,input wire [1:0] field_size,
+    input wire field_valid,field_start,input wire [2:0] field_size,
     output wire field_ready,field_active,field_rejected,field_committed,field_running,
     output wire  observe_allocator_busy,
     output wire  observe_batch_begin,

@@ -140,7 +140,7 @@ module instrument_core_stage8 #(
     output wire [31:0] observe_gain_frame,observe_gain_version,observe_gain_accepted,
     output wire [15:0] observe_gain_l,observe_gain_e,
     output wire [6:0] observe_gain_remaining,
-    input wire field_valid,field_start,input wire [1:0] field_size,
+    input wire field_valid,field_start,input wire [2:0] field_size,
     output wire field_ready,field_active,field_rejected,field_committed,field_running,
     output wire  observe_allocator_busy,
     output wire  observe_batch_begin,

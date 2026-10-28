@@ -10,6 +10,7 @@
 #include "conn.h"
 #include "l2cap.h"
 #include "a2dp.h"
+#include "avrcp.h"
 #include "net/buf.h"
 #include <stddef.h>
 #include <string.h>
@@ -93,8 +94,12 @@ int s10_profile_prepare(s10_media_pipeline*p)
  * register a second SEP or claim endpoint.caps constrains that advertisement.
  * Project ingress accepts only complete 44.1/48k SBC frames; other rates
  * trigger the worker's explicit FORMAT/STOP path. */
+/* Phone volume keys arrive as AVRCP SetAbsoluteVolume (the stack's TG already
+ * advertises it, so the phone stops attenuating PCM itself). */
+static void avrcp_volume(uint8_t vol){s10_media_volume=(uint8_t)(vol>127u?127u:vol);}
+static struct avrcp_callback avrcp_callbacks={.abs_vol=avrcp_volume};
 int s10_profile_enable(void)
-{int e;if(!prepared||enabled)return S10_MEDIA_ARGUMENT;sbc_info[0]=(uint8_t)(0x10u|(sbc_info[0]&0x0fu));a2dp_cb_register(&callbacks);e=bt_br_set_connectable(1);if(e&&e!=-EALREADY){last_error=S10_MEDIA_SOURCE;return e;}e=bt_br_set_discoverable(1);if(e&&e!=-EALREADY){last_error=S10_MEDIA_SOURCE;return e;}last_error=0;enabled=1;return 0;}
+{int e;if(!prepared||enabled)return S10_MEDIA_ARGUMENT;sbc_info[0]=(uint8_t)(0x10u|(sbc_info[0]&0x0fu));a2dp_cb_register(&callbacks);avrcp_cb_register(&avrcp_callbacks);e=bt_br_set_connectable(1);if(e&&e!=-EALREADY){last_error=S10_MEDIA_SOURCE;return e;}e=bt_br_set_discoverable(1);if(e&&e!=-EALREADY){last_error=S10_MEDIA_SOURCE;return e;}last_error=0;enabled=1;return 0;}
 int s10_profile_step(void)
 {struct ig_transport t;uint64_t epoch=0;int error=0,state;if(!prepared)return S10_MEDIA_ARGUMENT;lock(0);t=core.source.transports[0];unlock(0);state=s10_media_state(pipe,&epoch,&error);
  if((t.retiring_epoch||t.fault)&&state!=S10_MEDIA_CLOSED){s10_media_stop(pipe,epoch,t.fault?S10_MEDIA_SOURCE:S10_MEDIA_OK);/* Normal peer retirement is not a media fault. The worker must execute cleanup; STOP is not a timer/fence. */return s10_media_worker_step(pipe);}

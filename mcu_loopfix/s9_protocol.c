@@ -109,7 +109,7 @@ int s9_validate_request(const s9_message *m) {
             return n==8 && p[0]>=1 && p[0]<=6 && p[0]!=2 && zeros(p+2,6) &&
                 ((p[0]==1 && p[1]<=3) || (p[0]==6 && p[1]<=1) || ((p[0]==3 || p[0]==4 || p[0]==5) && p[1]==0))?S9_OK:S9_E_RANGE;
         case S11_APP_FIELD_TEST:
-            return n==8&&zeros(p+2,6)&&((p[0]==1&&(p[1]==1||p[1]==8||p[1]==16||p[1]==32))||(p[0]==2&&p[1]==0))?S9_OK:S9_E_RANGE;
+            return n==8&&zeros(p+2,6)&&((p[0]==1&&(p[1]==1||p[1]==8||p[1]==16||p[1]==32||p[1]==48))||(p[0]==2&&p[1]==0))?S9_OK:S9_E_RANGE;
         case S9_OP_EFFECTS: {
             if(n!=44) return S9_E_LENGTH;
             uint32_t w[11]; for(unsigned i=0;i<11;i++) w[i]=s9_get32(p+4*i);

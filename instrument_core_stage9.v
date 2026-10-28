@@ -111,7 +111,7 @@ module instrument_core_stage9 #(
  output wire [2:0] phone_link_state,
  output wire [31:0] phone_held_keys,phone_rejected_transactions,phone_cs_conflicts,phone_lease_expirations,phone_cleanup_offs,
  output wire [3:0] glide_code,
-    input wire field_valid,field_start,input wire [1:0] field_size,
+    input wire field_valid,field_start,input wire [2:0] field_size,
     output wire field_ready,field_active,field_rejected,field_committed,field_running,
     output wire  observe_allocator_busy,
     output wire  observe_batch_begin,
@@ -171,10 +171,10 @@ module instrument_core_stage9 #(
 
  wire remote_event_valid,remote_event_ready,remote_dispatch_done;
  wire [904:0] remote_event_packet;wire [575:0] remote_press_ids;
- wire field_cfg_valid,field_cfg_start;wire [1:0] field_cfg_size;
+ wire field_cfg_valid,field_cfg_start;wire [2:0] field_cfg_size;
  wire merged_field_valid=field_cfg_valid||field_valid;
  wire merged_field_start=field_cfg_valid?field_cfg_start:field_start;
- wire [1:0] merged_field_size=field_cfg_valid?field_cfg_size:field_size;
+ wire [2:0] merged_field_size=field_cfg_valid?field_cfg_size:field_size;
  wire [55:0] remote_keymap;
  assign observe_keymap=remote_keymap;
  wire score_miso,score_oe,control_miso,control_oe;

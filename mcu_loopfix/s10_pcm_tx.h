@@ -50,6 +50,11 @@ typedef struct {
      * ending the stream on the first phone packet gap. */
     uint8_t primed;
     uint32_t reprimes;
+    /* Diagnostics, cleared by the 2 s status line: longest DATA-to-DATA gap,
+     * lowest FPGA buffered report while playing, DATA transactions started. */
+    uint64_t last_data_us;
+    uint32_t gap_max_us,data_count;
+    uint16_t buffered_min;
     s10_tx_service_config service;
 } s10_pcm_tx;
 typedef struct {

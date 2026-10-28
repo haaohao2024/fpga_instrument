@@ -18,7 +18,7 @@ static uint64_t wire(const s10_pcm_tx *s){return s->epoch+s->wire_offset;}
 void s10_pcm_tx_init(s10_pcm_tx *s){memset(s,0,sizeof *s);s->next_ticket=1;
     /* STATUS every 5 ms (the allowed maximum): DATA responses already carry ACK/credit,
      * and each SPI transaction has a large fixed CPU cost on the BL616. */
-    s->service=(s10_tx_service_config){474,896,2560,32,64,5000};}
+    s->service=(s10_tx_service_config){768,896,2560,32,64,5000};}
 int s10_pcm_tx_service_configure(s10_pcm_tx *s,const s10_tx_service_config *c){
     if(!s||!c||c->steady_trigger<256||c->steady_trigger>768||c->sd_trigger<768||c->sd_trigger>1536||
        c->mcu_target<1024||c->mcu_target>3584||c->mcu_bias_divisor<16||c->mcu_bias_limit>128||
@@ -111,7 +111,7 @@ static int next_job(s10_pcm_tx *s,uint64_t now,s10_tx_job *j,int only_status){
         if(slot==2&&s->telemetry_valid&&now-s->last_status_us<period)return S10_TX_BUSY;
     }
     if(slot==2){header(s->control_tx,op,s->state==S10_TX_OPENING&&s->stale_stop?s->stale_epoch:wire(s),0,0,0,op==START?s->track:op==STATUS?1:0);put32(s->control_tx+32,s10_pcm_crc32(s->control_tx,32));memset(s->control_rx,0,64);j->tx=s->control_tx;j->rx=s->control_rx;j->length=64;j->pairs=0;if(op==STATUS){s->queries++;if(s->sd_request||s->force_refill)s->urgent_queries++;}}
-    else {s10_tx_bank *b=&s->bank[slot];j->tx=b->tx;j->rx=b->rx;j->length=b->length;j->pairs=b->pairs;memset(b->rx,0,sizeof b->rx);b->last_sent_us=now;b->sent=1;s->force_refill=0;s->data_after_status=1;}
+    else {s10_tx_bank *b=&s->bank[slot];j->tx=b->tx;j->rx=b->rx;j->length=b->length;j->pairs=b->pairs;memset(b->rx,0,sizeof b->rx);b->last_sent_us=now;b->sent=1;if(s->last_data_us&&now-s->last_data_us>s->gap_max_us)s->gap_max_us=(uint32_t)(now-s->last_data_us);s->last_data_us=now;s->data_count++;s->force_refill=0;s->data_after_status=1;}
     s->dma_active=1;s->dma_slot=(uint8_t)slot;s->dma_op=(uint8_t)op;s->started_us=now;s->ticket=s->next_ticket++;
     j->ticket=s->ticket;j->epoch=s->epoch;j->generation=s->generation;j->operation=(uint8_t)op;return 0;
 }
@@ -169,7 +169,7 @@ static int accept_status(s10_pcm_tx *s,const uint8_t *p,unsigned op,unsigned slo
     int generation_changed=0;
     if(p[5]&128u){
         uint32_t gen=get32(p+24);generation_changed=s->have_stream_generation&&gen!=s->stream_generation;
-        s->stream_state=p[5]&7u;s->stream_buffered=get16(p+20);s->stream_pending=get16(p+22);s->stream_generation=gen;
+        s->stream_state=p[5]&7u;s->stream_buffered=get16(p+20);if(s->stream_state==2&&s->stream_buffered<s->buffered_min)s->buffered_min=s->stream_buffered;s->stream_pending=get16(p+22);s->stream_generation=gen;
         s->telemetry_us=s->started_us;s->telemetry_source_head=s->source_head;s->telemetry_valid=1;s->have_stream_generation=1;
     }
     if(s->state==S10_TX_OPENING&&wirestate==2)s->state=S10_TX_PLAY;

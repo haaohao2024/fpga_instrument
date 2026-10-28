@@ -160,7 +160,9 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
   status_tmp=0;status_tmp[31:0]=32'h53303153;status_tmp[39:32]=1;
   status_tmp[47:40]={6'd0,state};status_tmp[63:48]={7'd0,free_pair_credit};
   status_tmp[127:64]=stream_epoch;status_tmp[159:128]=last_sequence;
-  status_tmp[223:160]=delivered_pair_count;
+  // Bytes 20..27 of a plain STATUS are never read by BL616 (it reads them only
+  // in TELEMETRY, which overrides them below); constant zero frees the counter.
+  status_tmp[223:160]=64'd0;
   status_crc=32'hffffffff;if(!STREAM_STATUS_CRC)for(j=0;j<28;j=j+1)status_crc=crcbyte(status_crc,status_tmp[j*8+:8]);
   status_tmp[255:224]=~status_crc;
   telemetry_tmp=status_tmp;telemetry_tmp[47:40]={1'b1,4'd0,stream_state};

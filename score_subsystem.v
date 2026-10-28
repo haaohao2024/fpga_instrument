@@ -16,7 +16,7 @@ module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,EXTERN
  output wire [255:0] observe_score_status,
  output wire observe_dispatch_active,
  output wire observe_teach,observe_loop,
- input wire field_valid,field_start,input wire [1:0] field_size,
+ input wire field_valid,field_start,input wire [2:0] field_size,
  output wire field_ready,field_active,field_rejected,field_committed,field_running,input wire [540:0] shared_score_rx
 );
  wire cv,cr,pv,pr,pdone,pok,pc,pe,rv,rr,hv,eof;
@@ -109,7 +109,7 @@ module scheduled_score_probe (
  output wire [255:0] observe_score_status,
  output wire observe_dispatch_active,
  output wire observe_teach,observe_loop,
- input wire field_valid,field_start,input wire [1:0] field_size,
+ input wire field_valid,field_start,input wire [2:0] field_size,
  output wire field_ready,field_active,field_rejected,field_committed,field_running
 );
 score_subsystem #(.STREAM_STATUS_CRC(1),.ENABLE_S10_ROUTE(1),.ENABLE_S11(1)) dut(.clk(clk),.rst(rst),.sample_tick(sample_tick),.stereo_locked(stereo_locked),.spi_sck(spi_sck),.fpga_cs_n(fpga_cs_n),.sd_cs_n(sd_cs_n),.spi_mosi(spi_mosi),.spi_miso(spi_miso),.spi_miso_oe(spi_miso_oe),.local_backlog(local_backlog),.event_valid(event_valid),.event_ready(event_ready),.event_packet(event_packet),.dispatch_done(dispatch_done),.local_notes(local_notes),.guide_cfg_valid(guide_cfg_valid),.guide_cfg_prefix(guide_cfg_prefix),.guide_cfg_order(guide_cfg_order),.guide_cfg_lead(guide_cfg_lead),.led_dout(led_dout),.score_state(score_state),.score_error(score_error),.score_time(score_time),.deadline_count(deadline_count),.observe_score_status(observe_score_status),.observe_dispatch_active(observe_dispatch_active),.observe_teach(observe_teach),.observe_loop(observe_loop),.field_valid(field_valid),.field_start(field_start),.field_size(field_size),.field_ready(field_ready),.field_active(field_active),.field_rejected(field_rejected),.field_committed(field_committed),.field_running(field_running));

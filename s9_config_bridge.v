@@ -25,7 +25,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, 
  input wire[287:0] snapshot_pan,input wire[2047:0] snapshot_ids,input wire[511:0] snapshot_generations,
  input wire[7:0] local_gate,input wire local_pending,output wire[55:0] keymap,
  output wire[31:0] keymap_version,
- output wire field_valid,field_start,output wire[1:0] field_size,
+ output wire field_valid,field_start,output wire[2:0] field_size,
  input wire field_ready,field_active,field_rejected,field_committed,field_running,
  output wire lookup_valid,input wire lookup_ready,output wire lookup_channel,lookup_echo,
  output wire[31:0] lookup_sequence,input wire lookup_done,input wire signed[15:0] lookup_error,input wire[511:0] lookup_result,
@@ -76,7 +76,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, 
  wire accept=config_valid&&config_ready;
  assign field_valid=accept&&opcode==86&&ENABLE_FIELD;
  assign field_start=config_bytes[263:256]==1;
- assign field_size=config_bytes[271:264]==1?0:config_bytes[271:264]==8?1:config_bytes[271:264]==16?2:3;
+ assign field_size=config_bytes[271:264]==1?0:config_bytes[271:264]==8?1:config_bytes[271:264]==16?2:config_bytes[271:264]==32?3:4;
  assign fx_cfg_valid=accept&&opcode==35;assign fx_cfg_data=config_bytes[607:256];
  assign gain_cfg_valid=accept&&opcode==36;
  assign gain_local=config_bytes[271:256];assign gain_external=config_bytes[287:272];

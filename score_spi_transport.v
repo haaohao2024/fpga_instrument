@@ -75,8 +75,9 @@ module score_spi_transport # (parameter integer RAW_ONLY=0,EXTERNAL_SCORE_RX=0,C
   status_tmp=0;status_tmp[31:0]=32'h54533753;status_tmp[39:32]=1;
   status_tmp[47:40]=player_error;status_tmp[55:48]={6'd0,reload_request,(!page_busy&&page_ready)};
   status_tmp[63:56]=player_state;status_tmp[127:64]=active_epoch;
-  status_tmp[159:128]=last_sequence;status_tmp[191:160]=accepted_pages;
-  status_tmp[223:192]=rejected_transactions;
+  // Bytes 20..27 (page/reject counters) are unused by BL616; constant zero.
+  status_tmp[159:128]=last_sequence;status_tmp[191:160]=32'd0;
+  status_tmp[223:192]=32'd0;
   if(raw_mode)begin
    // Keep S7ST magic: the shared S11 SPI route chooses its encoder after byte4.
    status_tmp[39:32]=2;status_tmp[55:48]={3'd0,raw_published_valid,raw_barrier_busy,
