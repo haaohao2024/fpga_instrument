@@ -40,6 +40,8 @@ final class InstrumentModel: ObservableObject {
             guard let self=self else{return};self.client.disconnected();self.metrics=nil;self.loop=nil;self.ensemble=nil;self.record=nil
             self.spectrum.disconnected()
             self.transfer=nil;self.fileBusy=false;self.fileStatus="连接已断开；未完成的文件不发布"
+            self.uploader.disconnected();self.noteSlots=[:];self.recording=false;self.ensembleOn=false;self.scorePlaying=false
+            self.guideNote=nil;self.physicalNotes=[]
         }
         timer=Timer.publish(every:0.1,on:.main,in:.common).autoconnect().sink{[weak self] _ in self?.tick()}
     }
@@ -65,6 +67,154 @@ final class InstrumentModel: ObservableObject {
     }
     func press(_ key: Int) -> Bool { spectrumState == .idle && client.press(key:key,note:60+octave*12+key,pressure:Int(velocity)) }
     func release(_ key: Int) { client.release(key:key) }
+
+    // MARK: Stage (main screen) state. These are the values the phone last sent,
+    // not a readback of the board; the board's own knobs can change them.
+    @Published var timbre=1
+    @Published var releaseCode=4.0
+    @Published var vibratoDepth=0.0
+    @Published var synthVolume=0.7
+    @Published var accompanimentVolume=0.5
+    @Published var echo=false
+    @Published var chorus=false
+    @Published var reverb=false
+    @Published var bypass=false
+    @Published var stereoSpread=false
+    @Published var metronomeOn=false
+    @Published var tempo=100
+    @Published var countIn=false
+    @Published var recording=false
+    @Published var ensembleOn=false
+    @Published var scorePlaying=false
+    @Published var teachMode=false
+    /// Reserved board notices (opcodes 133..135). Empty until a firmware sends them.
+    @Published var guideNote: Int?
+    @Published var physicalNotes: Set<Int>=[]
+    @Published var boardReportsGuide=false
+    @Published var scoreStatus=""
+    private var noteSlots: [Int:Int]=[:]   // note -> phone key slot 0..31
+    let metronome=Metronome()
+    lazy var uploader=ScoreUploader(client:client,show:{[weak self] in self?.scoreStatus=$0;self?.show($0)})
+
+    /// Plays a note on the first free phone key slot; the protocol allows 32 held keys.
+    func pressNote(_ note: Int) -> Bool {
+        guard spectrumState == .idle, noteSlots[note]==nil else { return false }
+        let used=Set(noteSlots.values).union(client.heldKeys)
+        guard let slot=(0..<32).first(where:{ !used.contains($0) }) else { return false }
+        let spread=stereoSpread
+        let ok=client.press(key:slot,note:note,pressure:Int(velocity)) {[weak self] r in
+            guard spread, r.instance != 0 else { return }
+            self?.pan(instance:r.instance,generation:r.generation,note:note)
+        }
+        if ok { noteSlots[note]=slot }
+        return ok
+    }
+    func releaseNote(_ note: Int) { if let slot=noteSlots.removeValue(forKey:note) { client.release(key:slot) } }
+    func releaseStage() { noteSlots=[:];releaseAll() }
+    /// Low notes left, high notes right (0..256, 128 = centre).
+    private func pan(instance: UInt64,generation: UInt16,note: Int) {
+        let position=UInt16(max(0,min(256,(note-KeyLayout.low)*256/(KeyLayout.high-KeyLayout.low))))
+        let payload=LE.bytes(instance)+LE.bytes(generation)+LE.bytes(position)+[0,0,0,0]
+        command(34,"声像",payload)
+    }
+
+    func applyTimbre(_ t: Int) { timbre=t;releaseStage();_ = client.pitchParameter(opcode:32,value:t);saveSettings() }
+    func applyRelease() { _ = client.pitchParameter(opcode:33,value:Int(releaseCode));saveSettings() }
+    func applyVibrato() { vibrato(Int(vibratoDepth));saveSettings() }
+    func applyGain() { gain(synthVolume,accompanimentVolume,false,false);saveSettings() }
+    func applyEffects() { effects(delay:echo,chorus:chorus,reverb:reverb,bypass:bypass) }
+    func toggleEffect(_ name: String) {
+        switch name {
+        case "bypass": bypass.toggle()
+        case "echo": echo.toggle();bypass=false
+        case "chorus": chorus.toggle();bypass=false
+        default: reverb.toggle();bypass=false
+        }
+        applyEffects();saveSettings()
+    }
+    func toggleRecording() {
+        if recording { stopRecord();recording=false } else { startRecord(mask:3);recording=true }
+    }
+    func toggleEnsemble() {
+        if ensembleOn { command(105,"停止智能合奏");ensembleOn=false }
+        else { startEnsemble(level:2,root:0,minor:false,bpm:tempo,style:0);ensembleOn=true }
+    }
+    func toggleMetronome() { metronomeOn.toggle();if metronomeOn { metronome.start(bpm:tempo) } else { metronome.stop() } }
+
+    // Loop: record and end each layer explicitly; the next layer waits for the player.
+    var loopRecording: Bool { loop?.state==1 || loop?.state==3 }
+    var loopLayers: Int { loop?.layers ?? 0 }
+    func recordLoopLayer() {
+        releaseStage()
+        if countIn { metronome.countIn(bpm:tempo,beats:4) {[weak self] in guard let self=self else { return };self.startLoop(self.timbre) } }
+        else { startLoop(timbre) }
+    }
+    func endLoopLayer() { command(97,"结束录制一层") }
+    func undoLoopLayer() { command(98,"撤销上一层") }
+    func toggleLoopPlayback() { if loop?.state==5 { command(102,"恢复循环") } else { command(99,"停止循环") } }
+    func clearLoop() { command(100,"清空循环") }
+
+    func playScore() { command(38,"播放曲谱",[1,UInt8(teachMode ? 1 : 0),0,0,0,0,0,0],target:3);scorePlaying=true }
+    func stopScore() { command(38,"停止曲谱",[3,0,0,0,0,0,0,0],target:3);scorePlaying=false;guideNote=nil }
+
+    /// Reserved notices; older firmware never sends them, so nothing changes until it does.
+    /// 133 guide: [1, count, note0...]  134 physical keys: [1, 0, 16-byte note bitmap]
+    /// 135 board parameters: [1, timbre, release, vibrato, effectFlags]  (docs/app_reserved_notices.md)
+    func reservedNotice(_ m: Message) {
+        let p=m.payload
+        switch m.opcode {
+        case 133:
+            guard p.count>=2, p[0]==1, p.count>=2+Int(p[1]) else { return }
+            boardReportsGuide=true
+            guideNote=p[1]>0 ? Int(p[2]) : nil
+        case 134:
+            guard p.count==18, p[0]==1 else { return }
+            var notes=Set<Int>()
+            for i in 0..<128 where p[2+i/8] & (UInt8(1)<<UInt8(i%8)) != 0 { notes.insert(i) }
+            physicalNotes=notes
+        case 135:
+            guard p.count>=5, p[0]==1, p[1]<=5, p[2]<=11 else { return }
+            timbre=Int(p[1]);releaseCode=Double(p[2]);vibratoDepth=Double(p[3])
+            echo=p[4]&1 != 0;chorus=p[4]&2 != 0;reverb=p[4]&4 != 0;bypass=p[4]&8 != 0
+        default: break
+        }
+    }
+
+    // MARK: Remembered settings. Saved locally; sent to the board only on request.
+    private let settingsKey="stageSettings.v1"
+    func saveSettings() {
+        let s: [String:Any]=["timbre":timbre,"release":releaseCode,"vibrato":vibratoDepth,"velocity":velocity,
+            "synth":synthVolume,"accomp":accompanimentVolume,"echo":echo,"chorus":chorus,"reverb":reverb,"bypass":bypass,
+            "stereo":stereoSpread,"tempo":tempo]
+        UserDefaults.standard.set(s,forKey:settingsKey)
+    }
+    var hasSavedSettings: Bool { UserDefaults.standard.dictionary(forKey:settingsKey) != nil }
+    func restoreSettings() {
+        guard let s=UserDefaults.standard.dictionary(forKey:settingsKey) else { show("还没有保存过的设置");return }
+        timbre=s["timbre"] as? Int ?? timbre;releaseCode=s["release"] as? Double ?? releaseCode
+        vibratoDepth=s["vibrato"] as? Double ?? vibratoDepth;velocity=s["velocity"] as? Double ?? velocity
+        synthVolume=s["synth"] as? Double ?? synthVolume;accompanimentVolume=s["accomp"] as? Double ?? accompanimentVolume
+        echo=s["echo"] as? Bool ?? echo;chorus=s["chorus"] as? Bool ?? chorus;reverb=s["reverb"] as? Bool ?? reverb;bypass=s["bypass"] as? Bool ?? bypass
+        stereoSpread=s["stereo"] as? Bool ?? stereoSpread;tempo=s["tempo"] as? Int ?? tempo
+        pushStage("恢复上次设置")
+    }
+    /// Preset for filming: FM piano, echo + reverb, medium vibrato.
+    func demoPreset() {
+        timbre=1;releaseCode=4;vibratoDepth=96;velocity=170;synthVolume=0.7;accompanimentVolume=0.5
+        echo=true;chorus=false;reverb=true;bypass=false
+        pushStage("演示模式");saveSettings()
+    }
+    private func pushStage(_ label: String) {
+        guard link.ready else { show("\(label)：界面已更新，连接后再按一次发送到乐器");return }
+        releaseStage()
+        _ = client.pitchParameter(opcode:32,value:timbre);_ = client.pitchParameter(opcode:33,value:Int(releaseCode))
+        vibrato(Int(vibratoDepth));gain(synthVolume,accompanimentVolume,false,false);applyEffects()
+        show("\(label)：已发送到乐器")
+    }
+
+    #if targetEnvironment(simulator)
+    func qaDemo() { guideNote=67;physicalNotes=[60,64];echo=true;reverb=true }
+    #endif
     func releaseAll() { if spectrumState != .idle { spectrum.stop() } else { client.releaseAll() } }
     func startSpectrumTest(_ voices: Int) {
         metrics=nil
@@ -156,6 +306,7 @@ final class InstrumentModel: ObservableObject {
             case 132: ensemble=try EnsembleInfo(m.payload)
             case 129:
                 if let t=transfer { try t.accept(m.payload);fileStatus="已读取 \(t.offset) / \(t.total) 字节";advanceDownload() }
+            case 133,134,135: reservedNotice(m)
             default: break
             }
         } catch { show(error.localizedDescription);if m.opcode==129 { cancelFile(error.localizedDescription) } }

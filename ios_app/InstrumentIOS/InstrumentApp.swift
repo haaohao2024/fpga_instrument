@@ -30,7 +30,8 @@ struct ActivityShareSheet: UIViewControllerRepresentable {
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
-            InstrumentHome(model:model,link:model.link)
+            // The stage is the home screen; the former tab pages open from its "更多" menu.
+            StageView(model:model,link:model.link)
                 .onChange(of:phase){ if $0 == .background { model.background() } }
         }
     }
@@ -360,7 +361,8 @@ struct KeymapView: View {
                 Button("暂停"){model.command(38,"暂停曲谱",[4,0,0,0,0,0,0,0],target:3)}
                 Button("继续"){model.command(38,"继续曲谱",[5,0,0,0,0,0,0,0],target:3)}
                 Button("停止"){model.command(38,"停止曲谱",[3,0,0,0,0,0,0,0],target:3)}
-                Text("曲谱文件为项目专用的SCORE.EVT，不是PDF、图片或普通MIDI。可把提供的示例SCORE.EVT复制到FAT32卡根目录，再将卡插回板卡。也可在录音页面将兼容的事件录音转换为曲谱；当前转换器对音色和效果设置有限制。本版尚无App内上传入口。").font(.caption)
+                Text("曲谱文件为项目专用的SCORE.EVT，不是PDF、图片或普通MIDI。可在主界面“更多→上传曲谱到乐器”选择文件上传，乐器校验后替换卡上的SCORE.EVT；也可把文件复制到FAT32卡根目录。录音页面可将兼容的事件录音转换为曲谱；当前转换器对音色和效果设置有限制。").font(.caption)
+                if !model.scoreStatus.isEmpty { Text(model.scoreStatus).font(.caption) }
             }
         }.disabled(!link.ready).navigationTitle("实体键与曲谱")
     }
