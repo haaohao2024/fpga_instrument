@@ -12,7 +12,11 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.InputType
+import android.view.Gravity
+import kotlin.math.roundToInt
 import android.view.MotionEvent
 import android.view.View
 import android.widget.*
@@ -54,7 +58,10 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     private var destroyed=false
     private var prepareGeneration=0
     private val ticker=object:Runnable {
-        override fun run(){if(running){client.tick();if(::download.isInitialized)download.tick();if((page==7||page==8)&&client.connected&&client.pendingCount<2&&SystemClock.elapsedRealtime()-lastVoicePoll>=1000){lastVoicePoll=SystemClock.elapsedRealtime();client.parameter(41,byteArrayOf(),"读取硬件声部",3)};handler.postDelayed(this,100)}}
+        override fun run(){if(running){client.tick();if(::download.isInitialized)download.tick();if((page==7||page==8)&&client.connected&&client.pendingCount<2&&SystemClock.elapsedRealtime()-lastVoicePoll>=1000){lastVoicePoll=SystemClock.elapsedRealtime();client.parameter(41,byteArrayOf(),"读取硬件声部",3)}
+            // Loop status drives the stage's layer buttons while a loop exists.
+            if(client.connected&&(loopState!=0||loopLayers>0)&&client.pendingCount<2&&SystemClock.elapsedRealtime()-lastLoopPoll>=1000){lastLoopPoll=SystemClock.elapsedRealtime();client.parameter(101,byteArrayOf(),"查询循环",3)}
+            handler.postDelayed(this,100)}}
     }
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,21 +71,272 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         client=S9ClientSession(link::send,{reason->link.close();status(reason)},{feedback.text=it},SystemClock::elapsedRealtime)
         upload=S9ScoreUpload(client,{feedback.text=it})
         download=S11Download(client,{feedback.text=it},SystemClock::elapsedRealtime)
-        val column=LinearLayout(this).apply {orientation=1;setPadding(20,48,20,24)}
-        column.addView(TextView(this).apply {text="FPGA 乐器控制";textSize=25f})
-        state=TextView(this).apply {text="未连接";textSize=16f};column.addView(state)
-        mediaState=TextView(this).apply {text="设备尚未提供伴奏数字状态";textSize=14f};column.addView(mediaState)
-        feedback=TextView(this).apply {text="参数为易失配置；无线与实卡尚需实机验证";textSize=14f};column.addView(feedback)
-        val nav=Spinner(this).apply {
-            adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("连接与设备","琴键演奏","音色与效果","键位映射","曲谱播放","录音文件","实时循环","智能合奏","赛题测试（48路）"))
-            onItemSelectedListener=object:AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent:AdapterView<*>?,view:View?,position:Int,id:Long){if(::body.isInitialized)showPage(position)}
-                override fun onNothingSelected(parent:AdapterView<*>?){}
+        loadSettings()
+        // The stage is the home screen; the former pages open in a full-screen overlay from "更多".
+        val root=FrameLayout(this)
+        root.addView(buildStage(),FrameLayout.LayoutParams(-1,-1))
+        overlay=buildOverlay();overlay.visibility=View.GONE
+        root.addView(overlay,FrameLayout.LayoutParams(-1,-1))
+        setContentView(root);refreshStage()
+        // Android 13+: system back closes a second-level page before leaving the app.
+        if(android.os.Build.VERSION.SDK_INT>=33)onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT){
+            if(overlay.visibility==View.VISIBLE)closePage() else finish()
+        }
+        if(!client.connected)openPage(0,"连接与设备")
+    }
+
+    // ---------------- Stage (main screen) ----------------
+    private var timbre=1
+    private var releaseCode=4
+    private var vibratoDepth=0
+    private var velocity=160
+    private var synthVolume=70
+    private var accompanimentVolume=50
+    private var fxEcho=false
+    private var fxChorus=false
+    private var fxReverb=false
+    private var fxBypass=false
+    private var stereoSpread=false
+    private var tempo=100
+    private var metronomeOn=false
+    private var countIn=false
+    private var recordingOn=false
+    private var ensembleOn=false
+    private var scorePlaying=false
+    private var teachMode=false
+    private var loopState=0
+    private var loopLayers=0
+    private var loopSeconds=0.0
+    /** Reserved board notices 133..135; empty until a firmware sends them. */
+    private var guideNote:Int?=null
+    private var physicalNotes:Set<Int> = emptySet()
+    private var boardReportsGuide=false
+    private val noteSlots=HashMap<Int,Int>()
+    private var octaves=1.5f
+    private lateinit var piano:PianoStageView
+    private lateinit var overview:KeyboardOverviewView
+    private lateinit var lcd:TextView
+    private lateinit var lcdDetail:TextView
+    private lateinit var overlay:LinearLayout
+    private lateinit var overlayTitle:TextView
+    private val panel=HashMap<String,PanelButton>()
+    private var tone:android.media.ToneGenerator?=null
+    private var lastLoopPoll=0L
+    private val visibleWhites get()=(octaves*7).roundToInt()
+    private val compact get()=resources.configuration.screenHeightDp<500
+    private val fxDefaults=longArrayOf(11520,12288,576,192,71583,24576,16384,6144,4096,4096)
+
+    private fun pb(key:String,label:String,led:Int?=null,blink:Boolean=false,action:()->Unit)=PanelButton(this,label,led,blink,action).also{panel[key]=it}
+    private fun hscroll(content:View)=HorizontalScrollView(this).apply{isHorizontalScrollBarEnabled=false;addView(content)}
+    private fun row(vararg views:View)=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.BOTTOM
+        views.forEach{addView(it,LinearLayout.LayoutParams(-2,-2).apply{marginEnd=dp(12f).toInt()})}}
+
+    private fun buildStage():View {
+        val c=compact
+        val stage=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(StagePalette.GROUND)
+            val h=dp(if(c)8f else 14f).toInt();setPadding(h,dp(4f).toInt(),h,dp(4f).toInt())}
+        // Row A: effects, sound, volume | display | connection + more
+        val effects=panelGroup("效果器",!c,pb("echo","回声",StagePalette.LED_ON){fxEcho=!fxEcho;fxBypass=false;sendEffects()},
+            pb("chorus","合唱",StagePalette.LED_ON){fxChorus=!fxChorus;fxBypass=false;sendEffects()},
+            pb("reverb","混响",StagePalette.LED_ON){fxReverb=!fxReverb;fxBypass=false;sendEffects()},
+            pb("bypass","旁路",StagePalette.LED_ON){fxBypass=!fxBypass;sendEffects()})
+        val sound=panelGroup("声音",!c,
+            panelSlider("颤音",255,vibratoDepth,if(c)64f else 90f,{"$it"}){vibratoDepth=it;client.vibrato(it);saveSettings()},
+            panelSlider("释音",7,releaseCode,if(c)52f else 72f,{"${(it*21.333).roundToInt()}ms"}){releaseCode=it;client.pitchParameter(33,it);saveSettings()},
+            panelSlider("力度",254,velocity-1,if(c)56f else 80f,{"${it+1}"}){velocity=it+1;saveSettings()})
+        val volume=panelGroup("音量",!c,
+            panelSlider("合成",100,synthVolume,if(c)56f else 80f,{"$it"}){synthVolume=it;sendGain()},
+            panelSlider("伴奏",100,accompanimentVolume,if(c)56f else 80f,{"$it"}){accompanimentVolume=it;sendGain()})
+        lcd=TextView(this).apply{textSize=if(c)12f else 14f;typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD);setTextColor(StagePalette.LCD_TEXT);setSingleLine(true)}
+        lcdDetail=TextView(this).apply{textSize=11f;typeface=Typeface.MONOSPACE;setTextColor(0xff9fe3b4.toInt());setSingleLine(true);visibility=if(c)View.GONE else View.VISIBLE}
+        val display=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;background=GradientDrawable().apply{setColor(StagePalette.LCD);cornerRadius=dp(8f)}
+            setPadding(dp(9f).toInt(),dp(5f).toInt(),dp(9f).toInt(),dp(5f).toInt());minimumWidth=dp(if(c)150f else 190f).toInt();addView(lcd);addView(lcdDetail)}
+        state=TextView(this).apply{text="未连接";textSize=12f;setTextColor(StagePalette.TEXT);setOnClickListener{openPage(0,"连接与设备")}}
+        val more=PanelButton(this,"更多 ▾"){}
+        more.setOnClickListener{showMoreMenu(more)}
+        val side=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;gravity=Gravity.END;addView(state);addView(more)}
+        stage.addView(LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.BOTTOM
+            addView(hscroll(row(effects,sound,volume)),LinearLayout.LayoutParams(0,-2,1f))
+            addView(display,LinearLayout.LayoutParams(-2,-2).apply{marginStart=dp(8f).toInt();marginEnd=dp(8f).toInt()})
+            addView(side)})
+        // Row B: timbre, record/accompaniment, loop layers, score/teaching, metronome
+        val timbres=panelGroup("音色",!c,*toneNames.indices.map{i->pb("timbre$i",toneNames[i]){timbre=i;stageRelease();client.pitchParameter(32,i);saveSettings();refreshStage()}}.toTypedArray())
+        val recordGroup=panelGroup("录音 · 伴奏",!c,pb("record","录音",StagePalette.LED_REC,true){toggleRecording()},pb("ensemble","自动伴奏",StagePalette.LED_GO){toggleEnsemble()})
+        val loopGroup=panelGroup("循环叠录",!c,pb("loopRec","录第1层",StagePalette.LED_REC,true){recordLoopLayer()},
+            pb("loopEnd","■ 结束本层"){loopCommand(97,"结束录制一层")},pb("loopUndo","↶ 撤销"){loopCommand(98,"撤销上一层")},
+            pb("loopPlay","停止",StagePalette.LED_GO){if(loopState==5)loopCommand(102,"恢复循环") else loopCommand(99,"停止循环")},
+            pb("loopClear","清空"){loopCommand(100,"清空循环")})
+        val scoreGroup=panelGroup("曲谱 · 教学",!c,pb("score","▶ 播放曲谱",StagePalette.LED_GO){toggleScore()},pb("teach","教学",StagePalette.LED_ON){teachMode=!teachMode;refreshStage()})
+        val metroGroup=panelGroup("节拍器",!c,pb("metro","节拍",StagePalette.LED_ON){toggleMetronome()},pb("countIn","预备拍",StagePalette.LED_ON){countIn=!countIn;refreshStage()},
+            pb("slower","−"){tempo=(tempo-5).coerceAtLeast(40);tempoChanged()},pb("faster","＋"){tempo=(tempo+5).coerceAtMost(200);tempoChanged()})
+        stage.addView(hscroll(row(timbres,recordGroup,loopGroup,scoreGroup,metroGroup)),LinearLayout.LayoutParams(-1,-2).apply{topMargin=dp(if(c)4f else 8f).toInt()})
+        // Keyboard: overview strip, then octave buttons around the piano
+        overview=KeyboardOverviewView(this){start->piano.startWhite=start;overview.startWhite=start;refreshStage()}
+        stage.addView(overview,LinearLayout.LayoutParams(-1,dp(if(c)20f else 28f).toInt()).apply{topMargin=dp(if(c)4f else 8f).toInt()})
+        piano=PianoStageView(this,::pressNote,::releaseNote)
+        val octaveDown=PanelButton(this,"‹"){shift(-7)}.apply{textSize=18f;gravity=Gravity.CENTER}
+        val octaveUp=PanelButton(this,"›"){shift(7)}.apply{textSize=18f;gravity=Gravity.CENTER}
+        stage.addView(LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL
+            addView(octaveDown,LinearLayout.LayoutParams(dp(if(c)28f else 36f).toInt(),-1))
+            addView(piano,LinearLayout.LayoutParams(0,-1,1f).apply{marginStart=dp(6f).toInt();marginEnd=dp(6f).toInt()})
+            addView(octaveUp,LinearLayout.LayoutParams(dp(if(c)28f else 36f).toInt(),-1))
+        },LinearLayout.LayoutParams(-1,0,1f).apply{topMargin=dp(4f).toInt()})
+        feedback=TextView(this).apply{textSize=11f;setTextColor(StagePalette.MUTED);setSingleLine(true);text="请先连接乐器"}
+        stage.addView(feedback)
+        return stage
+    }
+    private fun buildOverlay():LinearLayout = LinearLayout(this).apply {
+        orientation=LinearLayout.VERTICAL;setBackgroundColor(Color.WHITE);setPadding(dp(16f).toInt(),dp(8f).toInt(),dp(16f).toInt(),dp(8f).toInt())
+        overlayTitle=TextView(context).apply{textSize=20f}
+        addView(LinearLayout(context).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL
+            addView(Button(context).apply{text="← 返回演奏台";setOnClickListener{closePage()}});addView(overlayTitle,LinearLayout.LayoutParams(-2,-2).apply{marginStart=dp(12f).toInt()})})
+        mediaState=TextView(context).apply{text="设备尚未提供伴奏数字状态";textSize=13f};addView(mediaState)
+        body=LinearLayout(context).apply{orientation=1}
+        addView(ScrollView(context).apply{addView(body)},LinearLayout.LayoutParams(-1,0,1f))
+    }
+    private fun openPage(index:Int,title:String) {stageRelease();overlayTitle.text=title;overlay.visibility=View.VISIBLE;showPage(index)}
+    private fun closePage() {if(page==8)stopFieldTest();body.removeAllViews();overlay.visibility=View.GONE;page=-1;refreshStage()}
+    @Deprecated("Native back handling")
+    override fun onBackPressed() {if(::overlay.isInitialized&&overlay.visibility==View.VISIBLE)closePage() else super.onBackPressed()}
+
+    private fun showMoreMenu(anchor:View) {
+        val menu=PopupMenu(this,anchor)
+        val pages=listOf("连接与设备" to 0,"音色与效果参数" to 2,"实体键映射" to 3,"曲谱播放与上传" to 4,"录音文件" to 5,"循环叠录详情" to 6,"自动伴奏设置" to 7,"赛题测试（48路）" to 8)
+        pages.forEachIndexed{i,(t,_)->menu.menu.add(0,i,i,t)}
+        menu.menu.add(1,100,100,"手机音乐伴奏")
+        menu.menu.add(1,101,101,"恢复上次设置").isEnabled=getSharedPreferences("stage",MODE_PRIVATE).contains("timbre")
+        menu.menu.add(1,102,102,"演示模式")
+        menu.menu.add(1,103,103,"立体声展开（低音左、高音右）").apply{isCheckable=true;isChecked=stereoSpread}
+        menu.menu.add(1,104,104,"一屏显示：1.5 个八度")
+        menu.menu.add(1,105,105,"一屏显示：2 个八度")
+        menu.menu.add(1,106,106,"一屏显示：3 个八度")
+        menu.setOnMenuItemClickListener{item->
+            when(item.itemId) {
+                in pages.indices->openPage(pages[item.itemId].second,pages[item.itemId].first)
+                100->android.app.AlertDialog.Builder(this).setTitle("手机音乐伴奏").setMessage("App 内连接只负责控制乐器。请在系统蓝牙里连接 BTBLE-DEV，播放手机音乐并把输出选为该设备，回到演奏台调高“伴奏”音量。手机音量键可直接调伴奏大小。").setPositiveButton("知道了",null).show()
+                101->restoreSettings()
+                102->demoPreset()
+                103->{stereoSpread=!stereoSpread;saveSettings()}
+                104->setOctaves(1.5f)
+                105->setOctaves(2f)
+                106->setOctaves(3f)
             }
-        };column.addView(nav)
-        body=LinearLayout(this).apply {orientation=1}
-        column.addView(ScrollView(this).apply {addView(body)},LinearLayout.LayoutParams(-1,0,1f))
-        setContentView(column);showPage(0)
+            true
+        }
+        menu.show()
+    }
+    private fun setOctaves(o:Float){octaves=o;piano.visibleWhites=visibleWhites;shift(0)}
+    private fun shift(step:Int){val s=KeyRange.clampStart(piano.startWhite+step,visibleWhites);piano.startWhite=s;overview.startWhite=s;overview.visibleWhites=visibleWhites;refreshStage()}
+
+    /** Plays a note on the first free phone key slot; the protocol allows 32 held keys. */
+    private fun pressNote(note:Int):Boolean {
+        if(fieldRequested||noteSlots.containsKey(note))return false
+        val slot=(0 until 32).firstOrNull{it !in noteSlots.values}?:return false
+        if(!client.press(slot,note,velocity))return false
+        noteSlots[note]=slot
+        if(stereoSpread)client.pan(slot,((note-KeyRange.LOW)*256/(KeyRange.HIGH-KeyRange.LOW)).coerceIn(0,256))
+        refreshStage();return true
+    }
+    private fun releaseNote(note:Int){noteSlots.remove(note)?.let{client.release(it)};refreshStage()}
+    private fun stageRelease(){if(::piano.isInitialized)piano.cancel();noteSlots.clear();client.releaseAll()}
+
+    private fun sendEffects() {
+        val bits=(if(fxEcho)1 else 0) or (if(fxChorus)2 else 0) or (if(fxReverb)4 else 0) or (if(fxBypass)8 else 0)
+        client.parameter(35,S9Protocol.effects(longArrayOf(bits.toLong(),*fxDefaults)),"效果器");saveSettings();refreshStage()
+    }
+    private fun sendGain(){client.parameter(36,S9Protocol.gain(synthVolume*32768/100,accompanimentVolume*32768/100,false,false),"音量",5);saveSettings()}
+    private fun toggleRecording() {
+        if(recordingOn) {
+            val id=recording?.id?.takeIf{it!=0L}?:requestedRecording
+            if(id!=0L)client.fileCommand(S11Protocol.STOP,S11Protocol.id(id),"停止录音",3);recordingOn=false
+        } else if(!download.active&&!upload.active) {
+            val id=recordingIds.next()
+            if(client.fileCommand(S11Protocol.START,S11Protocol.start(id,3),"开始录音",3)!=null){requestedRecording=id;getPreferences(MODE_PRIVATE).edit().putLong("lastRecordID",id).apply();recordingOn=true}
+        }
+        refreshStage()
+    }
+    private fun toggleEnsemble() {
+        if(ensembleOn)client.parameter(105,byteArrayOf(),"停止智能合奏",4)
+        else client.parameter(104,EnsembleProtocol.start(2,0,0,tempo.coerceIn(50,180),0),"启动智能合奏",4)
+        ensembleOn=!ensembleOn;refreshStage()
+    }
+    private fun loopCommand(op:Int,label:String){client.parameter(op,byteArrayOf(),label,4,completed={client.parameter(101,byteArrayOf(),"查询循环",3)})}
+    /** Each layer is started and ended explicitly; the next layer waits for the player. */
+    private fun recordLoopLayer() {
+        stageRelease()
+        val begin:()->Unit={client.parameter(32,byteArrayOf(timbre.toByte()),"本层音色",3,completed={client.parameter(96,byteArrayOf(timbre.toByte()),"开始录制一层",4,completed={client.parameter(101,byteArrayOf(),"查询循环",3)})})}
+        if(countIn)beats(4,begin) else begin()
+    }
+    private fun toggleScore() {
+        if(scorePlaying){client.parameter(38,byteArrayOf(3,0,0,0,0,0,0,0),"停止曲谱",3);guideNote=null}
+        else client.parameter(38,byteArrayOf(1,(if(teachMode)1 else 0).toByte(),0,0,0,0,0,0),"播放曲谱",3)
+        scorePlaying=!scorePlaying;refreshStage()
+    }
+    private fun click(){try{if(tone==null)tone=android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC,80);tone?.startTone(android.media.ToneGenerator.TONE_PROP_BEEP,40)}catch(_:RuntimeException){}}
+    private val metronomeTick=object:Runnable{override fun run(){if(metronomeOn){click();handler.postDelayed(this,60000L/tempo)}}}
+    private fun toggleMetronome(){metronomeOn=!metronomeOn;handler.removeCallbacks(metronomeTick);if(metronomeOn)handler.post(metronomeTick);refreshStage()}
+    private fun tempoChanged(){if(metronomeOn){handler.removeCallbacks(metronomeTick);handler.post(metronomeTick)};saveSettings();refreshStage()}
+    private fun beats(n:Int,done:()->Unit){click();if(n<=1)handler.postDelayed(done,60000L/tempo) else handler.postDelayed({beats(n-1,done)},60000L/tempo)}
+
+    private fun refreshStage() {
+        if(!::piano.isInitialized)return
+        val ready=client.connected
+        panel["echo"]?.on=fxEcho;panel["chorus"]?.on=fxChorus;panel["reverb"]?.on=fxReverb;panel["bypass"]?.on=fxBypass
+        toneNames.indices.forEach{panel["timbre$it"]?.on=it==timbre}
+        panel["record"]?.on=recordingOn;panel["ensemble"]?.on=ensembleOn
+        val recordingLayer=loopState==1||loopState==3
+        panel["loopRec"]?.apply{label=if(recordingLayer)"录制中" else "录第${loopLayers+1}层";on=recordingLayer;isEnabled=ready&&!recordingLayer&&loopLayers<4}
+        panel["loopEnd"]?.isEnabled=ready&&recordingLayer
+        listOf("loopUndo","loopClear").forEach{panel[it]?.isEnabled=ready&&!recordingLayer&&loopLayers>0}
+        panel["loopPlay"]?.apply{label=if(loopState==5)"播放" else "停止";on=loopState==2;isEnabled=ready&&!recordingLayer&&loopLayers>0}
+        panel["score"]?.apply{label=if(scorePlaying)"■ 停止曲谱" else "▶ 播放曲谱";on=scorePlaying}
+        panel["teach"]?.apply{on=teachMode;isEnabled=!scorePlaying}
+        panel["metro"]?.apply{on=metronomeOn;label="节拍 $tempo"};panel["countIn"]?.on=countIn
+        listOf("echo","chorus","reverb","bypass","record","ensemble","score","teach").forEach{panel[it]?.isEnabled=ready&&(it!="teach"||!scorePlaying)}
+        toneNames.indices.forEach{panel["timbre$it"]?.isEnabled=ready}
+        piano.enabledForPlay=ready;piano.guideNote=guideNote;piano.litNotes=physicalNotes
+        overview.guideNote=guideNote;overview.startWhite=piano.startWhite;overview.visibleWhites=visibleWhites
+        val top=KeyRange.whites[minOf(piano.startWhite+visibleWhites-1,KeyRange.whites.size-1)]
+        lcd.text=guideNote?.let{"教学：请按 ${KeyRange.name(it)}"}?:"${toneNames[timbre]} · ${KeyRange.name(KeyRange.whites[piano.startWhite])}–${KeyRange.name(top)}"
+        lcdDetail.text=if(teachMode&&scorePlaying&&!boardReportsGuide)"琴键提示需要新版板载固件" else "按住 ${noteSlots.size}/32 · 力度 $velocity"
+    }
+    private fun followGuide(n:Int){val w=KeyRange.whiteIndex(n);if(w<piano.startWhite||w>=piano.startWhite+visibleWhites)shift(w-visibleWhites/3-piano.startWhite)}
+
+    /** Reserved notices: 133 guide [1,n,notes], 134 physical keys [1,0,16-byte bitmap],
+     * 135 board parameters [1,timbre,release,vibrato,effects]. See docs/app_reserved_notices.md. */
+    private fun reservedNotice(message:S9Message) {
+        val p=message.payload
+        when(message.opcode) {
+            133->if(p.size>=2&&p[0].toInt()==1&&p.size>=2+(p[1].toInt() and 255)){boardReportsGuide=true;guideNote=if(p[1].toInt()!=0)(p[2].toInt() and 255) else null;guideNote?.let(::followGuide)}
+            134->if(p.size==18&&p[0].toInt()==1)physicalNotes=(0 until 128).filter{(p[2+it/8].toInt() shr (it%8)) and 1==1}.toSet()
+            135->if(p.size>=5&&p[0].toInt()==1&&p[1] in 0..5&&p[2] in 0..11){timbre=p[1].toInt();releaseCode=p[2].toInt();vibratoDepth=p[3].toInt() and 255
+                val f=p[4].toInt();fxEcho=f and 1!=0;fxChorus=f and 2!=0;fxReverb=f and 4!=0;fxBypass=f and 8!=0}
+        }
+        refreshStage()
+    }
+
+    // Remembered settings: saved locally, sent to the board only when restored.
+    private fun saveSettings()=getSharedPreferences("stage",MODE_PRIVATE).edit().putInt("timbre",timbre).putInt("release",releaseCode).putInt("vibrato",vibratoDepth)
+        .putInt("velocity",velocity).putInt("synth",synthVolume).putInt("accomp",accompanimentVolume).putBoolean("echo",fxEcho).putBoolean("chorus",fxChorus)
+        .putBoolean("reverb",fxReverb).putBoolean("bypass",fxBypass).putBoolean("stereo",stereoSpread).putInt("tempo",tempo).apply()
+    private fun loadSettings() {
+        val s=getSharedPreferences("stage",MODE_PRIVATE)
+        stereoSpread=s.getBoolean("stereo",false);tempo=s.getInt("tempo",100)
+        octaves=if(resources.configuration.smallestScreenWidthDp>=600)2f else 1.5f
+    }
+    private fun restoreSettings() {
+        val s=getSharedPreferences("stage",MODE_PRIVATE)
+        timbre=s.getInt("timbre",timbre);releaseCode=s.getInt("release",releaseCode);vibratoDepth=s.getInt("vibrato",vibratoDepth);velocity=s.getInt("velocity",velocity)
+        synthVolume=s.getInt("synth",synthVolume);accompanimentVolume=s.getInt("accomp",accompanimentVolume)
+        fxEcho=s.getBoolean("echo",fxEcho);fxChorus=s.getBoolean("chorus",fxChorus);fxReverb=s.getBoolean("reverb",fxReverb);fxBypass=s.getBoolean("bypass",fxBypass)
+        pushStage("恢复上次设置")
+    }
+    /** Preset for filming: FM piano, echo + reverb, medium vibrato. */
+    private fun demoPreset(){timbre=1;releaseCode=4;vibratoDepth=96;velocity=170;synthVolume=70;accompanimentVolume=50;fxEcho=true;fxChorus=false;fxReverb=true;fxBypass=false;saveSettings();pushStage("演示模式")}
+    private fun pushStage(label:String) {
+        if(!client.connected){feedback.text="$label：界面已更新，连接后再选一次发送到乐器";refreshStage();return}
+        stageRelease();client.pitchParameter(32,timbre);client.pitchParameter(33,releaseCode);client.vibrato(vibratoDepth);sendGain();sendEffects()
+        feedback.text="$label：已发送到乐器";refreshStage()
     }
     private fun label(text:String){body.addView(TextView(this).apply {this.text=text;textSize=16f})}
     private fun button(text:String,action:()->Unit) {body.addView(Button(this).apply {this.text=text;setOnClickListener {guard(action)}})}
@@ -354,12 +612,15 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         recording=null;voiceInfo=null;ensembleInfo=null;client.ready(session)
         if(requestedRecording!=0L)client.fileCommand(S11Protocol.STATUS,S11Protocol.id(requestedRecording),"读取上次录音状态",3)
         client.parameter(1,byteArrayOf(),"读取设备参数快照",3)
-        client.parameter(106,byteArrayOf(),"读取合奏状态",3);status("设备会话已就绪；正在查询参数快照")
+        client.parameter(106,byteArrayOf(),"读取合奏状态",3);client.parameter(101,byteArrayOf(),"查询循环",3);status("已连接")
+        if(::overlay.isInitialized&&overlay.visibility==View.VISIBLE&&page==0)closePage() else refreshStage()
     }
     override fun result(message:S9Message){
         when(message.opcode) {
             132 -> if(client.ownsSession(message))try{ensembleInfo=EnsembleInfo.decode(message.payload);ensembleText?.text=ensembleDescription()}catch(_:IllegalArgumentException){feedback.text="合奏状态格式不正确"}
-            131 -> if(client.ownsSession(message))try{loopDescription=EnsembleProtocol.loopDescription(message.payload);loopText?.text=loopDescription}catch(_:IllegalArgumentException){feedback.text="循环状态格式不正确"}
+            131 -> if(client.ownsSession(message))try{loopDescription=EnsembleProtocol.loopDescription(message.payload);loopText?.text=loopDescription
+                val p=message.payload;if(p.size==64){loopState=p[1].toInt();loopLayers=p[2].toInt();refreshStage()}}catch(_:IllegalArgumentException){feedback.text="循环状态格式不正确"}
+            133,134,135 -> if(client.ownsSession(message))reservedNotice(message)
             128 -> {
                 if(client.ownsSession(message))try{val result=S9ExecutionResult.decode(message);if(result.voiceMetrics!=null){voiceInfo=result.voiceMetrics;ensembleText?.text=ensembleDescription();fieldText?.text=voiceInfo?.description()}}catch(_:IllegalArgumentException){}
                 client.result(message)
@@ -379,7 +640,9 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         fieldGeneration++;fieldRequested=false
         if(::mediaState.isInitialized)mediaState.text="设备尚未提供伴奏数字状态"
         if(::feedback.isInitialized)feedback.text="会话已结束，之前的就绪提示已失效"
-if(::client.isInitialized){keyboard?.cancel();client.disconnected();upload.disconnected();if(::download.isInitialized)download.disconnected()};status("会话已结束")}
+if(::client.isInitialized){keyboard?.cancel();if(::piano.isInitialized)piano.cancel();noteSlots.clear();client.disconnected();upload.disconnected();if(::download.isInitialized)download.disconnected()}
+        recordingOn=false;ensembleOn=false;scorePlaying=false;guideNote=null;physicalNotes=emptySet();loopState=0;loopLayers=0
+        status("未连接");refreshStage()}
     override fun onStart(){super.onStart();running=true;handler.post(ticker)}
     override fun onStop(){stopFieldTest();running=false;handler.removeCallbacks(ticker);keyboard?.cancel();client.releaseAll();link.stopScan();link.close();super.onStop()}
     override fun onDestroy(){destroyed=true;prepareGeneration++;link.close();prepared?.delete();super.onDestroy()}
