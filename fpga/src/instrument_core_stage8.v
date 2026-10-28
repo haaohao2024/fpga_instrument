@@ -164,6 +164,7 @@ module instrument_core_stage8 #(
     output wire [287:0] observe_current_pan,
     output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
+ wire [47:0] display_upper_timbres; // slots 32..47 timbres for the HDMI statistics
  instrument_core_stage7 #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.EXTERNAL_SCORE_RX(EXTERNAL_SCORE_RX),.STREAM_PHONE(STREAM_PHONE),.COMM_SEPARATE(COMM_SEPARATE),.VERSIONED_TOKENS(VERSIONED_TOKENS),
   .PRESSURE_PRENORMALIZED(PRESSURE_PRENORMALIZED),
   .CLK_FREQ_HZ(CLK_FREQ_HZ),.ADC_ZERO(ADC_ZERO),.ADC_FULL(ADC_FULL),.DEADZONE(DEADZONE),.PRESS_THRESHOLD(PRESS_THRESHOLD),.RELEASE_THRESHOLD(RELEASE_THRESHOLD),.VIBRATO_STEP(VIBRATO_STEP),.OCTAVE_MIN(OCTAVE_MIN),.OCTAVE_MAX(OCTAVE_MAX),.MIX_SHIFT(MIX_SHIFT),.ENABLE_S10_ROUTE(ENABLE_S10_ROUTE),.ENABLE_S11(ENABLE_S11),.ENABLE_REMOTE(ENABLE_REMOTE)) u_audio (.shared_score_rx(shared_score_rx),
@@ -307,7 +308,7 @@ module instrument_core_stage8 #(
   .observe_r(observe_r),
   .observe_full_slot_valid(observe_full_slot_valid),.observe_full_slot_gate(observe_full_slot_gate),.observe_slot_valid(observe_slot_valid),
   .observe_slot_gate(observe_slot_gate),
-  .observe_slot_timbres(observe_slot_timbres),
+  .observe_slot_timbres(observe_slot_timbres),.observe_upper_slot_timbres(display_upper_timbres),
   .observe_fx_config(observe_fx_config),
   .observe_fx_version(observe_fx_version),
   .observe_fx_bypass(observe_fx_bypass),
@@ -315,7 +316,8 @@ module instrument_core_stage8 #(
   .observe_loop(observe_loop),
   .observe_stream_state(observe_stream_state),.observe_stream_buffered(observe_stream_buffered),.observe_stream_generation(observe_stream_generation),.observe_score_status(observe_score_status));
  wire [511:0] visual_status;
- assign visual_status={163'd0,stream_error,score_deadline_count,observe_fx_version,external_underflow_count,
+ // Bits 349..428 carry slots 32..47 (valid, gate, timbre) for the 48-voice statistics.
+ assign visual_status={83'd0,display_upper_timbres,observe_full_slot_gate[47:32],observe_full_slot_valid[47:32],stream_error,score_deadline_count,observe_fx_version,external_underflow_count,
   observe_stream_state,score_time,score_error,score_state,observe_loop,observe_teach,
   observe_fx_bypass,observe_fx_config[2:0],timbre_id,observe_slot_timbres,observe_slot_gate,observe_slot_valid};
  visual_display display(.clk(clk),.audio_rst(rst),.display_reset(display_reset),.pixel_clk(video_pixel_clk),

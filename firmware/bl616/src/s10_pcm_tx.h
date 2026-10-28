@@ -4,9 +4,10 @@
 #include <stdint.h>
 
 #define S10_TX_CAPACITY 4096u
-#define S10_TX_PACKET_PAIRS 128u
-#define S10_TX_WIRE_BYTES 548u
-#define S10_TX_BANK_BYTES 576u
+/* FPGA receive bank: 512 stereo pairs (r3e). Fewer, larger DATA transactions. */
+#define S10_TX_PACKET_PAIRS 512u
+#define S10_TX_WIRE_BYTES (36u+4u*S10_TX_PACKET_PAIRS)
+#define S10_TX_BANK_BYTES 2112u
 #define S10_TX_RETRY_US 20000u
 enum { S10_TX_OK=0, S10_TX_ARGUMENT=-1, S10_TX_BUSY=-2,
        S10_TX_STALE=-3, S10_TX_PROTOCOL=-4, S10_TX_EXHAUSTED=-5 };

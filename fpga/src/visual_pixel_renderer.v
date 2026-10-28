@@ -66,10 +66,11 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
  // finish before any statistic text pixel (first one is x=720,y=316).
  reg [31:0] statistics_sequence;reg statistics_valid;reg [5:0] statistics_phase;
  reg [5:0] statistics_counts[0:7];reg [15:0] statistics_digits[0:7];
- wire [4:0] count_slot=statistics_phase-6'd1;
- wire count_active=metadata[256+count_slot];
- wire count_gate=metadata[288+count_slot];
- wire [2:0] count_timbre=metadata[320+count_slot*3+:3];
+ // Slots 0..31 sit at metadata 256/288/320; slots 32..47 at 605/621/637.
+ wire [5:0] count_slot=statistics_phase-6'd1;wire upper_slot=count_slot[5];wire [3:0] upper_index=count_slot[3:0];
+ wire count_active=upper_slot?metadata[605+upper_index]:metadata[256+count_slot[4:0]];
+ wire count_gate=upper_slot?metadata[621+upper_index]:metadata[288+count_slot[4:0]];
+ wire [2:0] count_timbre=upper_slot?metadata[637+upper_index*3+:3]:metadata[320+count_slot[4:0]*3+:3];
  wire [2:0] histogram_index=count_timbre+3'd3;
  wire [5:0] histogram_next=statistics_counts[histogram_index]+6'd1;
  function [15:0] decimal_pair(input [5:0] count);
@@ -107,11 +108,27 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
    6'd30:decimal_pair=16'h3330;
    6'd31:decimal_pair=16'h3331;
    6'd32:decimal_pair=16'h3332;
+   6'd33:decimal_pair=16'h3333;
+   6'd34:decimal_pair=16'h3334;
+   6'd35:decimal_pair=16'h3335;
+   6'd36:decimal_pair=16'h3336;
+   6'd37:decimal_pair=16'h3337;
+   6'd38:decimal_pair=16'h3338;
+   6'd39:decimal_pair=16'h3339;
+   6'd40:decimal_pair=16'h3430;
+   6'd41:decimal_pair=16'h3431;
+   6'd42:decimal_pair=16'h3432;
+   6'd43:decimal_pair=16'h3433;
+   6'd44:decimal_pair=16'h3434;
+   6'd45:decimal_pair=16'h3435;
+   6'd46:decimal_pair=16'h3436;
+   6'd47:decimal_pair=16'h3437;
+   6'd48:decimal_pair=16'h3438;
    default:decimal_pair=16'h3030;
   endcase end
  endfunction
  // A published pixel snapshot remains immutable during this bounded scan.
- // 32 voices, one tail count, then eight decimal conversions: 41 clocks.
+ // 48 voices, one tail count, then eight decimal conversions: 57 clocks.
  wire statistics_changed=front_valid&&(!statistics_valid||!r54_equal_0);
  always @(posedge pixel_clk)begin
   if(rst)begin
@@ -121,17 +138,17 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
    statistics_valid<=1;statistics_sequence<=metadata[159:128];statistics_phase<=1;
    for(integer c=0;c<8;c=c+1)statistics_counts[c]<=0;
   end else if(statistics_phase!=0)begin
-   if(statistics_phase<=32)begin
+   if(statistics_phase<=48)begin
     if(count_active)begin
      statistics_counts[0]<=statistics_counts[0]+6'd1;
      if(count_gate)statistics_counts[1]<=statistics_counts[1]+6'd1;
      for(integer h=0;h<5;h=h+1)if(count_timbre==h)statistics_counts[h+3]<=statistics_counts[h+3]+6'd1;
     end
-   end else if(statistics_phase==33)statistics_counts[2]<=statistics_counts[0]-statistics_counts[1];
+   end else if(statistics_phase==49)statistics_counts[2]<=statistics_counts[0]-statistics_counts[1];
    else begin
-    for(integer c=0;c<8;c=c+1)if(statistics_phase==c+34)statistics_digits[c]<=decimal_pair(statistics_counts[c]);
+    for(integer c=0;c<8;c=c+1)if(statistics_phase==c+50)statistics_digits[c]<=decimal_pair(statistics_counts[c]);
    end
-   statistics_phase<=statistics_phase==41?0:statistics_phase+1'b1;
+   statistics_phase<=statistics_phase==57?0:statistics_phase+1'b1;
   end
  end
  reg [4:0] panel_row;reg [3:0] panel_y;reg fx_text_rows,statistics_text_rows;

@@ -116,6 +116,7 @@ module instrument_core_stage7 #(
  output wire [47:0] observe_full_slot_valid,observe_full_slot_gate,
     output wire [31:0] observe_slot_valid,observe_slot_gate,
     output wire [95:0] observe_slot_timbres,
+    output wire [47:0] observe_upper_slot_timbres,
     output wire [351:0] observe_fx_config,
     output wire [31:0] observe_fx_version,
     output wire observe_fx_bypass,observe_teach,observe_loop,
@@ -405,6 +406,10 @@ module instrument_core_stage7 #(
      assign slot_trigger[v]=r18_controls[v*31+3];assign slot_notes[v*7+:7]=r18_controls[v*31+13+:7];
      assign slot_pressures[v*8+:8]=r18_controls[v*31+20+:8];assign slot_timbres[v*3+:3]=r18_controls[v*31+28+:3];
      assign observe_current_pan[v*9+:9]=r18_controls[v*31+4+:9];
+    end endgenerate
+    // Slots 32..47 for the HDMI voice statistics (48-oscillator engine).
+    generate for(genvar v=32;v<48;v++)begin: upper_slot_timbres
+     assign observe_upper_slot_timbres[(v-32)*3+:3]=r18_controls[v*31+28+:3];
     end endgenerate
     wire signed [31:0] fx_l_q8,fx_r_q8;
     wire fx_valid,fx_bypass;

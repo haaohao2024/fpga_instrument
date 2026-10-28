@@ -14,7 +14,7 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
  output reg [1:0] ctrl_cmd,output reg [63:0] ctrl_epoch,
  output wire [31:0] ctrl_rate,output reg ctrl_track,
  output reg [1:0] state,output wire [1:0] bank_count,
- output wire [8:0] free_pair_credit,reserved_pair_count,resident_pairs,
+ output wire [10:0] free_pair_credit,reserved_pair_count,resident_pairs,
  output reg [63:0] accepted_pair_count,delivered_pair_count,discard_pair_count,
  output reg [31:0] accepted_packets,duplicate_packets,rejected_transactions,
  output reg [31:0] cs_conflicts,timeout_count,last_sequence,
@@ -45,9 +45,10 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
  function [31:0] crcbyte(input [31:0] c,input [7:0] b);
   reg [31:0] v;integer k;begin v=c^b;for(k=0;k<8;k=k+1)v=v[0]?(v>>1)^32'hedb88320:v>>1;crcbyte=v;end
  endfunction
- reg [7:0] memory0[0:511],memory1[0:511];
- reg [1:0] bank_used;reg [8:0] bank_pairs[0:1],bank_remaining[0:1];reg head_bank;
- reg [9:0] read_index;reg read_pending,read_bank;reg [1:0] read_phase;
+ // Two receive banks of up to 512 stereo pairs (2 KiB each, one BSRAM).
+ reg [7:0] memory0[0:2047],memory1[0:2047];
+ reg [1:0] bank_used;reg [9:0] bank_pairs[0:1],bank_remaining[0:1];reg head_bank;
+ reg [10:0] read_index;reg read_pending,read_bank;reg [1:0] read_phase;
  reg [31:0] generation,read_generation;reg [63:0] read_epoch;
  reg [7:0] ram_q,part0,part1,part2;reg stop_pending;
  reg [1:0] sd_sync,control_sync;
@@ -74,17 +75,17 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
  wire [7:0] operation=header[47:40];wire [15:0] request_pairs=header[63:48];
  wire [63:0] request_epoch=header[127:64];wire [31:0] request_sequence=header[159:128];
  wire [63:0] source_start=header[223:160];wire [31:0] flags=header[255:224];
- reg [63:0] last_source_start;reg [8:0] last_pair_count;reg [31:0] last_packet_crc;reg last_track;
+ reg [63:0] last_source_start;reg [9:0] last_pair_count;reg [31:0] last_packet_crc;reg last_track;
  reg [255:0] status_tmp,telemetry_tmp;reg [31:0] status_crc,telemetry_crc;integer j;
  wire handshake=pcm_valid&&pcm_ready,control_handshake=ctrl_valid&&ctrl_ready;
  wire can_read=bank_used[head_bank]&&read_index<{bank_pairs[head_bank],2'b0}
                   &&(!pcm_valid||pcm_ready)&&state==PLAY;
  assign ctrl_rate=32'd48000;
  assign bank_count={1'b0,bank_used[0]}+{1'b0,bank_used[1]};
- assign resident_pairs=bank_remaining[0]+bank_remaining[1];
+ assign resident_pairs={1'b0,bank_remaining[0]}+{1'b0,bank_remaining[1]};
  wire receiving_reservation=transaction&&route_s10&&operation==OP_DATA&&capacity;
- assign reserved_pair_count=receiving_reservation?9'd128:9'd0;
- assign free_pair_credit=(9'd256-({7'd0,bank_count}<<7))-reserved_pair_count;
+ assign reserved_pair_count=receiving_reservation?11'd512:11'd0;
+ assign free_pair_credit=(11'd1024-({9'd0,bank_count}<<9))-reserved_pair_count;
  // Front 32 bytes are the unchanged S7 snapshot for every STE1 selection.
  // Only S10P extends OE into the next 32 bytes. Legacy frames remain HiZ.
  wire s11_serial_bit;wire [511:0] s11_snapshot;wire s11_payload_ready;
@@ -158,7 +159,7 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
   first_tx_byte[~tx_index[2:0]]:(tx_index<512?media_tx_byte[7]:1'b0));
  always @(*)begin
   status_tmp=0;status_tmp[31:0]=32'h53303153;status_tmp[39:32]=1;
-  status_tmp[47:40]={6'd0,state};status_tmp[63:48]={7'd0,free_pair_credit};
+  status_tmp[47:40]={6'd0,state};status_tmp[63:48]={5'd0,free_pair_credit};
   status_tmp[127:64]=stream_epoch;status_tmp[159:128]=last_sequence;
   // Bytes 20..27 of a plain STATUS are never read by BL616 (it reads them only
   // in TELEMETRY, which overrides them below); constant zero frees the counter.
@@ -166,7 +167,7 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
   status_crc=32'hffffffff;if(!STREAM_STATUS_CRC)for(j=0;j<28;j=j+1)status_crc=crcbyte(status_crc,status_tmp[j*8+:8]);
   status_tmp[255:224]=~status_crc;
   telemetry_tmp=status_tmp;telemetry_tmp[47:40]={1'b1,4'd0,stream_state};
-  telemetry_tmp[175:160]={4'd0,stream_buffered};telemetry_tmp[191:176]={7'd0,resident_pairs};
+  telemetry_tmp[175:160]={4'd0,stream_buffered};telemetry_tmp[191:176]={5'd0,resident_pairs};
   telemetry_tmp[223:192]=stream_generation;
   telemetry_crc=32'hffffffff;if(!STREAM_STATUS_CRC)for(j=0;j<28;j=j+1)telemetry_crc=crcbyte(telemetry_crc,telemetry_tmp[j*8+:8]);
   telemetry_tmp[255:224]=~telemetry_crc;
@@ -229,7 +230,7 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
    // reset; a barrier removes read_pending before any old ram_q is usable.
    read_pending<=can_read;
    if(can_read)begin
-    ram_q<=head_bank?memory1[read_index[8:0]]:memory0[read_index[8:0]];
+    ram_q<=head_bank?memory1[read_index]:memory0[read_index];
     read_bank<=head_bank;read_phase<=read_index[1:0];read_generation<=generation;
     read_epoch<=stream_epoch;read_index<=read_index+1'b1;
    end
@@ -296,7 +297,7 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
       end else if(byte_count<expected_bytes-4)begin
        rx_crc<=received_crc_next;
        if(route_s11&&byte_count>=64+(request_pairs<<2)&&next_byte!=0)bad<=1;
-       if(route_s10&&capacity&&byte_count<(route_s11?576:544))begin
+       if(route_s10&&capacity&&byte_count<(route_s11?576:2080))begin
         if(route_s11)begin if(receive_bank)memory1[byte_count-64]<=next_byte;else memory0[byte_count-64]<=next_byte;end
         else begin if(receive_bank)memory1[byte_count-32]<=next_byte;else memory0[byte_count-32]<=next_byte;end
        end
@@ -315,7 +316,7 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
          (route_s11&&(header[327:320]>3||header[351:344]!=0||header[439:432]!=0||
            (header[431:416]!=512&&header[431:416]!=2048&&header[431:416]!=0)||header[479:440]!=0||record_cmd_valid||
            (short_s11&&(operation!=0&&operation!=OP_STATUS||request_pairs!=0||(header[327:320]!=0&&header[327:320]!=3)))))||
-         (operation==OP_DATA?(request_pairs==0||request_pairs>128||flags!=0):
+         (operation==OP_DATA?(request_pairs==0||request_pairs>512||flags!=0):
           (request_pairs!=0||request_sequence!=0||source_start!=0))||
          (operation==OP_START?(flags>1||request_epoch==0):(operation==OP_STATUS?flags>1:flags!=0)))rejected_transactions<=rejected_transactions+1;
       else begin
@@ -344,9 +345,9 @@ module s10_pcm_transport #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,PINN
        end else if(request_sequence!=last_sequence+1||last_sequence==32'hffffffff||!r54_equal_5||!capacity||bank_used[receive_bank]||
                     next_source_start>64'hffffffffffffffff-request_pairs)rejected_transactions<=rejected_transactions+1;
        else begin
-        bank_used[receive_bank]<=1;bank_pairs[receive_bank]<=request_pairs[8:0];bank_remaining[receive_bank]<=request_pairs[8:0];
+        bank_used[receive_bank]<=1;bank_pairs[receive_bank]<=request_pairs[9:0];bank_remaining[receive_bank]<=request_pairs[9:0];
         if(bank_used==0)begin head_bank<=receive_bank;read_index<=0;end
-        last_sequence<=request_sequence;last_source_start<=source_start;last_pair_count<=request_pairs[8:0];last_packet_crc<=footer;
+        last_sequence<=request_sequence;last_source_start<=source_start;last_pair_count<=request_pairs[9:0];last_packet_crc<=footer;
         next_source_start<=next_source_start+request_pairs;accepted_pair_count<=accepted_pair_count+request_pairs;accepted_packets<=accepted_packets+1;
        end
       end else if(operation==OP_STOP)begin
@@ -429,7 +430,7 @@ module r12_media_crc_probe #(parameter integer WATCHDOG_CLOCKS=500000, ENABLE_S1
  output reg [1:0] ctrl_cmd,output reg [63:0] ctrl_epoch,
  output wire [31:0] ctrl_rate,output reg ctrl_track,
  output reg [1:0] state,output wire [1:0] bank_count,
- output wire [8:0] free_pair_credit,reserved_pair_count,resident_pairs,
+ output wire [10:0] free_pair_credit,reserved_pair_count,resident_pairs,
  output reg [63:0] accepted_pair_count,delivered_pair_count,discard_pair_count,
  output reg [31:0] accepted_packets,duplicate_packets,rejected_transactions,
  output reg [31:0] cs_conflicts,timeout_count,last_sequence,

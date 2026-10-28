@@ -162,7 +162,7 @@ module instrument_core_stage10 #(
  wire [31:0] stream_ctrl_rate;wire signed [15:0] external_l,external_r;
  wire [540:0] shared_score_rx;
  wire legacy_miso,legacy_oe,media_miso,media_oe,route_s10;
- wire [1:0] media_state,media_banks;wire [8:0] media_credit,media_reserved,media_resident;
+ wire [1:0] media_state,media_banks;wire [10:0] media_credit,media_reserved,media_resident;
  wire [31:0] media_last_sequence;wire [63:0] media_epoch,media_source_start;
  assign observe_media_epoch=media_epoch;
  // One score-CS transmitter from the first bit. The media serializer

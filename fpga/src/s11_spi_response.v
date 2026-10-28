@@ -5,7 +5,7 @@ module s11_spi_response #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,COMM_
  input wire spi_sck,spi_cs_n,
  input wire comm_clk,fast_fall,fast_start,clk,rst,select_start,transaction,short_transaction,bulk_transaction,input wire [14:0] tx_bit_index,
  input wire [1:0] media_state,input wire [63:0] media_epoch,
- input wire [31:0] media_last_sequence,input wire [8:0] media_credit,
+ input wire [31:0] media_last_sequence,input wire [10:0] media_credit,
  input wire [2:0] recorder_state,input wire recorder_incomplete,missing_is_event,
  input wire [7:0] recorder_mask,input wire [63:0] recorder_id,
  input wire [31:0] recorder_command_sequence,recorder_error,captured_pcm_pairs,input wire [63:0] first_missing_frame,
@@ -108,7 +108,7 @@ module s11_spi_response #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,COMM_
   header=0;header[31:0]=32'h54533753;header[39:32]=S11_VERSION;
   header[47:40]={6'd0,media_state};header[55:48]={5'd0,recorder_state};
   header[63:56]={5'd0,(S11_VERSION==2?(recorder_incomplete&&!match_payload&&missing_is_event):1'b1),recorder_incomplete,match_payload};header[127:64]=media_epoch;
-  header[159:128]=media_last_sequence;header[175:160]={7'd0,media_credit};
+  header[159:128]=media_last_sequence;header[175:160]={5'd0,media_credit};
   header[183:176]=match_payload?block_kind:0;header[191:184]=recorder_mask;
   header[255:192]=recorder_id;header[287:256]=recorder_command_sequence;
   header[319:288]=match_payload?block_sequence:0;
@@ -174,7 +174,7 @@ endmodule
 module r8_response_crc_probe #(parameter integer STREAM_HEADER_CRC=0)(
  input wire clk,rst,select_start,transaction,short_transaction,bulk_transaction,input wire [14:0] tx_bit_index,
  input wire [1:0] media_state,input wire [63:0] media_epoch,
- input wire [31:0] media_last_sequence,input wire [8:0] media_credit,
+ input wire [31:0] media_last_sequence,input wire [10:0] media_credit,
  input wire [2:0] recorder_state,input wire recorder_incomplete,
  input wire [7:0] recorder_mask,input wire [63:0] recorder_id,
  input wire [31:0] recorder_command_sequence,recorder_error,captured_pcm_pairs,input wire [63:0] first_missing_frame,

@@ -61,7 +61,7 @@ int s10_pcm_tx_stop(s10_pcm_tx *s,uint64_t epoch){
 static int free_bank(const s10_pcm_tx *s){for(unsigned i=0;i<2;i++)if(s->bank[i].state==EMPTY)return (int)i;return -1;}
 static int oldest(const s10_pcm_tx *s,unsigned state){int a=-1;for(unsigned i=0;i<2;i++)if(s->bank[i].state==state&&(a<0||s->bank[i].sequence<s->bank[a].sequence))a=(int)i;return a;}
 static void make_data(s10_pcm_tx *s,unsigned i,unsigned limit){
-    s10_tx_bank *b=&s->bank[i];unsigned n=s->count-s->reserved;if(n>128)n=128;if(n>limit)n=limit;
+    s10_tx_bank *b=&s->bank[i];unsigned n=s->count-s->reserved;if(n>S10_TX_PACKET_PAIRS)n=S10_TX_PACKET_PAIRS;if(n>limit)n=limit;
     b->sequence=s->next_sequence++;b->origin=s->source_head+s->reserved;b->pairs=(uint16_t)n;
     b->length=(uint16_t)(36+4*n);if(b->length<64)b->length=64;
     header(b->tx,DATA,wire(s),b->sequence,b->origin,n,0);
@@ -100,13 +100,13 @@ static int next_job(s10_pcm_tx *s,uint64_t now,s10_tx_job *j,int only_status){
         int boosting=s->sd_request&&unsent>512;
         if(boosting)trigger=s->service.sd_trigger;
         unsigned period=s->force_refill||s->sd_request?500:s->service.query_period_us;
-        int retry_ready=ready>=0&&(wait<0||s->bank[ready].sequence<s->bank[wait].sequence)&&s->credit>=128;
-        int new_ready=s->primed&&unsent&&s->credit>=128&&(s->force_refill||(s->record_feedback&&s->record_burst)||stock<trigger)&&s->next_sequence!=UINT32_MAX&&s->source_head<=UINT64_MAX-s->count&&free_bank(s)>=0;
+        int retry_ready=ready>=0&&(wait<0||s->bank[ready].sequence<s->bank[wait].sequence)&&s->credit>=S10_TX_PACKET_PAIRS;
+        int new_ready=s->primed&&unsent&&s->credit>=S10_TX_PACKET_PAIRS&&(s->force_refill||(s->record_feedback&&s->record_burst)||stock<trigger)&&s->next_sequence!=UINT32_MAX&&s->source_head<=UINT64_MAX-s->count&&free_bank(s)>=0;
         if(!s->telemetry_valid||(!s->force_refill&&now-s->last_status_us>=period&&(s->data_after_status||(!retry_ready&&!new_ready))))slot=2;
         else if(retry_ready){slot=ready;op=DATA;if(s->bank[ready].sent)s->retries++;}
         else if(wait>=0&&now-s->bank[wait].last_sent_us>=S10_TX_RETRY_US){slot=wait;op=DATA;s->retries++;}
-        else if(s->primed&&unsent&&s->credit>=128&&(s->force_refill||(s->record_feedback&&s->record_burst)||stock<trigger)&&s->next_sequence!=UINT32_MAX&&s->source_head<=UINT64_MAX-s->count){
-            slot=free_bank(s);if(slot>=0){make_data(s,(unsigned)slot,boosting&&!s->force_refill?unsent-512:128);op=DATA;}else slot=2;
+        else if(s->primed&&unsent&&s->credit>=S10_TX_PACKET_PAIRS&&(s->force_refill||(s->record_feedback&&s->record_burst)||stock<trigger)&&s->next_sequence!=UINT32_MAX&&s->source_head<=UINT64_MAX-s->count){
+            slot=free_bank(s);if(slot>=0){make_data(s,(unsigned)slot,boosting&&!s->force_refill?unsent-512:S10_TX_PACKET_PAIRS);op=DATA;}else slot=2;
         }
         if(slot==2&&s->telemetry_valid&&now-s->last_status_us<period)return S10_TX_BUSY;
     }
@@ -152,7 +152,7 @@ static int accept_status(s10_pcm_tx *s,const uint8_t *p,unsigned op,unsigned slo
         return 0;
     }
     if(get64(p+8)!=wire(s)){s->bad_status++;return S10_TX_PROTOCOL;}
-    if(credit>256||credit%128||ack<s->last_ack||ack>=s->next_sequence){s->bad_status++;return S10_TX_PROTOCOL;}
+    if(credit>2u*S10_TX_PACKET_PAIRS||credit%S10_TX_PACKET_PAIRS||ack<s->last_ack||ack>=s->next_sequence){s->bad_status++;return S10_TX_PROTOCOL;}
     /* FPGA acknowledgements are cumulative in one strictly ordered epoch.
      * Validate the entire prefix before modifying the source ring. */
     uint32_t expect=s->last_ack+1;unsigned total=0;
@@ -163,8 +163,8 @@ static int accept_status(s10_pcm_tx *s,const uint8_t *p,unsigned op,unsigned slo
     s->head=(uint16_t)((s->head+total)%4096);s->count=(uint16_t)(s->count-total);s->reserved=(uint16_t)(s->reserved-total);
     s->committed+=total;s->source_head+=total;s->last_ack=ack;
     /* Response is sampled at CS assertion, before the current DATA commits.
-     * Reserve a whole 128-pair FPGA bank if that packet was not in snapshot. */
-    if(op==DATA&&slot<2&&s->bank[slot].state!=EMPTY&&s->bank[slot].sequence>ack)credit=credit>=128?credit-128:0;
+     * Reserve a whole FPGA bank if that packet was not in snapshot. */
+    if(op==DATA&&slot<2&&s->bank[slot].state!=EMPTY&&s->bank[slot].sequence>ack)credit=credit>=S10_TX_PACKET_PAIRS?credit-S10_TX_PACKET_PAIRS:0;
     s->credit=(uint16_t)credit;
     int generation_changed=0;
     if(p[5]&128u){
