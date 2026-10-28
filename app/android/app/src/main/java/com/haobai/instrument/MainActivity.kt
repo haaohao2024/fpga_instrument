@@ -195,7 +195,8 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         addView(ScrollView(context).apply{addView(body)},LinearLayout.LayoutParams(-1,0,1f))
     }
     private fun openPage(index:Int,title:String) {stageRelease();overlayTitle.text=title;overlay.visibility=View.VISIBLE;showPage(index)}
-    private fun closePage() {if(page==8)stopFieldTest();body.removeAllViews();overlay.visibility=View.GONE;page=-1;refreshStage()}
+    /** Back to the stage: stop the page's own task, drop phone-held notes, hide the overlay. */
+    private fun closePage() {if(page==8)stopFieldTest();stageRelease();body.removeAllViews();overlay.visibility=View.GONE;page=-1;refreshStage()}
     @Deprecated("Native back handling")
     override fun onBackPressed() {if(::overlay.isInitialized&&overlay.visibility==View.VISIBLE)closePage() else super.onBackPressed()}
 

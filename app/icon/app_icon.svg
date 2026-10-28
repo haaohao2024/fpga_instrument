@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App 2.0 icon source (App / iOS / Android all derive from this canvas).
+
+  The artwork is the user-supplied raster drawing, kept next to this file as
+  app_icon_source.png and normalised to app_icon_1024.png. This SVG is the
+  editable entry point: it places that artwork on the 1024x1024 icon canvas, so
+  a future vector redraw can replace the <image> element without touching the
+  size list used by the two platforms.
+
+  Regenerate every size with:  python make_icons.py
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>FPGA 乐器 App 2.0 icon</title>
+  <!-- Dark navy ground of the artwork; the adaptive-icon background uses the
+       same value (#000C2C) so the launcher mask has no visible seam. -->
+  <rect width="1024" height="1024" fill="#000C2C"/>
+  <image x="0" y="0" width="1024" height="1024" href="app_icon_1024.png" xlink:href="app_icon_1024.png"/>
+</svg>

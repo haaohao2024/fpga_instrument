@@ -34,10 +34,17 @@ struct StageView: View {
             .padding(.horizontal,compact ? 8 : 14).padding(.top,compact ? 4 : 8).padding(.bottom,4)
         }
         .preferredColorScheme(.dark)
-        .sheet(item:$sheet) { s in NavigationView { page(s) }.navigationViewStyle(.stack) }
+        .sheet(item:$sheet) { s in
+            NavigationView { StageSheetChrome(model:model) { page(s) } }.navigationViewStyle(.stack)
+        }
         .fileImporter(isPresented:$importing,allowedContentTypes:[.data]) { result in uploadScore(result) }
         .onChange(of:model.guideNote) { n in if let n=n { follow(n) } }
         .onChange(of:octaves) { _ in startWhite=KeyLayout.clampStart(startWhite,visibleWhites:visibleWhites) }
+        // Leaving a second-level page drops the notes the phone still holds in the
+        // instrument, so nothing keeps sounding on the stage behind the sheet.
+        .onChange(of:sheet) { s in if s == nil { model.releaseAll() } }
+        // Same as Android: a successful connection closes the connection page by itself.
+        .onChange(of:link.ready) { ready in if ready, sheet == .connection { sheet = nil } }
         .onAppear {
             if !link.ready && !link.scanning { sheet = .connection }
             #if targetEnvironment(simulator)
@@ -222,6 +229,40 @@ struct StageView: View {
         case .spectrum: SpectrumTestView(model:model,link:link)
         case .accompaniment: AccompanimentHelp()
         }
+    }
+}
+
+/// Navigation chrome shared by every page opened from the stage's "更多" menu.
+/// The sheet gets a visible "返回" button in the top-left and a "完成" button in the
+/// top-right; on an iPhone in landscape a sheet is close to full screen, so the
+/// swipe-down gesture alone is not a usable way back. Both buttons release the
+/// notes the phone still holds and then dismiss the sheet (iOS 15 safe API).
+struct StageSheetChrome<Content: View>: View {
+    @ObservedObject var model: InstrumentModel
+    @ViewBuilder var content: () -> Content
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        content()
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement:.navigationBarLeading) {
+                    Button {
+                        model.releaseAll(); dismiss()
+                    } label: {
+                        HStack(spacing:3) {
+                            Image(systemName:"chevron.left").font(.system(size:15,weight:.semibold))
+                            Text("返回").font(.system(size:16,weight:.medium))
+                        }
+                    }.accessibilityIdentifier("stage-back")
+                }
+                ToolbarItem(placement:.navigationBarTrailing) {
+                    Button {
+                        model.releaseAll(); dismiss()
+                    } label: {
+                        Text("完成").font(.system(size:16,weight:.medium))
+                    }.accessibilityIdentifier("stage-done")
+                }
+            }
     }
 }
 
