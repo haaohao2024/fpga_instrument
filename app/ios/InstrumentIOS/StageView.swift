@@ -239,9 +239,13 @@ struct StageView: View {
 /// swipe-down gesture alone is not a usable way back. Both buttons release the
 /// notes the phone still holds and then dismiss the sheet (iOS 15 safe API).
 struct StageSheetChrome<Content: View>: View {
-    @ObservedObject var model: InstrumentModel
-    @ViewBuilder var content: () -> Content
+    let model: InstrumentModel
+    let content: () -> Content
     @Environment(\.dismiss) private var dismiss
+    init(model: InstrumentModel, @ViewBuilder content: @escaping () -> Content) {
+        self.model=model
+        self.content=content
+    }
     var body: some View {
         content()
             .navigationBarTitleDisplayMode(.inline)
