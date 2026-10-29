@@ -52,15 +52,35 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     private var fieldText:TextView?=null
     private var fieldGeneration=0
     private var fieldRequested=false
+    // Measured synthesis rate: opt-in, because the extra polling costs BLE bandwidth.
+    private val rateMeter=SampleRateMeter()
+    private var liveRate=false
+    private var rateReading:SampleRateMeter.Reading?=null
+    private var ratePending=false
+    private var ratePolledAt=0L
+    private var rateToggle:CheckBox?=null
+    private var rateText:TextView?=null
     private var prepared:File?=null
     private var preparedCrc=0L
     private var preparing=false
     private var destroyed=false
     private var prepareGeneration=0
     private val ticker=object:Runnable {
-        override fun run(){if(running){client.tick();if(::download.isInitialized)download.tick();if((page==7||page==8)&&client.connected&&client.pendingCount<2&&SystemClock.elapsedRealtime()-lastVoicePoll>=1000){lastVoicePoll=SystemClock.elapsedRealtime();client.parameter(41,byteArrayOf(),"读取硬件声部",3)}
+        override fun run(){if(running){client.tick();if(::download.isInitialized)download.tick()
+            val now=SystemClock.elapsedRealtime()
+            if(client.connected&&client.pendingCount<2) {
+                // The ensemble page keeps its one-second voice poll; the test page polls
+                // only while the user asked for a live sample-rate reading.
+                if(page==7&&now-lastVoicePoll>=1000){lastVoicePoll=now;client.parameter(41,byteArrayOf(),"读取硬件声部",3)}
+                if(liveRate&&page==8&&!ratePending&&now-ratePolledAt>=1000){
+                    ratePolledAt=now;ratePending=true
+                    if(client.parameter(41,byteArrayOf(),"读取实测采样率",3)==null)ratePending=false
+                }
+            }
+            // A lost answer must not stall the measurement; the next tick tries again.
+            if(ratePending&&now-ratePolledAt>3000)ratePending=false
             // Loop status drives the stage's layer buttons while a loop exists.
-            if(client.connected&&(loopState!=0||loopLayers>0)&&client.pendingCount<2&&SystemClock.elapsedRealtime()-lastLoopPoll>=1000){lastLoopPoll=SystemClock.elapsedRealtime();client.parameter(101,byteArrayOf(),"查询循环",3)}
+            if(client.connected&&(loopState!=0||loopLayers>0)&&client.pendingCount<2&&now-lastLoopPoll>=1000){lastLoopPoll=now;client.parameter(101,byteArrayOf(),"查询循环",3)}
             handler.postDelayed(this,100)}}
     }
     override fun onCreate(savedInstanceState:Bundle?) {
@@ -196,7 +216,7 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     private fun openPage(index:Int,title:String) {stageRelease();overlayTitle.text=title;overlay.visibility=View.VISIBLE;showPage(index)}
     /** Back to the stage: stop the page's own task, drop phone-held notes, hide the overlay. */
-    private fun closePage() {if(page==8)stopFieldTest();stageRelease();body.removeAllViews();overlay.visibility=View.GONE;page=-1;refreshStage()}
+    private fun closePage() {if(page==8){stopFieldTest();stopLiveRate()};stageRelease();rateToggle=null;rateText=null;body.removeAllViews();overlay.visibility=View.GONE;page=-1;refreshStage()}
     @Deprecated("Native back handling")
     override fun onBackPressed() {if(::overlay.isInitialized&&overlay.visibility==View.VISIBLE)closePage() else super.onBackPressed()}
 
@@ -347,8 +367,9 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     private fun checked(text:String,initial:Boolean=false)=CheckBox(this).apply {this.text=text;isChecked=initial;body.addView(this)}
     private fun showPage(index:Int) {
-        if(page==8 && index!=8)stopFieldTest()
+        if(page==8 && index!=8){stopFieldTest();stopLiveRate()}
         keyboard?.cancel();client.releaseAll();keyboard=null;devices=null
+        rateToggle=null;rateText=null
         body.removeAllViews();ensembleText=null;loopText=null;fieldText=null;page=index
         when(index){0->connectionPage();1->performancePage();2->parameterPage();3->mappingPage();4->scorePage();5->recordingPage();6->loopPage();7->ensemblePage();8->fieldTestPage()}
     }
@@ -527,12 +548,41 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         button("启动48路测试（30秒）"){startFieldTest(48)}
         button("停止测试"){stopFieldTest()}
         fieldText=TextView(this).apply {text=voiceInfo?.description()?:"尚未取得硬件计数";textSize=16f;body.addView(this)}
+        // Live measurement of the real synthesis rate; off until the user asks for it.
+        rateToggle=CheckBox(this).apply {text="实时测量采样率";isChecked=liveRate;setOnCheckedChangeListener{_,on->setLiveRate(on)};body.addView(this)}
+        label("测量会占用蓝牙带宽，播放蓝牙伴奏时请关闭。")
+        rateText=TextView(this).apply {textSize=16f;body.addView(this)}
+        refreshRateText()
         button("刷新实际硬件统计"){client.parameter(41,byteArrayOf(),"读取测试硬件声部",3)}
         label("下列是短测试，约10.7ms后结束；48路测试30秒后自动结束。需要配套R87固件，旧固件会拒绝48路。断链后原生测试最迟30秒结束。")
         listOf(1,8,16,32).forEach {n->button("原生短测试 $n 路"){startFieldTest(n)}}
         label("预期基频（不是实测频谱）：")
         (48..95).forEach {note->label("MIDI $note · ${String.format(java.util.Locale.US,"%.2f",440.0*Math.pow(2.0,(note-69)/12.0))} Hz")}
         label("请求48路不等于已验证48个谱峰。请采集真实音频检查独立基频；容量、占槽、非零贡献快照和每帧完成数分别判断，谐波和噪声不计额外振荡器。评分使用实际音频输出采样率，不能使用48kHz录音率代替128kHz输出率。")
+    }
+    /** Turns the live measurement on or off; the checkbox is the only entry point. */
+    private fun setLiveRate(on:Boolean) {
+        liveRate=on;rateMeter.reset();rateReading=null;ratePending=false
+        if(on) {
+            ratePolledAt=SystemClock.elapsedRealtime()
+            if(client.connected&&client.parameter(41,byteArrayOf(),"读取实测采样率",3)!=null)ratePending=true
+        }
+        refreshRateText()
+    }
+    /** Stops measuring and drops what it showed; safe to call at any time. */
+    private fun stopLiveRate() {
+        liveRate=false;rateMeter.reset();rateReading=null;ratePending=false
+        rateToggle?.let{if(it.isChecked)it.isChecked=false}
+        refreshRateText()
+    }
+    private fun refreshRateText() {
+        val view=rateText?:return
+        val reading=rateReading
+        view.text=when {
+            !liveRate->""
+            reading!=null->reading.summary()+"\n"+SampleRateMeter.PROVENANCE
+            else->"测量中…（至少 5 秒后出结果）"
+        }
     }
     private fun startFieldTest(voices:Int) {
         if(!client.connected||fieldRequested){feedback.text="请连接设备并先停止当前测试";return}
@@ -623,7 +673,15 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
                 val p=message.payload;if(p.size==64){loopState=p[1].toInt();loopLayers=p[2].toInt();refreshStage()}}catch(_:IllegalArgumentException){feedback.text="循环状态格式不正确"}
             133,134,135 -> if(client.ownsSession(message))reservedNotice(message)
             128 -> {
-                if(client.ownsSession(message))try{val result=S9ExecutionResult.decode(message);if(result.voiceMetrics!=null){voiceInfo=result.voiceMetrics;ensembleText?.text=ensembleDescription();fieldText?.text=voiceInfo?.description()}}catch(_:IllegalArgumentException){}
+                if(client.ownsSession(message))try{val result=S9ExecutionResult.decode(message);result.voiceMetrics?.let{m->
+                    voiceInfo=m;ensembleText?.text=ensembleDescription();fieldText?.text=voiceInfo?.description()
+                    if(liveRate){
+                        // The frame counter arrives with this result; pair it with a
+                        // monotonic phone timestamp to get the real synthesis rate.
+                        ratePending=false
+                        rateReading=rateMeter.add(m.frame,SystemClock.elapsedRealtimeNanos())
+                        refreshRateText()
+                    }}}catch(_:IllegalArgumentException){}
                 client.result(message)
             }
             S11Protocol.RECORD_INFO -> if(client.ownsSession(message))try {
@@ -639,11 +697,13 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     override fun disconnected(){
         fieldGeneration++;fieldRequested=false
+        stopLiveRate()
         if(::mediaState.isInitialized)mediaState.text="设备尚未提供伴奏数字状态"
         if(::feedback.isInitialized)feedback.text="会话已结束，之前的就绪提示已失效"
 if(::client.isInitialized){keyboard?.cancel();if(::piano.isInitialized)piano.cancel();noteSlots.clear();client.disconnected();upload.disconnected();if(::download.isInitialized)download.disconnected()}
         recordingOn=false;ensembleOn=false;scorePlaying=false;guideNote=null;physicalNotes=emptySet();loopState=0;loopLayers=0
         status("未连接");refreshStage()}
+    override fun onPause(){stopLiveRate();super.onPause()}
     override fun onStart(){super.onStart();running=true;handler.post(ticker)}
     override fun onStop(){stopFieldTest();running=false;handler.removeCallbacks(ticker);keyboard?.cancel();client.releaseAll();link.stopScan();link.close();super.onStop()}
     override fun onDestroy(){destroyed=true;prepareGeneration++;link.close();prepared?.delete();super.onDestroy()}

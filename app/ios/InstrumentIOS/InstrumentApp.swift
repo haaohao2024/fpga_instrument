@@ -273,6 +273,16 @@ struct SpectrumTestView: View {
                 if let m=model.metrics {
                     Text("硬件容量 \(m.capacity) · 占槽 \(m.allocated)\n按住 \(m.gated) · 有贡献 \(m.nonzero) · 窗口峰值 \(m.peak)\n每帧完成 \(m.completed) · 计算 \(m.cycles) 拍\n故障标志 \(m.faults) · 帧号 \(m.frame)").monospacedDigit()
                 } else { Text("尚无本次硬件统计") }
+                // The frame counter above is the source: pairing it with the phone's
+                // monotonic clock turns it into the board's real synthesis rate.
+                Toggle("实时测量采样率",isOn:Binding(get:{model.liveRateOn},set:{model.setLiveRate($0)}))
+                    .disabled(!link.ready).accessibilityIdentifier("live-rate-toggle")
+                Text("测量会占用蓝牙带宽，播放蓝牙伴奏时请关闭。").font(.footnote)
+                if model.liveRateOn {
+                    Text(model.rateReading?.summary ?? "测量中…（至少 5 秒后出结果）")
+                        .monospacedDigit().accessibilityIdentifier("live-rate-reading")
+                    Text(SampleRateMeter.Reading.provenance).font(.footnote)
+                }
                 Button("刷新硬件统计"){model.command(41,"读取测试硬件统计",target:3)}.disabled(!link.ready)
                 Text("容量、占槽和每帧完成数不等于活跃可闻振荡器数。有贡献计数是硬件快照，谱峰仍须由实际音频频谱验证。本页不把请求路数当作评分结果，也不把48kHz录音采样率当作128kHz音频输出采样率。").font(.footnote)
             }
@@ -287,7 +297,7 @@ struct SpectrumTestView: View {
                 Button("停止固件短测试"){model.nativeFieldTest(0)}.disabled(!link.ready)
                 Text("1／8／16／32路原生测试约10.7ms自动结束，48路为30秒测试。要使用正弦预设和实时统计，请使用上方入口。48路由配套FPGA逐音实时合成，手机不传音频采样。").font(.footnote)
             }
-        }.navigationTitle("赛题测试模式").onDisappear { model.releaseAll() }
+        }.navigationTitle("赛题测试模式").onDisappear { model.stopLiveRate();model.releaseAll() }
     }
 }
 struct EnsembleView: View {

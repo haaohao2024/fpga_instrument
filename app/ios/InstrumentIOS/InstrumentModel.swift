@@ -15,6 +15,13 @@ final class InstrumentModel: ObservableObject {
     @Published var exportedFile: URL?
     @Published var fileBusy=false
     @Published var spectrumState: SpectrumTest.State = .idle
+    /// Opt-in live measurement of the FPGA's real synthesis rate. It costs BLE
+    /// bandwidth, so it stays off until the user asks for it on the test page.
+    @Published var liveRateOn=false
+    @Published var rateReading: SampleRateMeter.Reading?
+    private var rateMeter=SampleRateMeter()
+    private var ratePending=false
+    private var ratePolledAt: UInt64=0
     private var nextSpectrumPoll: UInt64=0
     private var nativeTestExpires: UInt64=0
     lazy var spectrum = SpectrumTest(client:client)
@@ -38,6 +45,7 @@ final class InstrumentModel: ObservableObject {
         link.onMessage={[weak self] m in self?.receive(m)}
         link.onDisconnected={[weak self] in
             guard let self=self else{return};self.client.disconnected();self.metrics=nil;self.loop=nil;self.ensemble=nil;self.record=nil
+            self.stopLiveRate()
             self.spectrum.disconnected()
             self.transfer=nil;self.fileBusy=false;self.fileStatus="连接已断开；未完成的文件不发布"
             self.uploader.disconnected();self.noteSlots=[:];self.recording=false;self.ensembleOn=false;self.scorePlaying=false
@@ -52,6 +60,10 @@ final class InstrumentModel: ObservableObject {
             nextSpectrumPoll=BluetoothLink.now+500
             command(41,"读取测试硬件统计",target:3)
         }
+        // Live rate: one request per second, and none while the previous answer is
+        // still outstanding, so the poll can never pile up on the BLE link.
+        if liveRateOn, link.ready { pollRate() }
+        if ratePending, BluetoothLink.now &- ratePolledAt>3000 { ratePending=false }
         guard let t=transfer,t.awaitingData,!t.awaitingResult,BluetoothLink.now-t.requestedAt>=5000 else{return}
         if t.attempts>=4 { cancelFile("文件数据通知超时，未发布下载文件") }
         else { nextBlock() }
@@ -228,7 +240,7 @@ final class InstrumentModel: ObservableObject {
             command(86,voices==0 ? "停止固件短测试" : "固件短测试\(voices)路",payload,target:4)
         }
     }
-    func background() { releaseAll();link.stopScan();link.disconnect("App已进入后台，连接与手机持音已清理；回到前台后重新连接") }
+    func background() { stopLiveRate();releaseAll();link.stopScan();link.disconnect("App已进入后台，连接与手机持音已清理；回到前台后重新连接") }
     func sound(_ timbre: Int,tail: Int) {
         releaseAll();_ = client.pitchParameter(opcode:32,value:timbre);_ = client.pitchParameter(opcode:33,value:tail)
     }
@@ -247,6 +259,33 @@ final class InstrumentModel: ObservableObject {
     func refresh() {
         command(41,"读取硬件统计",target:3);command(101,"读取循环状态",target:3);command(106,"读取合奏状态",target:3)
         if recordID != 0 { queryRecord() }
+    }
+
+    // MARK: Measured synthesis rate
+    /// Starts or stops the live measurement; the test page's switch is the only
+    /// entry point. Turning it on drops stale samples and asks for the first count.
+    func setLiveRate(_ on: Bool) {
+        liveRateOn=on
+        rateMeter.reset();rateReading=nil;ratePending=false;ratePolledAt=0
+        if on { pollRate() }
+    }
+    func stopLiveRate() {
+        liveRateOn=false;rateMeter.reset();rateReading=nil;ratePending=false
+    }
+    private func pollRate() {
+        guard liveRateOn, link.ready, !ratePending, client.pendingCount<3,
+              BluetoothLink.now &- ratePolledAt>=1000 else { return }
+        ratePolledAt=BluetoothLink.now;ratePending=true
+        let sent=client.command(opcode:41,payload:[],label:"读取实测采样率",target:3,
+            completed:{[weak self] _ in self?.ratePending=false},
+            rejected:{[weak self] _ in self?.ratePending=false})
+        if sent==nil { ratePending=false }
+    }
+    /// Pairs the counter with a monotonic timestamp; the wall clock can be stepped.
+    private func recordRate(_ frame: UInt32) {
+        guard liveRateOn else { return }
+        ratePending=false
+        rateReading=rateMeter.add(frame:frame,timeNanos:DispatchTime.now().uptimeNanoseconds)
     }
     func startEnsemble(level: Int,root: Int,minor: Bool,bpm: Int,style: Int) {
         if let p=try? Commands.ensemble(level:level,root:root,minor:minor,bpm:bpm,style:style) { command(104,"启动智能合奏",p) }
@@ -291,7 +330,7 @@ final class InstrumentModel: ObservableObject {
         do {
             switch m.opcode {
             case 128:
-                let r=try ExecutionResult(m);if let v=r.metrics { metrics=v };client.result(m)
+                let r=try ExecutionResult(m);if let v=r.metrics { metrics=v;recordRate(v.frame) };client.result(m)
             case 130:
                 let r: RecordInfo
                 do { r=try RecordInfo(m.payload) }
