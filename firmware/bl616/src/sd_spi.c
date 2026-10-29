@@ -360,8 +360,17 @@ static DRESULT io_error(void){if(bus_fault_active()){status=STA_NOINIT;diag.io_e
   * card damage or invalidate an initialized card; the caller safely stops
   * the score source if its bounded service window could not be met. */
  if(admission_denied)return RES_NOTRDY;
- freeze_io_failure();
- diag.io_errors++;status=STA_NOINIT;return RES_ERROR;}
+ freeze_io_failure();diag.io_errors++;
+ printf("SD_IO_FAIL cmd=%lu r1=%ld phase=%u sector=%lu index=%lu xfer=%u hal=%d timeout_phase=%lu timeout_us=%lu limit_us=%lu\r\n",
+        (unsigned long)sd_context.command,(long)(int32_t)sd_context.r1,io_phase,(unsigned long)sd_context.sector,
+        (unsigned long)sd_context.index,transfer_failed,hal_io_failed(),(unsigned long)diag.last_timeout_phase,
+        (unsigned long)diag.last_timeout_us,(unsigned long)diag.last_limit_us);
+ /* A missed lease or a slow card fails this operation only. If the card
+  * still reaches ready and answers CMD13 cleanly it stays initialized, so
+  * the next recording works without a reboot (FatFs cannot remount while a
+  * link service is open). */
+ if(!bus_fault_active()&&!programming_done()&&!card_status()){printf("SD_IO_RECOVERED\r\n");return RES_ERROR;}
+ status=STA_NOINIT;return RES_ERROR;}
 DSTATUS disk_initialize(BYTE drive){
  if(drive)return STA_NOINIT;
  memset(&speed,0,sizeof speed);speed.check_result=speed.switch_result=-1;
@@ -401,13 +410,14 @@ DRESULT disk_read(BYTE drive,BYTE *buffer,LBA_t sector,UINT count){
  if(proof_apply())return io_error();
  if(sector>=sectors||count>sectors-sector)return RES_PARERR;
  for(UINT i=0;i<count;i++){
-  /* A read lost only to its lease limit (preempted past ~2ms) leaves the card
-   * intact; retry it once on a fresh lease instead of de-initializing the
-   * card, which FatFs cannot remount while a link service is open. */
+  /* A read lost to its lease limit (preempted, or a card whose access time
+   * briefly exceeds ~2ms) leaves the card intact. Wait for the card to be
+   * ready with CS released, then retry on a fresh lease, up to 4 attempts. */
+  sd_context.sector=(uint32_t)sector;sd_context.index=i;
   for(unsigned attempt=0;;attempt++){
    if(command(17,(uint32_t)(sector+i))==0&&!read_block(buffer+512*i,512))break;
-   if(attempt||bus_fault_active()||admission_denied)return io_error();
-   release();uint64_t t=hal_time_us();while(hal_time_us()-t<1000u){} /* card finishes the block */
+   if(attempt>=3||bus_fault_active()||admission_denied)return io_error();
+   release();service_window();if(programming_done())return io_error();
   }
   release();diag.reads++;service_window();
  }
