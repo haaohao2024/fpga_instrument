@@ -5877,35 +5877,51 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   next_gain,next_transient,next_body};
 
  wire context_write=!rst&&work_active&&work_step==0&&age>=8&&captured_valid;
- // R45-B: 32 independent contexts, one scheduled read and one write.
- // Issue each read one edge before its unchanged consumer edge.
- wire[8:0] prefetch_age=age+9'd3;
- wire[8:0] prefetch_work_age=prefetch_age-9'd4;
- wire prefetch_observer=1'b0;
- wire prefetch_main=prefetch_age>=4&&prefetch_age<=ISSUE_END&&prefetch_work_age[1:0]==0;
- wire context_read_issue=!rst&&(start||(busy&&(prefetch_observer||prefetch_main)));
- wire[SW-1:0] context_ra=start?SW'(0):prefetch_observer?
-   SW'({prefetch_age[1:0],prefetch_age[6:4]}):work_slot;
- wire[323:0] context_di={{(324-CW){1'b0}},state_next};
- wire[323:0] context_do;
- for(genvar word=0;word<9;word++)begin: context_wide
+ // Each slot's context is three 108-bit words in three 36-bit-wide BSRAMs.
+ // Word 0 holds bits 216..323 (it includes the envelope level, which the
+ // release estimate needs two edges before capture); word 1 bits 0..107;
+ // word 2 bits 108..215. Reads for the next slot issue on the three edges
+ // before its capture edge; words 0 and 1 are held, word 2 is read directly.
+ // A completed slot's new context is buffered and written on the following
+ // three edges, so the read and write ports never address the same slot.
+ wire context_read_issue=!rst&&!start&&busy&&age>=1&&age<=ISSUE_END-1&&age[1:0]!=0;
+ wire[1:0] context_read_word=age[1:0]-2'd1;
+ reg[323:0] context_buffer;reg[SW-1:0] context_write_slot;reg[1:0] context_writes_left;
+ wire context_write_issue=!rst&&context_writes_left!=0;
+ wire[1:0] context_write_word=2'd3-context_writes_left;
+ always @(posedge clk)begin
+  if(rst||start)context_writes_left<=0;
+  else if(context_write)begin
+   context_buffer<={{(324-CW){1'b0}},state_next};context_write_slot<=captured_slot;context_writes_left<=3;
+  end else if(context_writes_left!=0)context_writes_left<=context_writes_left-1'b1;
+ end
+ wire[107:0] context_di=context_write_word==0?context_buffer[216+:108]:
+   context_write_word==1?context_buffer[0+:108]:context_buffer[108+:108];
+ wire[107:0] context_do;
+ for(genvar word=0;word<3;word++)begin: context_wide
   SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) memory(
-   .CLKA(clk),.CLKB(clk),.CEA(context_write),.CEB(context_read_issue),
-   .ADA({(9-SW)'(0),captured_slot,5'b01111}),.ADB({(9-SW)'(0),context_ra,5'b00000}),
+   .CLKA(clk),.CLKB(clk),.CEA(context_write_issue),.CEB(context_read_issue),
+   .ADA({(7-SW)'(0),context_write_slot,context_write_word,5'b01111}),.ADB({(7-SW)'(0),work_slot,context_read_word,5'b00000}),
    .DI(context_di[word*36+:36]),.DO(context_do[word*36+:36]),
    .BLKSELA(3'd0),.BLKSELB(3'd0),.OCE(1'b1),.RESET(1'b0));
  end
- assign state_read=context_do[CW-1:0];
- // synthesis translate_off
- reg[SW-1:0] context_response_address;reg context_response_valid;
+ reg[107:0] context_word0,context_word1;
  always @(posedge clk)begin
-  if(rst)context_response_valid<=0;
-  else if(context_read_issue)begin context_response_address<=context_ra;context_response_valid<=1;end
+  if(busy&&age[1:0]==2)context_word0<=context_do;
+  if(busy&&age[1:0]==3)context_word1<=context_do;
+ end
+ wire[323:0] context_full={context_word0,context_do,context_word1};
+ assign state_read=context_full[CW-1:0];
+ // synthesis translate_off
+ reg[SW-1:0] context_read_slot_q[0:2];
+ always @(posedge clk)begin
+  if(context_read_issue)context_read_slot_q[context_read_word]<=work_slot;
   if(!rst&&!start&&busy&&(work_active&&work_step==0&&age<=ISSUE_END))
-   if(!context_response_valid||context_response_address!==read_slot)
+   if(context_read_slot_q[0]!==read_slot||context_read_slot_q[1]!==read_slot||context_read_slot_q[2]!==read_slot)
     $fatal(1,"R45_CONTEXT_WRONG_PREFETCH");
-  if(context_read_issue&&context_write&&context_ra==captured_slot)
+  if(context_read_issue&&context_write_issue&&work_slot==context_write_slot&&context_read_word==context_write_word)
    $fatal(1,"R45_CONTEXT_READ_WRITE_COLLISION");
+  if(context_write&&context_writes_left!=0)$fatal(1,"R45_CONTEXT_WRITE_OVERLAP");
  end
  // synthesis translate_on
  reg[EPW+7:0] observe_request;reg observe_valid;reg[1:0] observe_lane;
@@ -5917,7 +5933,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire[EPW+7:0] selected_envelope=envelope_request;
  // Same private context and release code, prepared in existing idle slots.
  // Context read moved from capture-1 to capture-3; no extra RAM port.
- wire[16:0] prepare_level=captured_state[153+4*EW+17+:17];
+ wire[16:0] prepare_level=(read_control[0]||!initialized[read_slot])?17'd0:context_do[153+4*EW+17-216+:17];
  wire[18:0] prepare_three={2'b0,prepare_level}+({2'b0,prepare_level}<<1);
  reg[6:0] release_high_q,release_estimate_q;
  wire[2:0] prepare_code=expression_q[3:0]>7?3'd7:expression_q[2:0];
