@@ -6132,7 +6132,11 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
 endmodule
 
 
-module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,parameter integer ID_WIDTH=64,parameter integer SHARE_FX=0,LOOP_ENABLE=0)(
+// VOICES <= 64: one engine with VOICES/8 Lanes. VOICES > 64: ENGINES engines
+// of 64 slots (8 Lanes) each run the same schedule in parallel; engine e owns
+// slots e*64..e*64+63 and the stereo mixes are added.
+module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,parameter integer ID_WIDTH=64,parameter integer SHARE_FX=0,LOOP_ENABLE=0,VOICES=48,
+  SW=(VOICES==(1<<$clog2(VOICES)))?$clog2(VOICES)+1:$clog2(VOICES))(
  output wire [127:0] ensemble_metrics,
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
@@ -6143,44 +6147,85 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  input wire lookup_valid,input wire[7:0] lookup_key,input wire[63:0] lookup_identity,
  input wire[15:0] lookup_generation,lookup_tag,
  output wire lookup_ready,lookup_response_valid,lookup_found,
- output wire[5:0] lookup_response_slot,output wire[314:0] lookup_response_word,
+ output wire[SW-1:0] lookup_response_slot,output wire[314:0] lookup_response_word,
  output wire[15:0] lookup_response_tag,
- input wire pan_valid,input wire[5:0] pan_slot,input wire[63:0] pan_id,
+ input wire pan_valid,input wire[SW-1:0] pan_slot,input wire[63:0] pan_id,
  input wire[15:0] pan_generation,input wire[8:0] pan_value,
  output wire pan_ready,pan_response_valid,output wire[1:0] pan_result,
- output wire[5:0] pan_response_slot,output wire[314:0] pan_before,pan_after,
- output wire[47:0] audio_reclaim,output wire[815:0] envelope_levels,
+ output wire[SW-1:0] pan_response_slot,output wire[314:0] pan_before,pan_after,
+ output wire[VOICES-1:0] audio_reclaim,output wire[17*VOICES-1:0] envelope_levels,
  input wire[3:0] glide_code,output wire mix_valid,output wire signed[31:0] mix_l_q8,mix_r_q8,
  output wire audio_busy,audio_protocol_error,audio_deadline_error,
- output wire[863:0] voice_samples,output wire[143:0] envelope_states,
+ output wire[18*VOICES-1:0] voice_samples,output wire[3*VOICES-1:0] envelope_states,
  input wire event_valid,output wire event_ready,input wire[95:0] event_item,
  input wire event_last,input wire[2:0] timbre,
  output wire fact_valid,output wire[95:0] fact_item,
- output wire[7:0] fact_outcome,output wire[5:0] fact_slot,
+ output wire[7:0] fact_outcome,output wire[SW-1:0] fact_slot,
  output wire fact_steal,output wire[314:0] fact_before,fact_after,
  output wire batch_done,batch_abort,published,
- 
- output wire[191:0] audio_flags,output wire[7:0] audio_vibrato,
- output wire[1487:0] control_state,
+
+ output wire[4*VOICES-1:0] audio_flags,output wire[7:0] audio_vibrato,
+ output wire[31*VOICES-1:0] control_state,
  output wire busy,output wire protocol_error,
  input wire snapshot_valid,output wire snapshot_ready,output wire snapshot_done,
  input wire query_valid,output wire query_ready,input wire[1:0] query_view,
- input wire[5:0] query_slot,output wire query_response_valid,
+ input wire[SW-1:0] query_slot,output wire query_response_valid,
  output wire[314:0] query_response,
  output wire[31:0] accepted_events,output wire[31:0] max_event_cycles
 );
-
- wire[17:0] audio_read_slots,audio_pan_slots;
- wire[185:0] audio_read_controls;wire[53:0] audio_read_pans;
+ localparam integer LANES=VOICES/8,ENGINES=VOICES>64?VOICES/64:1,EL=LANES/ENGINES,EV=8*EL,ESW=(EL>8?7:6);
+ wire[3*LANES-1:0] audio_read_slots,audio_pan_slots;
+ wire[31*LANES-1:0] audio_read_controls;wire[9*LANES-1:0] audio_read_pans;
  wire audio_retire;
- wire[5:0] level_read_slot;wire[16:0] level_read_value;
- r28_serial_control #(.ID_WIDTH(ID_WIDTH),.LOOP_ENABLE(LOOP_ENABLE)) controller(.*);
- r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX)) audio(.ensemble_metrics(ensemble_metrics),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.control_retire(audio_retire),.clk(clk),.rst(rst),.start(frame_tick),.flags(audio_flags),
- .read_controls(audio_read_controls),.read_pans(audio_read_pans),.read_slots(audio_read_slots),.pan_slots(audio_pan_slots),
- .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(audio_busy),.mix_valid(mix_valid),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
- .level_read_slot(level_read_slot),.level_read_value(level_read_value),.envelope_levels(envelope_levels),.envelope_states(envelope_states),.reclaim_pending(audio_reclaim),.voice_samples(voice_samples),
- .completion_valid(),.completion_accept(),.completion_slot(),.completion_sample(),.protocol_error(audio_protocol_error),
- .deadline_error(audio_deadline_error),.last_complete_cycle());
+ wire[SW-1:0] level_read_slot;wire[16:0] level_read_value;
+ r28_serial_control #(.ID_WIDTH(ID_WIDTH),.LOOP_ENABLE(LOOP_ENABLE),.VOICES(VOICES)) controller(.*);
+ wire[ENGINES-1:0] e_busy,e_mix_valid,e_retire,e_protocol,e_deadline;
+ wire signed[31:0] e_mix_l[0:ENGINES-1],e_mix_r[0:ENGINES-1];
+ wire[127:0] e_metrics[0:ENGINES-1];
+ wire[16:0] e_level[0:ENGINES-1];
+ for(genvar e=0;e<ENGINES;e++)begin: engines
+  r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL)) audio(.ensemble_metrics(e_metrics[e]),
+   .fx_mac_use(e==0?fx_mac_use:1'b0),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(),
+   .control_retire(e_retire[e]),.clk(clk),.rst(rst),.start(frame_tick),.flags(audio_flags[e*4*EV+:4*EV]),
+   .read_controls(audio_read_controls[e*31*EL+:31*EL]),.read_pans(audio_read_pans[e*9*EL+:9*EL]),
+   .read_slots(audio_read_slots[e*3*EL+:3*EL]),.pan_slots(audio_pan_slots[e*3*EL+:3*EL]),
+   .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(e_busy[e]),.mix_valid(e_mix_valid[e]),.mix_l_q8(e_mix_l[e]),.mix_r_q8(e_mix_r[e]),
+   .level_read_slot(ENGINES==1?ESW'(level_read_slot):ESW'(level_read_slot[5:0])),.level_read_value(e_level[e]),
+   .envelope_levels(envelope_levels[e*17*EV+:17*EV]),.envelope_states(envelope_states[e*3*EV+:3*EV]),
+   .reclaim_pending(audio_reclaim[e*EV+:EV]),.voice_samples(voice_samples[e*18*EV+:18*EV]),
+   .completion_valid(),.completion_accept(),.completion_slot(),.completion_sample(),.protocol_error(e_protocol[e]),
+   .deadline_error(e_deadline[e]),.last_complete_cycle());
+ end
+ assign fx_mac_q=54'd0;
+ assign level_read_value=ENGINES==1?e_level[0]:e_level[level_read_slot>>6];
+ // Engines share one schedule, so retire and publish edges coincide.
+ assign audio_retire=e_retire[0];
+ assign mix_valid=e_mix_valid[0];
+ assign audio_busy=|e_busy;
+ assign audio_protocol_error=|e_protocol;
+ assign audio_deadline_error=|e_deadline;
+ if(ENGINES==1)begin: single
+  assign mix_l_q8=e_mix_l[0];assign mix_r_q8=e_mix_r[0];
+  assign ensemble_metrics=e_metrics[0];
+ end else begin: summed
+  // Saturate the engine sum to the existing 32-bit mix width.
+  reg signed[33:0] sum_l,sum_r;
+  always @*begin sum_l=0;sum_r=0;for(integer e=0;e<ENGINES;e++)begin sum_l=sum_l+e_mix_l[e];sum_r=sum_r+e_mix_r[e];end end
+  function signed[31:0] clip(input signed[33:0] v);
+   clip=(v[33:31]==3'b000||v[33:31]==3'b111)?v[31:0]:v[33]?32'h80000000:32'h7fffffff;
+  endfunction
+  assign mix_l_q8=clip(sum_l);assign mix_r_q8=clip(sum_r);
+  // Count fields add across engines; flags OR; cycles and frame from engine 0.
+  reg[7:0] allocated,gated,nonzero,peak,completed;reg[7:0] faults;
+  always @*begin
+   allocated=0;gated=0;nonzero=0;peak=0;completed=0;faults=0;
+   for(integer e=0;e<ENGINES;e++)begin
+    allocated=allocated+e_metrics[e][23:16];gated=gated+e_metrics[e][31:24];nonzero=nonzero+e_metrics[e][39:32];
+    peak=peak+e_metrics[e][47:40];completed=completed+e_metrics[e][55:48];faults=faults|e_metrics[e][63:56];
+   end
+  end
+  assign ensemble_metrics={e_metrics[0][127:64],faults,completed,peak,nonzero,gated,allocated,8'(VOICES),e_metrics[0][7:0]};
+ end
 endmodule
 
 module r28_execution_observer(
