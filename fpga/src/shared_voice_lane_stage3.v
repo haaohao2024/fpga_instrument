@@ -5746,62 +5746,59 @@ module r28_narrow_stereo_sum #(parameter integer COMPLETION_LIMIT=192)(
   end
  end
 endmodule
-module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000)(
+module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6)(
  output wire [127:0] ensemble_metrics,
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
  input wire clk,rst,start,
- input wire[191:0] flags,input wire[185:0] read_controls,input wire[53:0] read_pans,
- output wire[17:0] read_slots,pan_slots,
+ input wire[4*8*LANES-1:0] flags,input wire[31*LANES-1:0] read_controls,input wire[9*LANES-1:0] read_pans,
+ output wire[3*LANES-1:0] read_slots,pan_slots,
  input wire[7:0] vibrato_depth,input wire[3:0] glide_code,
- input wire[5:0] level_read_slot,output wire[16:0] level_read_value,
+ input wire[(LANES>8?7:6)-1:0] level_read_slot,output wire[16:0] level_read_value,
  output reg busy,output wire mix_valid,output reg control_retire,
  output wire signed[31:0] mix_l_q8,mix_r_q8,
- output wire[815:0] envelope_levels,output wire[143:0] envelope_states,
- output reg[47:0] reclaim_pending,output reg[863:0] voice_samples,
- output reg[5:0] completion_valid,completion_accept,
- output reg[17:0] completion_slot,output reg[107:0] completion_sample,
+ output wire[17*8*LANES-1:0] envelope_levels,output wire[3*8*LANES-1:0] envelope_states,
+ output reg[8*LANES-1:0] reclaim_pending,output reg[18*8*LANES-1:0] voice_samples,
+ output reg[LANES-1:0] completion_valid,completion_accept,
+ output reg[3*LANES-1:0] completion_slot,output reg[18*LANES-1:0] completion_sample,
  output wire protocol_error,output reg deadline_error,output wire[8:0] last_complete_cycle
 );
  localparam integer EW=(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13),CW=240+4*EW,EPW=37+4*EW;
+ // Slot = {Lane, index within Lane}. Each slot takes four issue cycles, so
+ // the work window, prefetch end and per-group retire edges scale with LANES.
+ localparam integer V=8*LANES,LW=(LANES>8?4:3),SW=LW+3,GROUP=4*LANES,
+   ISSUE_END=4*V,WORK_END=4+4*V,RETIRE_AGE=4+9*GROUP+5;
  reg[8:0] age;
- reg[191:0] frame_flags;
+ reg[4*V-1:0] frame_flags;
  reg[11:0] expression_q;
- reg[47:0] initialized,visible_initialized;
+ reg[V-1:0] initialized,visible_initialized;
  wire early_read=1'b0;
  wire early_commit=1'b0;
  wire[1:0] early_lane=age[1:0],commit_lane=age[1:0]-2'd2;
  wire[4:0] early_slot={early_lane,age[6:4]},commit_slot={commit_lane,age[6:4]};
- wire work_active=busy&&age>=4&&age<=196;
+ wire work_active=busy&&age>=4&&age<=WORK_END;
  wire[8:0] work_age=age-9'd4;
  wire[1:0] work_step=work_age[1:0];
- reg[5:0] work_slot;
+ reg[SW-1:0] work_slot;
  always @(posedge clk)begin
   if(rst||start)work_slot<=0;
-  else if(work_active&&work_step==0&&age<=192)
-   work_slot<=work_slot[5:3]==5 ? {3'd0,3'(work_slot[2:0]+1'b1)} : work_slot+6'd8;
+  else if(work_active&&work_step==0&&age<=ISSUE_END)
+   work_slot<=work_slot[SW-1:3]==LANES-1 ? {{LW{1'b0}},3'(work_slot[2:0]+1'b1)} : work_slot+SW'(8);
  end
- wire[5:0] read_slot=early_read?early_slot:work_slot;
- wire[2:0] read_lane=read_slot[5:3];
+ wire[SW-1:0] read_slot=early_read?SW'(early_slot):work_slot;
+ wire[LW-1:0] read_lane=read_slot[SW-1:3];
  wire[3:0] read_flags=age==0?flags[read_slot*4+:4]:frame_flags[read_slot*4+:4];
  // Select one complete Lane field. Constant slices avoid a general barrel
  // selection network for the non-power-of-two 31-bit Lane stride.
- reg[26:0] selected_control;
- always @*begin
-  case(read_lane)
-   3'd0:selected_control=read_controls[4+:27];
-   3'd1:selected_control=read_controls[35+:27];
-   3'd2:selected_control=read_controls[66+:27];
-   3'd3:selected_control=read_controls[97+:27];
-   3'd4:selected_control=read_controls[128+:27];
-   3'd5:selected_control=read_controls[159+:27];
-   default:selected_control=27'bx;
-  endcase
+ wire[26:0] lane_control[0:LANES-1];
+ for(genvar l=0;l<LANES;l++)begin: lane_fields
+  assign lane_control[l]=read_controls[l*31+4+:27];
  end
+ wire[26:0] selected_control=read_lane<LANES?lane_control[read_lane]:27'bx;
  wire[30:0] read_control={selected_control,read_flags};
- assign read_slots={6{read_slot[2:0]}};
+ assign read_slots={LANES{read_slot[2:0]}};
  assign pan_slots=completion_slot;
- reg[5:0] captured_slot;
+ reg[SW-1:0] captured_slot;
  reg captured_valid,captured_gate,captured_trigger,new_owner;
  reg[6:0] captured_note;reg[7:0] captured_pressure;reg[2:0] captured_timbre;
  reg[31:0] phase_q;reg[CW-1:0] state_q;
@@ -5885,26 +5882,26 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire[8:0] prefetch_age=age+9'd3;
  wire[8:0] prefetch_work_age=prefetch_age-9'd4;
  wire prefetch_observer=1'b0;
- wire prefetch_main=prefetch_age>=4&&prefetch_age<=192&&prefetch_work_age[1:0]==0;
+ wire prefetch_main=prefetch_age>=4&&prefetch_age<=ISSUE_END&&prefetch_work_age[1:0]==0;
  wire context_read_issue=!rst&&(start||(busy&&(prefetch_observer||prefetch_main)));
- wire[5:0] context_ra=start?5'd0:prefetch_observer?
-   {prefetch_age[1:0],prefetch_age[6:4]}:work_slot;
+ wire[SW-1:0] context_ra=start?SW'(0):prefetch_observer?
+   SW'({prefetch_age[1:0],prefetch_age[6:4]}):work_slot;
  wire[323:0] context_di={{(324-CW){1'b0}},state_next};
  wire[323:0] context_do;
  for(genvar word=0;word<9;word++)begin: context_wide
   SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) memory(
    .CLKA(clk),.CLKB(clk),.CEA(context_write),.CEB(context_read_issue),
-   .ADA({3'd0,captured_slot,5'b01111}),.ADB({3'd0,context_ra,5'b00000}),
+   .ADA({(9-SW)'(0),captured_slot,5'b01111}),.ADB({(9-SW)'(0),context_ra,5'b00000}),
    .DI(context_di[word*36+:36]),.DO(context_do[word*36+:36]),
    .BLKSELA(3'd0),.BLKSELB(3'd0),.OCE(1'b1),.RESET(1'b0));
  end
  assign state_read=context_do[CW-1:0];
  // synthesis translate_off
- reg[5:0] context_response_address;reg context_response_valid;
+ reg[SW-1:0] context_response_address;reg context_response_valid;
  always @(posedge clk)begin
   if(rst)context_response_valid<=0;
   else if(context_read_issue)begin context_response_address<=context_ra;context_response_valid<=1;end
-  if(!rst&&!start&&busy&&(work_active&&work_step==0&&age<=192))
+  if(!rst&&!start&&busy&&(work_active&&work_step==0&&age<=ISSUE_END))
    if(!context_response_valid||context_response_address!==read_slot)
     $fatal(1,"R45_CONTEXT_WRONG_PREFETCH");
   if(context_read_issue&&context_write&&context_ra==captured_slot)
@@ -5934,8 +5931,8 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  always @(posedge clk)begin
   if(rst||start)begin release_high_q<=0;release_estimate_q<=0;end
   else if(busy)begin
-   if(age>=2&&age<=190&&age[1:0]==2)release_high_q<={1'b0,prepare_three[18:13]};
-   if(age>=3&&age<=191&&age[1:0]==3)release_estimate_q<=release_estimate(release_high_q,prepare_code);
+   if(age>=2&&age<=ISSUE_END-2&&age[1:0]==2)release_high_q<={1'b0,prepare_three[18:13]};
+   if(age>=3&&age<=ISSUE_END-1&&age[1:0]==3)release_estimate_q<=release_estimate(release_high_q,prepare_code);
   end
  end
  // synthesis translate_off
@@ -5977,7 +5974,8 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
    .out_valid(backend_valid[b]),.out_tag(backend_tags[b*6+:6]),.out_sample(backend_samples[b*18+:18]),.out_phase(backend_phases[b*32+:32]));
  end
  assign fx_mac_q=54'd0;
- reg result_valid;reg[5:0] result_slot;reg[31:0] result_phase;reg[17:0] result_sample;
+ reg result_valid;reg[5:0] result_slot;
+ wire[LW-1:0] result_lane=result_slot[SW-1:3];reg[31:0] result_phase;reg[17:0] result_sample;
  always @*begin
   result_valid=0;result_slot=0;result_phase=0;result_sample=0;
   for(integer b=0;b<BACKENDS;b++)if(backend_valid[b])begin
@@ -5985,19 +5983,19 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   end
   completion_valid=0;completion_accept=0;completion_slot=0;completion_sample=0;
   if(result_valid)begin
-   completion_valid[result_slot[5:3]]=1;completion_accept[result_slot[5:3]]=frame_flags[result_slot*4+1];
-   completion_slot[result_slot[5:3]*3+:3]=result_slot[2:0];completion_sample[result_slot[5:3]*18+:18]=result_sample;
+   completion_valid[result_lane]=1;completion_accept[result_lane]=frame_flags[result_slot*4+1];
+   completion_slot[result_lane*3+:3]=result_slot[2:0];completion_sample[result_lane*18+:18]=result_sample;
   end
  end
- wire[191:0] phase_reads;wire[31:0] phase_read=phase_reads[read_lane*32+:32];
- for(genvar l=0;l<6;l++)begin: phase_banks
-  s3_private_context_store #(.WIDTH(32)) phase_store(.clk(clk),.write_enable(!rst&&result_valid&&frame_flags[result_slot*4+1]&&result_slot[5:3]==l),
+ wire[32*LANES-1:0] phase_reads;wire[31:0] phase_read=phase_reads[read_lane*32+:32];
+ for(genvar l=0;l<LANES;l++)begin: phase_banks
+  s3_private_context_store #(.WIDTH(32)) phase_store(.clk(clk),.write_enable(!rst&&result_valid&&frame_flags[result_slot*4+1]&&result_lane==l),
    .write_slot(result_slot[2:0]),.read_slot(read_slot[2:0]),.write_value(result_phase),.read_value(phase_reads[l*32+:32]));
  end
  // The whole-pool level/state buses have no consumer; levels are read
  // through level_read_value only.
- assign envelope_levels=816'd0;
- assign envelope_states=144'd0;
+ assign envelope_levels='0;
+ assign envelope_states='0;
  wire mixer_deadline,computed_mix_valid;
  reg mix_prepared,published_mix_valid;
  assign mix_valid=published_mix_valid;
@@ -6009,30 +6007,32 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
    if(busy&&age==305)begin published_mix_valid<=mix_prepared;mix_prepared<=0;end
   end
  end
- osc48_stereo_sum stereo(.clk(clk),.rst(rst),.sample_tick(start),.completion_valid(completion_valid),.completion_accept(completion_accept),
+ osc_stereo_sum #(.LANES(LANES)) stereo(.clk(clk),.rst(rst),.sample_tick(start),.completion_valid(completion_valid),.completion_accept(completion_accept),
   .completion_slot(completion_slot),.completion_sample(completion_sample),.completion_pan(read_pans),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
   .mix_valid(computed_mix_valid),.protocol_error(protocol_error),.deadline_error(mixer_deadline),.last_complete_cycle(last_complete_cycle));
- osc48_voice_metrics monitor(.clk(clk),.rst(rst),.start(start),.done(mix_valid),
+ osc48_voice_metrics #(.CAPACITY(V)) monitor(.clk(clk),.rst(rst),.start(start),.done(mix_valid),
   .result_valid(result_valid),.result_accepted(frame_flags[result_slot*4+1]),
   .result_gate(frame_flags[result_slot*4+2]),.result_sample(result_sample),
   .complete_cycle(last_complete_cycle),.protocol_error(protocol_error),.deadline_error(deadline_error),.metrics(ensemble_metrics));
- wire original_completion=busy&&(age==52||age==76||age==100||age==124||age==148||age==172||age==196||age==220);
+ // Group g (index g of every Lane) has retired GROUP*(g+2) cycles after issue start.
+ reg original_completion;
+ always @*begin original_completion=0;for(integer g=0;g<8;g++)if(busy&&age==4+GROUP*(g+2))original_completion=1;end
  reg[2:0] retire_group;
  // Per-slot envelope level and state live in distributed RAM: one write per
  // slot per frame, one random read for the controller's victim scan, and
  // one read per Lane bank for the retire-time reclaim check.
- reg[16:0] levels[0:47] /* synthesis syn_ramstyle="distributed_ram" */;
+ reg[16:0] levels[0:V-1] /* synthesis syn_ramstyle="distributed_ram" */;
  wire level_we=!rst&&!start&&work_active&&work_step==1&&captured_valid;
  wire[19:0] level_write=envelope_response[EPW-1-:20];
  always @(posedge clk)if(level_we)levels[captured_slot]<=level_write[16:0];
- wire[2:0] lane_state[0:5];
- for(genvar l=0;l<6;l++)begin: state_banks
+ wire[2:0] lane_state[0:LANES-1];
+ for(genvar l=0;l<LANES;l++)begin: state_banks
   reg[2:0] bank[0:7] /* synthesis syn_ramstyle="distributed_ram" */;
-  always @(posedge clk)if(level_we&&captured_slot[5:3]==l)bank[captured_slot[2:0]]<=level_write[19:17];
+  always @(posedge clk)if(level_we&&captured_slot[SW-1:3]==l)bank[captured_slot[2:0]]<=level_write[19:17];
   assign lane_state[l]=bank[retire_group];
  end
  // synthesis translate_off
- reg[2:0] states_shadow[0:47];
+ reg[2:0] states_shadow[0:V-1];
  always @(posedge clk)if(level_we)states_shadow[captured_slot]<=level_write[19:17];
  // synthesis translate_on
  assign level_read_value=(visible_initialized[level_read_slot]&&flags[level_read_slot*4+1])?levels[level_read_slot]:17'd0;
@@ -6045,7 +6045,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
    pending_job<=0;pending_tag<=0;pending<=0;observe_request<=0;observe_valid<=0;observe_lane<=0;
    reclaim_pending<=0;voice_samples<=0;control_retire<=0;deadline_error<=0;
   end else begin
-   control_retire<=busy&&age==225;
+   control_retire<=busy&&age==RETIRE_AGE;
    observe_valid<=early_read;
    if(start)begin
     if(busy)deadline_error<=1;
@@ -6055,7 +6055,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
     if(age==0)frame_flags<=flags;
     if(early_read)begin observe_request<={read_control[30:28],read_control[15:13],captured_state[153+:EPW],read_control[2],read_control[3]&&read_control[1]};observe_lane<=early_lane;end
     if(observe_valid)observe_result[observe_lane]<=envelope_response[EPW-1-:20];
-    if(original_completion)for(integer l=0;l<6;l++)begin
+    if(original_completion)for(integer l=0;l<LANES;l++)begin
      if(frame_flags[(l*8+retire_group)*4+1]&&!frame_flags[(l*8+retire_group)*4+2]&&lane_state[l]==0)
       reclaim_pending[l*8+retire_group]<=1;
     end
@@ -6066,7 +6066,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
       pending_job<={32'(new_owner?0:phase_q),captured_trigger,backend_pitch,lfo_sine,
        (timbre==5?17'd0:depth),next_level,next_gain,next_transient,next_body,17'd0,
        (timbre==5?drum_payload:17'd0),timbre};
-      pending_tag<=captured_slot;pending<=1;if(captured_valid)initialized[captured_slot]<=1;
+      pending_tag<=6'(captured_slot);pending<=1;if(captured_valid)initialized[captured_slot]<=1;
      end
       if(age<=192)begin
       captured_slot<=read_slot;captured_valid<=read_control[1];captured_gate<=read_control[2];captured_trigger<=read_control[3]&&read_control[1];
@@ -7247,19 +7247,84 @@ module osc48_stereo_sum #(parameter integer COMPLETION_LIMIT=400)(
  end
 endmodule
 
+// One completion per cycle at most; each accepted sample is panned and
+// accumulated as it arrives. Integer sums are order-independent, so the
+// mix equals the former fixed-pair schedule for any number of Lanes.
+module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400)(
+ input wire clk,rst,sample_tick,
+ input wire[LANES-1:0] completion_valid,completion_accept,
+ input wire[3*LANES-1:0] completion_slot,input wire[18*LANES-1:0] completion_sample,
+ input wire[9*LANES-1:0] completion_pan,
+ output reg signed[31:0] mix_l_q8,mix_r_q8,output reg mix_valid,
+ output reg protocol_error,deadline_error,output reg[8:0] last_complete_cycle
+);
+ localparam integer LW=LANES>8?4:3;
+ reg[LW-1:0] lane;reg any;
+ always @*begin lane=0;any=0;for(integer k=0;k<LANES;k++)if(completion_valid[k])begin lane=LW'(k);any=1;end end
+ wire signed[17:0] in_sample=completion_accept[lane]?$signed(completion_sample[lane*18+:18]):18'sd0;
+ wire[8:0] in_pan=completion_pan[lane*9+:9];
+ wire[2:0] in_index=completion_slot[lane*3+:3];
+ wire in_last=lane==LANES-1&&in_index==7;
+ reg signed[17:0] operand;reg[8:0] coefficient;reg right_unity,op_valid,op_last;
+ reg signed[27:0] product_l,product_r;reg product_valid,product_last,mix_pending;
+ wire signed[27:0] variable_product=$signed(operand)*$signed({1'b0,coefficient});
+ wire signed[27:0] unity_product=$signed({{10{operand[17]}},operand})<<<8;
+ reg signed[31:0] sum_l,sum_r;
+ reg busy;reg[8:0] age;reg[7:0] seen[0:LANES-1];
+ always @(posedge clk)begin
+  if(rst)begin
+   operand<=0;coefficient<=256;right_unity<=0;op_valid<=0;op_last<=0;
+   product_l<=0;product_r<=0;product_valid<=0;product_last<=0;mix_pending<=0;
+   sum_l<=0;sum_r<=0;busy<=0;age<=0;
+   mix_l_q8<=0;mix_r_q8<=0;mix_valid<=0;protocol_error<=0;deadline_error<=0;last_complete_cycle<=0;
+   for(integer k=0;k<LANES;k++)seen[k]<=0;
+  end else begin
+   op_valid<=any;op_last<=any&&in_last;
+   product_valid<=op_valid;product_last<=op_valid&&op_last;
+   mix_pending<=product_valid&&product_last;mix_valid<=mix_pending;
+   if(busy)begin age<=age+1'b1;if(age>=399)deadline_error<=1;end
+   if(sample_tick)begin
+    if(busy||op_valid||product_valid||any)deadline_error<=1;
+    busy<=1;age<=0;sum_l<=0;sum_r<=0;
+    for(integer k=0;k<LANES;k++)seen[k]<=0;
+   end else if(product_valid)begin
+    sum_l<=sum_l+{{4{product_l[27]}},product_l};
+    sum_r<=sum_r+{{4{product_r[27]}},product_r};
+   end
+   if(any)begin
+    if((completion_valid&(completion_valid-1'b1))!=0)protocol_error<=1;
+    if(!busy||seen[lane][in_index])protocol_error<=1;
+    if(in_index==7&&seen[lane]!=8'h7f)protocol_error<=1;
+    seen[lane][in_index]<=1;
+    if(in_pan>256)protocol_error<=1;
+    operand<=in_sample;right_unity<=in_pan>128;
+    coefficient<=in_pan>128?((9'd256-in_pan)<<1):(in_pan<<1);
+   end
+   if(op_valid)begin
+    product_l<=right_unity?variable_product:unity_product;
+    product_r<=right_unity?unity_product:variable_product;
+   end
+   if(mix_pending)begin
+    mix_l_q8<=sum_l;mix_r_q8<=sum_r;busy<=0;last_complete_cycle<=age+1'b1;
+    if(!busy||age>=COMPLETION_LIMIT)deadline_error<=1;
+   end
+  end
+ end
+endmodule
+
 // Passive measurement of completed synthesis work. All inputs are in clk.
 // "nonzero" is a pre-effects voice contribution, not an estimate from MIDI.
 // The 512-frame peak avoids counting silent allocated slots or summing tracks.
-module osc48_voice_metrics(
+module osc48_voice_metrics #(parameter integer CAPACITY=48)(
  input wire clk,rst,start,done,result_valid,result_accepted,result_gate,
  input wire signed [17:0] result_sample,
  input wire [8:0] complete_cycle,input wire protocol_error,deadline_error,
  output reg [127:0] metrics
 );
- reg [5:0] completed,allocated,gated,nonzero,peak;
+ reg [7:0] completed,allocated,gated,nonzero,peak;
  reg [8:0] window_frame;
  reg [31:0] frame;
- wire [5:0] peak_next=nonzero>peak?nonzero:peak;
+ wire [7:0] peak_next=nonzero>peak?nonzero:peak;
  always @(posedge clk)begin
   if(rst)begin completed<=0;allocated<=0;gated<=0;nonzero<=0;peak<=0;window_frame<=0;frame<=0;metrics<=0;end
   else begin
@@ -7274,12 +7339,12 @@ module osc48_voice_metrics(
    end
    if(done)begin
     frame<=frame+1'b1;window_frame<=window_frame+1'b1;
-    peak<=window_frame==511?6'd0:peak_next;
-    metrics[7:0]<=1;metrics[15:8]<=48;
-    metrics[23:16]<={2'd0,allocated};metrics[31:24]<={2'd0,gated};
-    metrics[39:32]<={2'd0,nonzero};
-    if(window_frame==511)metrics[47:40]<={2'd0,peak_next};
-    metrics[55:48]<={2'd0,completed};
+    peak<=window_frame==511?8'd0:peak_next;
+    metrics[7:0]<=1;metrics[15:8]<=CAPACITY;
+    metrics[23:16]<=allocated;metrics[31:24]<=gated;
+    metrics[39:32]<=nonzero;
+    if(window_frame==511)metrics[47:40]<=peak_next;
+    metrics[55:48]<=completed;
     metrics[63:56]<={6'd0,deadline_error,protocol_error};
     metrics[79:64]<={7'd0,complete_cycle};metrics[95:80]<=512;
     metrics[127:96]<=frame;
