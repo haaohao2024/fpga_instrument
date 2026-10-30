@@ -5839,7 +5839,8 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire [2:0] env_state_result;
  wire [16:0] env_level_result,env_quotient_result;
  wire [31:0] env_remaining_result,env_duration_result,env_remainder_result,env_error_result;
- wire [2:0] timbre=new_owner?captured_timbre:old_timbre;
+ // Field tests: plain sine, no vibrato, so each oscillator is a single bin.
+ wire [2:0] timbre=test_linear?3'd0:new_owner?captured_timbre:old_timbre;
  assign envelope_request={timbre,captured_note[2:0],old_env_state,old_level,old_quotient,old_remaining,old_duration,old_remainder,old_error,captured_gate,captured_trigger};
  reg [EPW-1:0] env_q;
  wire [2:0] next_state;wire [16:0] next_level,next_quotient;
@@ -6088,7 +6089,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
      0:begin
       if(age>=8)begin
       pending_job<={32'(new_owner?0:phase_q),captured_trigger,backend_pitch,lfo_sine,
-       (timbre==5?17'd0:depth),next_level,next_gain,next_transient,next_body,17'd0,
+       (timbre==5||test_linear?17'd0:depth),next_level,next_gain,next_transient,next_body,17'd0,
        (timbre==5?drum_payload:17'd0),timbre};
       pending_tag<=6'(captured_slot);pending<=1;if(captured_valid)initialized[captured_slot]<=1;
      end

@@ -1,5 +1,5 @@
 module visual_spectrum_bars #(parameter BOUNDS_FILE="src/visual_band_bounds.mem")(
- input wire clk,rst,start,
+ input wire clk,rst,start,linear,
  input wire spectrum_valid,output wire spectrum_ready,input wire [11:0] bin,
  input wire [36:0] left_power,right_power,
  output wire write_enable,output wire [7:0] write_column,output wire [15:0] write_data,
@@ -29,7 +29,7 @@ module visual_spectrum_bars #(parameter BOUNDS_FILE="src/visual_band_bounds.mem"
   endcase
  end
  margin_spectrum_bars_core #(.BOUNDS_FILE(BOUNDS_FILE)) bars(
-  .clk(clk),.rst(rst),.start(start),.spectrum_valid(token_stage==2),.spectrum_ready(core_ready),
+  .clk(clk),.rst(rst),.start(start),.linear(linear),.spectrum_valid(token_stage==2),.spectrum_ready(core_ready),
   .bin(held_bin),.hl(height_l),.hr(height_r),.write_enable(write_enable),.write_column(write_column),
   .write_data(write_data),.done(done),.dc_left(dc_left),.dc_right(dc_right));
 endmodule
@@ -85,8 +85,9 @@ module margin_spectrum_decode(input wire [10:0] code,output wire [7:0] value);
  end
  assign value=nonzero?base+{4'd0,increments[fraction*4+:4]}:8'd0;
 endmodule
+// linear: column c shows bin 64+c alone (2.0-10.0 kHz at 31.25 Hz/bin).
 module margin_spectrum_bars_core #(parameter BOUNDS_FILE="src/visual_band_bounds.mem")(
- input wire clk,rst,start,
+ input wire clk,rst,start,linear,
  input wire spectrum_valid,output wire spectrum_ready,input wire [11:0] bin,
  input wire [7:0] hl,hr,
  output reg write_enable,output reg [7:0] write_column,output reg [15:0] write_data,
@@ -108,9 +109,9 @@ module margin_spectrum_bars_core #(parameter BOUNDS_FILE="src/visual_band_bounds
    case(state)
     0:if(start)begin column<=0;peak_l<=0;peak_r<=0;address<=0;state<=1;end
     1:state<=2;
-    2:begin low_bin<=bound_data;address<={column,1'b1};state<=3;end
+    2:begin low_bin<=linear?12'd64+column:bound_data;address<={column,1'b1};state<=3;end
     3:state<=4;
-    4:begin high_bin<=bound_data;state<=6;end
+    4:begin high_bin<=linear?12'd64+column:bound_data;state<=6;end
     6:if(spectrum_valid)begin
      if(bin==0)begin dc_left<=hl;dc_right<=hr;end
      if(bin>=low_bin)begin

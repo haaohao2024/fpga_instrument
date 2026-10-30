@@ -2,7 +2,7 @@
 // Input/window, twiddles and every rounding operation obey the Stage8A contract.
 // 8 BSRAM work + 1 quarter-wave ROM. Two shared signed 18x18 multipliers.
 module visual_fft4096 #(parameter ROM_FILE="src/visual_cos_q16.mem")(
- input wire clk,rst,start,
+ input wire clk,rst,start,rectangular,
  input wire sample_valid,input wire signed [15:0] sample_l,sample_r,
  output wire sample_ready,output wire capturing,output wire busy,
  output reg spectrum_valid,input wire spectrum_ready,output reg [11:0] spectrum_bin,
@@ -118,7 +118,10 @@ module visual_fft4096 #(parameter ROM_FILE="src/visual_cos_q16.mem")(
     C1:state<=C2;
     C2:begin
      ma0<={{2{captured_l[15]}},captured_l};ma1<={{2{captured_r[15]}},captured_r};
-     mb0<=(19'sd65536-$signed({tw_cos[17],tw_cos}))>>>1;mb1<=(19'sd65536-$signed({tw_cos[17],tw_cos}))>>>1;state<=C3;
+     // Field tests use a rectangular window of the Hann window's mean gain:
+     // exact-bin test tones then occupy one bin each.
+     mb0<=rectangular?19'sd32768:(19'sd65536-$signed({tw_cos[17],tw_cos}))>>>1;
+     mb1<=rectangular?19'sd32768:(19'sd65536-$signed({tw_cos[17],tw_cos}))>>>1;state<=C3;
     end
     C3:state<=C4;
     C4:state<=C5;

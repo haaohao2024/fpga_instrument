@@ -12,6 +12,8 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
  wire wave_region=x>=32&&x<544&&((y>=64&&y<144)||(y>=176&&y<256));
  wire xy_region=x>=624&&x<752&&y>=80&&y<208;
  wire spectrum_region=x>=32&&x<544&&y>=320&&y<544;
+ // status[511] of the displayed window: field-test linear spectrum view.
+ wire linear_view=metadata[767];
  assign wave_re=front_valid&&wave_region;
  assign xy_re=front_valid&&xy_region;
  assign spectrum_re=front_valid&&spectrum_region;
@@ -184,13 +186,14 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
    if(x>=344&&x<536&&y>=272&&y<280)begin local_x=x-344;local_y=y-272;text_line_id=6'd7;text_enable=1;end
    if(x>=32&&x<544&&y>=552&&y<560)begin
     local_x=x-32;local_y=y-552;text_enable=1;
-    if(x<64)text_line_id=6'd8;
-    else if(x>=176&&x<224)begin local_x=x-176;text_line_id=6'd9;end
-    else if(x>=328&&x<368)begin local_x=x-328;text_line_id=6'd10;end
-    else if(x>=480&&x<528)begin local_x=x-480;text_line_id=6'd11;end
+    // Linear view ticks: x=32+2c shows bin 64+c, i.e. 2, 4.25, 6.63, 9 kHz.
+    if(x<64)text_line_id=linear_view?6'd12:6'd8;
+    else if(x>=176&&x<224)begin local_x=x-176;text_line_id=linear_view?6'd13:6'd9;end
+    else if(x>=328&&x<368)begin local_x=x-328;text_line_id=linear_view?6'd14:6'd10;end
+    else if(x>=480&&x<528)begin local_x=x-480;text_line_id=linear_view?6'd15:6'd11;end
     else text_enable=0;
    end
-   if(x>=592&&x<784&&fx_text_rows)begin
+   if(1'b0)begin
     local_x=x-592;local_y=panel_y;row=panel_row;text_enable=1;col=local_x/8;
     case(row)
      0:text_line_id=6'd12;
@@ -211,7 +214,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
      endcase
     end
    end
-   if(x>=592&&x<784&&statistics_text_rows)begin
+   if(x>=592&&x<784&&statistics_text_rows&&(panel_row==15||panel_row==16))begin
     local_x=x-592;local_y=panel_y;row=panel_row;text_enable=1;
     case(row)
      0:text_line_id=6'd18;
@@ -229,7 +232,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
      12:text_line_id=6'd30;
      13:text_line_id=6'd31;
      14:text_line_id=6'd32;
-     15:text_line_id=6'd33;
+     15:text_line_id=linear_view?6'd16:6'd33;
      16:text_line_id=6'd34;
      17:text_line_id=6'd35;
      18:text_line_id=6'd36;

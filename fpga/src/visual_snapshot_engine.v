@@ -32,16 +32,18 @@ module visual_snapshot_engine #(
  reg [11:0] capture_index;
  reg [63:0] first_id,previous_id;
  reg fft_start;
+ // status[511] selects the field-test spectrum view for a whole window.
+ reg linear_q;
  wire fft_ready,fft_capturing,fft_busy,fft_done,fft_error,sv,sr;
  wire [11:0] bin;wire signed [17:0] lr,li,rr,ri;
  wire [36:0] lp,rp;wire [18:0] processing_cycles;
- visual_fft4096 #(.ROM_FILE(COS_FILE)) fft(.clk(clk),.rst(rst),.start(fft_start),
+ visual_fft4096 #(.ROM_FILE(COS_FILE)) fft(.clk(clk),.rst(rst),.start(fft_start),.rectangular(linear_q),
   .sample_valid(sample_valid&&state==3),.sample_l(sample_l),.sample_r(sample_r),.sample_ready(fft_ready),
   .capturing(fft_capturing),.busy(fft_busy),.spectrum_valid(sv),.spectrum_ready(sr),.spectrum_bin(bin),
   .left_real(lr),.left_imag(li),.right_real(rr),.right_imag(ri),.left_power(lp),.right_power(rp),
   .done(fft_done),.error(fft_error),.processing_cycles(processing_cycles),.last_processing_cycles(last_processing_cycles));
  wire spectrum_we,bars_done;wire [7:0] spectrum_column,dc_l,dc_r;wire [15:0] spectrum_data;
- visual_spectrum_bars #(.BOUNDS_FILE(BOUNDS_FILE)) bars(.clk(clk),.rst(rst),.start(fft_start),.spectrum_valid(sv),
+ visual_spectrum_bars #(.BOUNDS_FILE(BOUNDS_FILE)) bars(.clk(clk),.rst(rst),.start(fft_start),.linear(linear_q),.spectrum_valid(sv),
   .spectrum_ready(sr),.bin(bin),.left_power(lp),.right_power(rp),.write_enable(spectrum_we),
   .write_column(spectrum_column),.write_data(spectrum_data),.done(bars_done),.dc_left(dc_l),.dc_right(dc_r));
  reg wave_we,xy_we;reg [9:0] wave_address,xy_address,xy_process_address;
@@ -113,7 +115,7 @@ module visual_snapshot_engine #(
    case(state)
     0:if(back_ready)begin clear_address<=0;state<=1;end
     1:if(clear_address==1023)state<=2;else clear_address<=clear_address+1'b1;
-    2:begin fft_start<=1;capture_index<=0;state<=3;end
+    2:begin fft_start<=1;linear_q<=status[511];capture_index<=0;state<=3;end
     3:if(take)begin
      if(capture_index==0)first_id<=sample_id;
      else if(sample_id!=previous_id+1'b1)error<=1;
