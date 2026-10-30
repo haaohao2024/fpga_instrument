@@ -4971,7 +4971,8 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
  input wire[15:0] pan_generation,input wire[8:0] pan_value,
  output wire pan_ready,pan_response_valid,output wire[1:0] pan_result,
  output wire[5:0] pan_response_slot,output wire[314:0] pan_before,pan_after,
- input wire[47:0] audio_reclaim,input wire[815:0] envelope_levels,
+ input wire[47:0] audio_reclaim,
+ output wire[5:0] level_read_slot,input wire[16:0] level_read_value,
  input wire event_valid,output wire event_ready,input wire[95:0] event_item,
  input wire event_last,input wire[2:0] timbre,
  output reg fact_valid,output wire[95:0] fact_item,
@@ -5037,7 +5038,15 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
  reg[1:0] query_view_q;
  reg[7:0] working_vibrato;
  reg[47:0] pending_reclaim;
- reg[815:0] scan_levels;
+ // The reclaim set, its emptiness and its lowest member are registered from
+ // the same next value, so admission and slot selection read flip-flops
+ // instead of a 48-input reduction and priority encoder.
+ reg reclaim_any;reg[5:0] reclaim_first;
+ wire[47:0] reclaim_clear=(!rst&&state==RECLAIM_WRITTEN)?48'd1<<selected_slot:48'd0;
+ wire[47:0] reclaim_next=rst?48'd0:((pending_reclaim|(audio_retire?audio_reclaim:48'd0))&~reclaim_clear);
+ reg[5:0] reclaim_lowest;
+ always @*begin reclaim_lowest=0;for(integer s=47;s>=0;s--)if(reclaim_next[s])reclaim_lowest=6'(s);end
+ always @(posedge clk)begin pending_reclaim<=reclaim_next;reclaim_any<=reclaim_next!=0;reclaim_first<=reclaim_lowest;end
  reg[95:0] item_q;
  reg last_q;reg[2:0] timbre_q;
  reg[63:0] id_cursor;
@@ -5069,8 +5078,11 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
   if(rank_we)rank[rank_cursor]<=rank_next;
  end
  wire[30:0] candidate={(!scan_control[1]?2'd0:(!scan_control[2]?2'd1:2'd2)),
-   (!scan_control[1]||scan_control[2]||scan_control[0])?17'd0:scan_levels[scan_slot*17+:17],
+   (!scan_control[1]||scan_control[2]||scan_control[0])?17'd0:level_read_value,
    scan_control[1]?rank_read:6'd0,scan_slot};
+ // Victim choice reads the current envelope level of the scanned slot
+ // through the engine's read port instead of a whole-pool snapshot.
+ assign level_read_slot=scan_slot;
  wire matching=scan_control[1]&&scan_control[2]&&meta_equal&&token_equal;
  // One pair of 32-bit operands serves streaming equality, victim ordering,
  // generation increment and both halves of identity increment.
@@ -5173,13 +5185,13 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
  end
  assign loop_cleanup_ready=LOOP_ENABLE&&!rst&&state==IDLE&&!in_batch&&!loop_cleanup_pending&&!panic&&!panic_pending;
  assign event_ready=!rst&&!(LOOP_ENABLE&&((loop_cleanup_valid&&!in_batch)||loop_cleanup_pending))&&state==IDLE&&
-   (in_batch?!(query_valid&&query_view==2):(!snapshot_valid&&!query_valid&&!lookup_valid&&!pan_valid))&&(pending_reclaim==0||in_batch)&&
+   (in_batch?!(query_valid&&query_view==2):(!snapshot_valid&&!query_valid&&!lookup_valid&&!pan_valid))&&(!reclaim_any||in_batch)&&
    !((frame_tick||publish_due)&&dirty&&!in_batch&&(!hold_publication||panic_urgent||loop_cleanup_pending))&&!panic&&!panic_pending;
- assign snapshot_ready=!rst&&state==IDLE&&!in_batch&&!loop_cleanup_pending&&!dirty&&pending_reclaim==0&&!panic&&!panic_pending;
+ assign snapshot_ready=!rst&&state==IDLE&&!in_batch&&!loop_cleanup_pending&&!dirty&&!reclaim_any&&!panic&&!panic_pending;
  wire publication_service=dirty&&!in_batch&&(!hold_publication||panic_urgent||loop_cleanup_pending)&&(publish_due||frame_tick);
  assign query_ready=!rst&&state==IDLE&&!publication_service&&!snapshot_valid&&!pan_valid&&!lookup_valid&&
-   (query_view==2||!in_batch)&&(pending_reclaim==0||(in_batch&&query_view==2))&&!panic&&!panic_pending;
- assign pan_ready=!rst&&state==IDLE&&!publication_service&&!in_batch&&!snapshot_valid&&pending_reclaim==0&&!panic&&!panic_pending;
+   (query_view==2||!in_batch)&&(!reclaim_any||(in_batch&&query_view==2))&&!panic&&!panic_pending;
+ assign pan_ready=!rst&&state==IDLE&&!publication_service&&!in_batch&&!snapshot_valid&&!reclaim_any&&!panic&&!panic_pending;
  assign lookup_ready=pan_ready&&!pan_valid;
  assign lookup_response_valid=!rst&&state==LOOKUP_REPLY;
  assign lookup_found=lookup_found_q&&!lookup_cancelled&&!session_flush&&session_ready&&!panic&&!panic_pending;
@@ -5242,7 +5254,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
    control_generation<=0;control_tag<=0;control_pan<=128;lookup_found_q<=0;pan_status<=0;
    work_initialized<=0;audio_initialized<=0;frozen_initialized<=0;
    scan_slot<=0;selected_slot<=0;query_slot_q<=0;query_view_q<=0;
-   working_vibrato<=0;audio_vibrato<=0;pending_reclaim<=0;scan_levels<=0;
+   working_vibrato<=0;audio_vibrato<=0;
    item_q<=0;last_q<=0;timbre_q<=0;id_cursor<=1;collision_mode<=0;collision_hit<=0;retry_scan<=0;search_id<=1;identity_retries<=0;
    best<={31{1'b1}};victim<=0;target<=0;found<=0;
    
@@ -5260,7 +5272,6 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
    end
    if(state!=IDLE)event_age<=event_age+1'b1;
    if(audio_retire)begin
-    pending_reclaim<=pending_reclaim|audio_reclaim;
     if(audio_reclaim!=0)prepared_valid<=0;
     for(integer s=0;s<48;s++)begin
      audible[s][3]<=0;audible[s][0]<=0;
@@ -5280,8 +5291,8 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
      end else if(panic_pending||panic)begin
       if(in_batch)batch_abort<=1;
       in_batch<=0;dirty<=1;panic_pending<=0;panic_urgent<=1;prepared_valid<=0;
-     end else if(pending_reclaim!=0&&!in_batch)begin
-      selected_slot<=0;for(integer s=47;s>=0;s--)if(pending_reclaim[s])selected_slot<=6'(s);
+     end else if(reclaim_any&&!in_batch)begin
+      selected_slot<=reclaim_first;
       // The selected slot is registered before the synchronous read.
       state<=RECLAIM_AUDIO;
      end else if(frame_tick&&dirty&&prepared_valid&&!in_batch&&(!hold_publication||panic_urgent||loop_cleanup_pending))begin
@@ -5310,7 +5321,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
       read_row(query_view==2?2'd2:query_view==1?{1'b0,audio_bank}:{1'b0,work_bank},query_slot,QUERY_GOT);
      end else if(event_valid&&event_ready)begin
       item_q<=event_item;last_q<=event_last;timbre_q<=timbre;
-      scan_levels<=envelope_levels;scan_slot<=0;best<={31{1'b1}};victim<=0;target<=0;found<=0;collision_hit<=0;retry_scan<=0;search_id<=id_cursor;identity_retries<=0;
+      scan_slot<=0;best<={31{1'b1}};victim<=0;target<=0;found<=0;collision_hit<=0;retry_scan<=0;search_id<=id_cursor;identity_retries<=0;
       event_age<=0;accepted_events<=accepted_events+1'b1;in_batch<=1;
       if(!in_batch)session_live<=session_ready;
       read_row({1'b0,work_bank},0,SCAN_WORK);
@@ -5460,7 +5471,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0)(
       write_words(2,0,RECLAIM_WRITTEN);
      end else state<=RECLAIM_WRITTEN;
     end
-    RECLAIM_WRITTEN:begin pending_reclaim[selected_slot]<=0;state<=IDLE;end
+    RECLAIM_WRITTEN:state<=IDLE;
     PREP_READ:read_row({1'b0,work_bank},prepare_slot,PREP_GOT);
     PREP_GOT:begin
      prepared_flags<={4'(work_control(prepare_slot,control_q)),prepared_flags[191:4]};
@@ -5743,6 +5754,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  input wire[191:0] flags,input wire[185:0] read_controls,input wire[53:0] read_pans,
  output wire[17:0] read_slots,pan_slots,
  input wire[7:0] vibrato_depth,input wire[3:0] glide_code,
+ input wire[5:0] level_read_slot,output wire[16:0] level_read_value,
  output reg busy,output wire mix_valid,output reg control_retire,
  output wire signed[31:0] mix_l_q8,mix_r_q8,
  output wire[815:0] envelope_levels,output wire[143:0] envelope_states,
@@ -5756,7 +5768,6 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  reg[191:0] frame_flags;
  reg[11:0] expression_q;
  reg[47:0] initialized,visible_initialized;
- reg[16:0] levels[0:47];reg[2:0] states[0:47];
  wire early_read=1'b0;
  wire early_commit=1'b0;
  wire[1:0] early_lane=age[1:0],commit_lane=age[1:0]-2'd2;
@@ -5983,10 +5994,10 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   s3_private_context_store #(.WIDTH(32)) phase_store(.clk(clk),.write_enable(!rst&&result_valid&&frame_flags[result_slot*4+1]&&result_slot[5:3]==l),
    .write_slot(result_slot[2:0]),.read_slot(read_slot[2:0]),.write_value(result_phase),.read_value(phase_reads[l*32+:32]));
  end
- for(genvar s=0;s<48;s++)begin: visible
-  assign envelope_levels[s*17+:17]=(visible_initialized[s]&&flags[s*4+1])?levels[s]:17'd0;
-  assign envelope_states[s*3+:3]=(visible_initialized[s]&&flags[s*4+1])?states[s]:3'd0;
- end
+ // The whole-pool level/state buses have no consumer; levels are read
+ // through level_read_value only.
+ assign envelope_levels=816'd0;
+ assign envelope_states=144'd0;
  wire mixer_deadline,computed_mix_valid;
  reg mix_prepared,published_mix_valid;
  assign mix_valid=published_mix_valid;
@@ -6007,6 +6018,24 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   .complete_cycle(last_complete_cycle),.protocol_error(protocol_error),.deadline_error(deadline_error),.metrics(ensemble_metrics));
  wire original_completion=busy&&(age==52||age==76||age==100||age==124||age==148||age==172||age==196||age==220);
  reg[2:0] retire_group;
+ // Per-slot envelope level and state live in distributed RAM: one write per
+ // slot per frame, one random read for the controller's victim scan, and
+ // one read per Lane bank for the retire-time reclaim check.
+ reg[16:0] levels[0:47] /* synthesis syn_ramstyle="distributed_ram" */;
+ wire level_we=!rst&&!start&&work_active&&work_step==1&&captured_valid;
+ wire[19:0] level_write=envelope_response[EPW-1-:20];
+ always @(posedge clk)if(level_we)levels[captured_slot]<=level_write[16:0];
+ wire[2:0] lane_state[0:5];
+ for(genvar l=0;l<6;l++)begin: state_banks
+  reg[2:0] bank[0:7] /* synthesis syn_ramstyle="distributed_ram" */;
+  always @(posedge clk)if(level_we&&captured_slot[5:3]==l)bank[captured_slot[2:0]]<=level_write[19:17];
+  assign lane_state[l]=bank[retire_group];
+ end
+ // synthesis translate_off
+ reg[2:0] states_shadow[0:47];
+ always @(posedge clk)if(level_we)states_shadow[captured_slot]<=level_write[19:17];
+ // synthesis translate_on
+ assign level_read_value=(visible_initialized[level_read_slot]&&flags[level_read_slot*4+1])?levels[level_read_slot]:17'd0;
  always @(posedge clk)if(rst||start)retire_group<=0;else if(original_completion)retire_group<=retire_group+1'b1;
  always @(posedge clk)begin
   if(rst)begin
@@ -6026,11 +6055,8 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
     if(age==0)frame_flags<=flags;
     if(early_read)begin observe_request<={read_control[30:28],read_control[15:13],captured_state[153+:EPW],read_control[2],read_control[3]&&read_control[1]};observe_lane<=early_lane;end
     if(observe_valid)observe_result[observe_lane]<=envelope_response[EPW-1-:20];
-    if(early_commit&&frame_flags[commit_slot*4+1])begin
-     visible_initialized[commit_slot]<=1;{states[commit_slot],levels[commit_slot]}<=observe_result[commit_lane];
-    end
     if(original_completion)for(integer l=0;l<6;l++)begin
-     if(frame_flags[(l*8+retire_group)*4+1]&&!frame_flags[(l*8+retire_group)*4+2]&&states[l*8+retire_group]==0)
+     if(frame_flags[(l*8+retire_group)*4+1]&&!frame_flags[(l*8+retire_group)*4+2]&&lane_state[l]==0)
       reclaim_pending[l*8+retire_group]<=1;
     end
     if(launch)pending<=0;
@@ -6053,8 +6079,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
       pressure_target<=envelope_response[EPW-1-:3]==4 ?
        (new_owner?8'd0:old_pressure)==255?17'd65536:{1'b0,(new_owner?8'd0:old_pressure),(new_owner?8'd0:old_pressure)}:
        captured_pressure==255?17'd65536:{1'b0,captured_pressure,captured_pressure};
-      if(captured_valid)begin visible_initialized[captured_slot]<=1;
-       {states[captured_slot],levels[captured_slot]}<=envelope_response[EPW-1-:20];end
+      if(captured_valid)visible_initialized[captured_slot]<=1;
      end
      2:begin pressure_up<=pressure_difference_response[17];pressure_difference<=pressure_difference_response[16:0];end
      3:pressure_step<=pressure_difference==0?17'd1:(SAMPLE_RATE_HZ==128000 ? (({2'b0,pressure_difference}+({2'b0,pressure_difference}<<1)+19'd31)>>5) : SAMPLE_RATE_HZ==96000 ? ((pressure_difference+17'd7)>>3) : SAMPLE_RATE_HZ==72000 ? (pressure_difference+17'd5)/17'd6 : ((pressure_difference+17'd3)>>2));
@@ -6077,7 +6102,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   if(observe_valid&&main_envelope)$fatal(1,"R40_ADSR_COLLISION");
   if(work_active&&work_step==1&&(old_glide_remaining!=0||old_glide_base!=0||old_glide_remainder!=0||old_glide_error!=0||old_code!=0))$fatal(1,"II4_DIRECT_PITCH_INVARIANT");
   if((backend_valid&(backend_valid-1'b1))!=0)$fatal(1,"R40_BACKEND_COLLISION");
-  if(result_valid&&frame_flags[result_slot*4+1]&&states[result_slot]==0&&result_sample!=0)$fatal(1,"R40_RECLAIM_PROOF_BROKEN");
+  if(result_valid&&frame_flags[result_slot*4+1]&&states_shadow[result_slot]==0&&result_sample!=0)$fatal(1,"R40_RECLAIM_PROOF_BROKEN");
  end
  // synthesis translate_on
 endmodule
@@ -6124,11 +6149,12 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  wire[17:0] audio_read_slots,audio_pan_slots;
  wire[185:0] audio_read_controls;wire[53:0] audio_read_pans;
  wire audio_retire;
+ wire[5:0] level_read_slot;wire[16:0] level_read_value;
  r28_serial_control #(.ID_WIDTH(ID_WIDTH),.LOOP_ENABLE(LOOP_ENABLE)) controller(.*);
  r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX)) audio(.ensemble_metrics(ensemble_metrics),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.control_retire(audio_retire),.clk(clk),.rst(rst),.start(frame_tick),.flags(audio_flags),
  .read_controls(audio_read_controls),.read_pans(audio_read_pans),.read_slots(audio_read_slots),.pan_slots(audio_pan_slots),
  .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(audio_busy),.mix_valid(mix_valid),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
- .envelope_levels(envelope_levels),.envelope_states(envelope_states),.reclaim_pending(audio_reclaim),.voice_samples(voice_samples),
+ .level_read_slot(level_read_slot),.level_read_value(level_read_value),.envelope_levels(envelope_levels),.envelope_states(envelope_states),.reclaim_pending(audio_reclaim),.voice_samples(voice_samples),
  .completion_valid(),.completion_accept(),.completion_slot(),.completion_sample(),.protocol_error(audio_protocol_error),
  .deadline_error(audio_deadline_error),.last_complete_cycle());
 endmodule
