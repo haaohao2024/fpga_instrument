@@ -5758,7 +5758,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  output wire [127:0] ensemble_metrics,
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
- input wire clk,rst,start,
+ input wire clk,rst,start,test_linear,
  input wire[4*8*LANES-1:0] flags,input wire[31*LANES-1:0] read_controls,input wire[9*LANES-1:0] read_pans,
  output wire[3*LANES-1:0] read_slots,pan_slots,
  input wire[7:0] vibrato_depth,input wire[3:0] glide_code,
@@ -5986,7 +5986,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire[22:0] backend_pitch=timbre==5?next_pitch+drum_sweep:next_pitch;
  // These 17 bits formerly carry FM taper; the drum path carries role+noise.
  wire[16:0] drum_payload={captured_note[2:0],lfo_sine[15:2]};
- osc_ii4_pitch_prepare #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ)) pitch_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),.pitch(pending_job[160:138]),.steps(prepared_steps),.taper_out(prepared_taper));
+ osc_ii4_pitch_prepare #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ISSUE_END(ISSUE_END)) pitch_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),.test_linear(test_linear),.pitch(pending_job[160:138]),.steps(prepared_steps),.taper_out(prepared_taper));
  wire[BACKENDS-1:0] backend_ready,backend_valid;
  wire[BACKENDS*6-1:0] backend_tags;wire[BACKENDS*18-1:0] backend_samples;wire[BACKENDS*32-1:0] backend_phases;
  wire[1:0] selected_backend=BACKENDS==1?2'd0:BACKENDS==4?pending_tag[4:3]:{1'b0,pending_tag[3]};
@@ -6142,7 +6142,7 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  output wire signed[53:0] fx_mac_q,
  input wire loop_cleanup_valid,loop_cleanup_all,loop_abort_batch,input wire[1:0] loop_cleanup_sources,input wire[15:0] loop_cleanup_revision,
  output wire loop_cleanup_ready,loop_cleanup_done,
- input wire clk,rst,frame_tick,hold_publication,panic,
+ input wire clk,rst,frame_tick,hold_publication,panic,test_linear,
  input wire session_flush,session_ready,
  input wire lookup_valid,input wire[7:0] lookup_key,input wire[63:0] lookup_identity,
  input wire[15:0] lookup_generation,lookup_tag,
@@ -6186,7 +6186,7 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  for(genvar e=0;e<ENGINES;e++)begin: engines
   r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL)) audio(.ensemble_metrics(e_metrics[e]),
    .fx_mac_use(e==0?fx_mac_use:1'b0),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(),
-   .control_retire(e_retire[e]),.clk(clk),.rst(rst),.start(frame_tick),.flags(audio_flags[e*4*EV+:4*EV]),
+   .control_retire(e_retire[e]),.clk(clk),.rst(rst),.start(frame_tick),.test_linear(test_linear),.flags(audio_flags[e*4*EV+:4*EV]),
    .read_controls(audio_read_controls[e*31*EL+:31*EL]),.read_pans(audio_read_pans[e*9*EL+:9*EL]),
    .read_slots(audio_read_slots[e*3*EL+:3*EL]),.pan_slots(audio_pan_slots[e*3*EL+:3*EL]),
    .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(e_busy[e]),.mix_valid(e_mix_valid[e]),.mix_l_q8(e_mix_l[e]),.mix_r_q8(e_mix_r[e]),
@@ -6423,7 +6423,7 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
  output wire lookup_ready,lookup_response_valid,lookup_found,
  output wire[5:0] lookup_response_slot,output wire[314:0] lookup_response_word,
  output wire[15:0] lookup_response_tag,
- input wire clk,rst,sample_tick,panic,
+ input wire clk,rst,sample_tick,panic,test_linear,
  input wire event_valid,output wire event_ready,input wire[904:0] event_packet,
  input wire[2:0] timbre_id,input wire[3:0] glide_code,
  input wire[63:0] frame_id,input wire[15:0] subcycle,input wire[63:0] allocated_persistent_id,
@@ -6497,7 +6497,7 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
    $fatal(1,"R45_EVENT_LEASE_CHANGED");
  end
  // synthesis translate_on
- r28_control_audio_probe #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ID_WIDTH(ID_WIDTH),.SHARE_FX(SHARE_FX),.LOOP_ENABLE(LOOP_ENABLE)) core(.ensemble_metrics(ensemble_metrics),.loop_cleanup_valid(loop_cleanup_valid),.loop_cleanup_sources(loop_cleanup_sources),.loop_cleanup_all(loop_cleanup_all),.loop_cleanup_revision(loop_cleanup_revision),.loop_cleanup_ready(loop_cleanup_ready),.loop_cleanup_done(loop_cleanup_done),.loop_abort_batch(loop_abort_batch),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
+ r28_control_audio_probe #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ID_WIDTH(ID_WIDTH),.SHARE_FX(SHARE_FX),.LOOP_ENABLE(LOOP_ENABLE)) core(.test_linear(test_linear),.ensemble_metrics(ensemble_metrics),.loop_cleanup_valid(loop_cleanup_valid),.loop_cleanup_sources(loop_cleanup_sources),.loop_cleanup_all(loop_cleanup_all),.loop_cleanup_revision(loop_cleanup_revision),.loop_cleanup_ready(loop_cleanup_ready),.loop_cleanup_done(loop_cleanup_done),.loop_abort_batch(loop_abort_batch),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
  .session_flush(PHONE_LOOKUP?session_flush:1'b0),.session_ready(PHONE_LOOKUP?session_ready:1'b1),.lookup_valid(PHONE_LOOKUP?lookup_valid:1'b0),.lookup_key(lookup_key),.lookup_identity(lookup_identity),
  .lookup_generation(lookup_generation),.lookup_tag(lookup_tag),.lookup_ready(lookup_ready),.lookup_response_valid(lookup_response_valid),
  .lookup_found(lookup_found),.lookup_response_slot(lookup_response_slot),.lookup_response_word(lookup_response_word),.lookup_response_tag(lookup_response_tag),
@@ -7183,14 +7183,19 @@ module r54_full_equal #(parameter integer WIDTH=32)(
  assign equal=&pairs;
 endmodule
 
-module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000)(
- input wire clk,rst,start,busy,input wire[22:0] pitch,
- output reg[63:0] steps,output reg[16:0] taper_out
+// test_linear: every job's step is the exact FFT-bin multiple (2*note+65)*2^20,
+// i.e. (2*note+65)*31.25 Hz at 128 kHz, so each test oscillator lands on its
+// own 4096-point bin, two bins from its neighbours.
+module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000,ISSUE_END=192)(
+ input wire clk,rst,start,busy,test_linear,input wire[22:0] pitch,
+ output wire[63:0] steps,output reg[16:0] taper_out
 );
+ reg[63:0] table_steps;reg[31:0] exact_step;
+ assign steps=test_linear?{exact_step,exact_step}:table_steps;
  reg[8:0] age;reg[22:0] pitch_q;reg request_valid;
  wire[22:0] selected_pitch=pitch;
  wire[6:0] selected_note=selected_pitch[22:16];
- wire rom_issue=busy&&age>=9&&age<=198&&(age[1:0]==1||age[1:0]==2);
+ wire rom_issue=busy&&age>=9&&age<=ISSUE_END+6&&(age[1:0]==1||age[1:0]==2);
  wire upper=age[1:0]==2;
  wire[6:0] rom_note=upper&&selected_note!=127?selected_note+1'b1:selected_note;
  wire[31:0] rom_data;reg rom_valid,upper_q;
@@ -7221,16 +7226,16 @@ module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000)(
   .AD({2'b0,rom_note,5'b0}),.DO(rom_data));
 
  always @(posedge clk)begin
-  if(rst||start)begin age<=0;pitch_q<=0;request_valid<=0;steps<=0;taper_out<=0;rom_valid<=0;upper_q<=0;end
+  if(rst||start)begin age<=0;pitch_q<=0;request_valid<=0;table_steps<=0;exact_step<=0;taper_out<=0;rom_valid<=0;upper_q<=0;end
   else begin
    if(busy)age<=age+1'b1;
-   request_valid<=busy&&age>=9&&age<=197&&age[1:0]==1;
-   if(busy&&age>=9&&age<=197&&age[1:0]==1)begin pitch_q<=selected_pitch;end
+   request_valid<=busy&&age>=9&&age<=ISSUE_END+5&&age[1:0]==1;
+   if(busy&&age>=9&&age<=ISSUE_END+5&&age[1:0]==1)begin pitch_q<=selected_pitch;end
    rom_valid<=rom_issue;
    if(rom_issue)begin upper_q<=upper;end
    if(request_valid)taper_out<=taper;
    if(rom_valid)begin
-    if(upper_q)steps[63:32]<=rom_data;else steps[31:0]<=rom_data;
+    if(upper_q)table_steps[63:32]<=rom_data;else begin table_steps[31:0]<=rom_data;exact_step<={3'd0,{1'b0,pitch_q[22:16],1'b0}+9'd65,20'd0};end
    end
   end
  end

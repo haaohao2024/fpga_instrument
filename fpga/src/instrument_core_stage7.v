@@ -3,6 +3,8 @@
 // Voice tables and ADSR use 48 kHz, so the system audio rate is fixed at 48 kHz.
 module instrument_core_stage7 #(
     parameter integer AUDIO_RATE_HZ=48000,
+    // 1: native field tests use exact-bin oscillator frequencies (see osc_ii4_pitch_prepare).
+    parameter integer TEST_LINEAR_ENABLE=1,
     parameter integer EXTERNAL_SCORE_RX=0,STREAM_PHONE=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
@@ -367,7 +369,7 @@ module instrument_core_stage7 #(
     wire[1487:0] r18_controls;wire r18_identity_stable,r18_audio_busy,r18_event_busy,r18_deadline;
     wire[7:0] r18_outcome;wire[5:0] r18_slot;wire[95:0] r18_item;wire[3:0] r18_lane;wire r18_steal;
     wire fx_mac_use;wire signed[35:0] fx_mac_a;wire signed[17:0] fx_mac_b;wire signed[53:0] fx_mac_q;
-    r28_instrument_engine #(.SAMPLE_RATE_HZ(AUDIO_RATE_HZ),.SHARE_FX(0),.LEASED_ITEM(STREAM_PHONE || !ENABLE_REMOTE),.NO_UNDO(1),.INDEXED_INPUT(1),.PHONE_LOOKUP(ENABLE_REMOTE?2:0),.CLK_FREQ_HZ(CLK_FREQ_HZ),.LOOP_ENABLE(1)) engine(
+    r28_instrument_engine #(.SAMPLE_RATE_HZ(AUDIO_RATE_HZ),.SHARE_FX(0),.LEASED_ITEM(STREAM_PHONE || !ENABLE_REMOTE),.NO_UNDO(1),.INDEXED_INPUT(1),.PHONE_LOOKUP(ENABLE_REMOTE?2:0),.CLK_FREQ_HZ(CLK_FREQ_HZ),.LOOP_ENABLE(1)) engine(.test_linear(TEST_LINEAR_ENABLE!=0&&field_active),
      .loop_cleanup_valid(raw_cleanup_valid),.loop_cleanup_sources(raw_cleanup_sources),.loop_cleanup_all(raw_cleanup_all),.loop_cleanup_revision(raw_cleanup_revision),.loop_cleanup_ready(raw_cleanup_ready),.loop_cleanup_done(raw_cleanup_done),.loop_abort_batch(1'b0),.event_loop_timbre(pool_timbre),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.hold_publication(score_dispatch_active),.audible_publish(audible_publish),.indexed_item(pool_item),.indexed_occupancy(pool_occupancy),.indexed_item_index(pool_item_index),.clk(clk),.rst(rst),.sample_tick(frame_pulse),.panic(event_fault),
      .event_valid(queue_source_valid),.event_ready(queue_source_ready),.event_packet(queue_source_packet),.timbre_id(timbre_id),.glide_code(glide_code),
      .frame_id(r18_clock_frame),.subcycle(r18_clock_subcycle),.allocated_persistent_id(r18_allocated_pid),
