@@ -5008,7 +5008,8 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  reg loop_cleanup_pending,loop_wait_output;
  reg[7:0] state,return_state;
  localparam integer AW=2+SIW+3;
- reg[31:0] memory[0:(1<<AW)-1] /* synthesis syn_ramstyle="block_ram" */;
+ // Banks 0/1 (work/audio) and 2 (frozen snapshot); bank 3 is never addressed.
+ reg[31:0] memory[0:3*(1<<(AW-2))-1] /* synthesis syn_ramstyle="block_ram" */;
  reg[AW-1:0] read_address,write_base;
  reg[31:0] memory_q;
  // R46: stream each aligned word. Only valid reply/fact operands are
