@@ -5145,8 +5145,14 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   end else if(kind==2)new_control[2]=0;
   else if(kind==3)begin new_control[27:20]=item_q[8:1];new_control[19:13]=item_q[15:9];end
  end
+ // bank*BANK_WORDS + slot*6 as explicit shifts and adds: BANK_WORDS is
+ // 3<<(SIW+1) and 6 is 4+2.
  function[AW-1:0] row_address(input[1:0] bank,input[SW-1:0] slot);
-  row_address=AW'(bank)*AW'(BANK_WORDS)+AW'(slot[SIW-1:0])*AW'(ROW_WORDS);
+  reg[AW-1:0] b,s;
+  begin
+   b={{(AW-2){1'b0}},bank};s={{(AW-SIW){1'b0}},slot[SIW-1:0]};
+   row_address=(((b<<1)+b)<<(SIW+1))+(s<<2)+(s<<1);
+  end
  endfunction
  // Every per-slot flag read happens while the row of read_slot_q is being
  // read (scan, prepare, copy, query, lookup, reclaim, loop, apply), so all of
