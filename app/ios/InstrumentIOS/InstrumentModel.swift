@@ -35,7 +35,7 @@ final class InstrumentModel: ObservableObject {
         recordID=UInt64(UserDefaults.standard.string(forKey:"lastRecordID") ?? "0") ?? 0
         spectrum.changed = {[weak self] state in
             self?.spectrumState=state
-            self?.nativeTestExpires = state == .submitted(48) ? BluetoothLink.now+31_000 : 0
+            self?.nativeTestExpires = (state == .submitted(48) || state == .submitted(64)) ? BluetoothLink.now+31_000 : 0
         }
         link.onReady={[weak self] sid in
             guard let self=self else{return}
@@ -229,12 +229,14 @@ final class InstrumentModel: ObservableObject {
     #endif
     func releaseAll() { if spectrumState != .idle { spectrum.stop() } else { client.releaseAll() } }
     func startSpectrumTest(_ voices: Int) {
+        if voices==64 && metrics?.capacity != 64 { show("64路测试需要64路FPGA：请先刷新硬件统计，确认容量为64");return }
         metrics=nil
         if !spectrum.start(voices) { show("测试未开始：请先停止当前测试并等待连接和声音设置完成") }
     }
     func stopSpectrumTest() { spectrum.stop();show("已请求松开测试音符；请按硬件统计确认尾音结束") }
     func nativeFieldTest(_ voices: Int) {
         if voices==0, spectrumState != .idle { stopSpectrumTest();return }
+        if voices==64 && metrics?.capacity != 64 { show("64路测试需要64路FPGA：请先刷新硬件统计，确认容量为64");return }
         releaseAll()
         if let payload=try? SpectrumTest.nativeCommand(voices) {
             command(86,voices==0 ? "停止固件短测试" : "固件短测试\(voices)路",payload,target:4)

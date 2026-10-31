@@ -256,7 +256,7 @@ struct SpectrumTestView: View {
         switch model.spectrumState {
         case .idle: return "持续测试未启动"
         case .preparing(let n): return "正在设置并提交\(n)路音符"
-        case .submitted(let n): return "\(n)路音符已提交\(n==48 ? "（最多30秒）" : "")；实际发声数请看下方硬件统计"
+        case .submitted(let n): return "\(n)路音符已提交\(n>=48 ? "（最多30秒）" : "")；实际发声数请看下方硬件统计"
         }
     }
     var body: some View {
@@ -267,7 +267,7 @@ struct SpectrumTestView: View {
                 Text(status).accessibilityIdentifier("spectrum-status")
                 Button("启动持续测试"){model.startSpectrumTest(voices)}.disabled(!link.ready || model.spectrumState != .idle)
                 Button("停止持续测试",role:.destructive){model.stopSpectrumTest()}.disabled(!link.ready)
-                Text("先停止合奏、循环、曲谱和录音，松开实体琴键，调低功放音量。测试使用基础正弦、关闭颤音并旁路效果器；测试后这些声音设置会保留，可在“声音”页重新设置。48路使用FPGA原生测试源，30秒自动结束；需要本次配套固件。离页会请求停止；断链时原生测试最迟30秒结束。").font(.footnote)
+                Text("先停止合奏、循环、曲谱和录音，松开实体琴键，调低功放音量。测试使用基础正弦、关闭颤音并旁路效果器；测试后这些声音设置会保留，可在“声音”页重新设置。48／64路使用FPGA原生测试源，30秒自动结束；需要本次配套固件，64路还需要硬件容量为64的FPGA。离页会请求停止；断链时原生测试最迟30秒结束。").font(.footnote)
             }
             Section("FPGA真实计数") {
                 if let m=model.metrics {
@@ -295,7 +295,7 @@ struct SpectrumTestView: View {
             Section("固件原生短测试") {
                 Button("触发\(voices)路短测试"){model.nativeFieldTest(voices)}.disabled(!link.ready || model.spectrumState != .idle)
                 Button("停止固件短测试"){model.nativeFieldTest(0)}.disabled(!link.ready)
-                Text("1／8／16／32路原生测试约10.7ms自动结束，48路为30秒测试。要使用正弦预设和实时统计，请使用上方入口。48路由配套FPGA逐音实时合成，手机不传音频采样。").font(.footnote)
+                Text("1／8／16／32路原生测试约10.7ms自动结束，48／64路为30秒测试。要使用正弦预设和实时统计，请使用上方入口。48／64路由配套FPGA逐音实时合成，手机不传音频采样。").font(.footnote)
             }
         }.navigationTitle("赛题测试模式").onDisappear { model.stopLiveRate();model.releaseAll() }
     }

@@ -540,12 +540,13 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
                 putExtra(Intent.EXTRA_TITLE,value.name)
             },11)
         }
-        label("48路现场测试：先停止合奏/循环/曲谱/录音并调低功放音量。48路保持30秒后自动停止；旧1/8/16/32路仍是短测试。需要本次配套固件，旧固件会拒绝48路。")
-        button("打开赛题测试（48路）"){showPage(8)}
+        label("48路现场测试：先停止合奏/循环/曲谱/录音并调低功放音量。48路保持30秒后自动停止；旧1/8/16/32路仍是短测试。需要本次配套固件，旧固件会拒绝48路；64路测试只在FPGA报告64路容量时可用。")
+        button("打开赛题测试（48/64路）"){showPage(8)}
     }
     private fun fieldTestPage() {
-        label("当前FPGA：48个独立振荡器。测试先设置基础正弦、关闭颤音、旁路效果器，保留输出增益。请先停止合奏/循环/曲谱/录音、松开实体键并调低功放音量。测试后声音设置保留。")
+        label("FPGA振荡器数量以下方硬件统计的容量为准（48或64）。测试先设置基础正弦、关闭颤音、旁路效果器，保留输出增益。请先停止合奏/循环/曲谱/录音、松开实体键并调低功放音量。测试后声音设置保留。")
         button("启动48路测试（30秒）"){startFieldTest(48)}
+        button("启动64路测试（30秒，需64路FPGA）"){startFieldTest(64)}
         button("停止测试"){stopFieldTest()}
         fieldText=TextView(this).apply {text=voiceInfo?.description()?:"尚未取得硬件计数";textSize=16f;body.addView(this)}
         // Live measurement of the real synthesis rate; off until the user asks for it.
@@ -554,10 +555,11 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         rateText=TextView(this).apply {textSize=16f;body.addView(this)}
         refreshRateText()
         button("刷新实际硬件统计"){client.parameter(41,byteArrayOf(),"读取测试硬件声部",3)}
-        label("下列是短测试，约10.7ms后结束；48路测试30秒后自动结束。需要配套R87固件，旧固件会拒绝48路。断链后原生测试最迟30秒结束。")
+        label("下列是短测试，约10.7ms后结束；48/64路测试30秒后自动结束。需要配套R87固件，旧固件会拒绝48路，64路还需要64路FPGA与配套BL616固件。断链后原生测试最迟30秒结束。")
         listOf(1,8,16,32).forEach {n->button("原生短测试 $n 路"){startFieldTest(n)}}
         label("预期基频（不是实测频谱）：")
-        (48..95).forEach {note->label("MIDI $note · ${String.format(java.util.Locale.US,"%.2f",440.0*Math.pow(2.0,(note-69)/12.0))} Hz")}
+        label("48路使用MIDI 48–95，64路使用MIDI 48–111。")
+        (48..111).forEach {note->label("MIDI $note · ${String.format(java.util.Locale.US,"%.2f",440.0*Math.pow(2.0,(note-69)/12.0))} Hz")}
         label("请求48路不等于已验证48个谱峰。请采集真实音频检查独立基频；容量、占槽、非零贡献快照和每帧完成数分别判断，谐波和噪声不计额外振荡器。评分使用实际音频输出采样率，不能使用48kHz录音率代替128kHz输出率。")
     }
     /** Turns the live measurement on or off; the checkbox is the only entry point. */
@@ -586,6 +588,7 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
     }
     private fun startFieldTest(voices:Int) {
         if(!client.connected||fieldRequested){feedback.text="请连接设备并先停止当前测试";return}
+        if(voices==64&&voiceInfo?.capacity!=64){feedback.text="64路测试需要64路FPGA：请先点“刷新实际硬件统计”，确认容量为64";return}
         client.releaseAll();fieldRequested=true;val token=++fieldGeneration
         client.pitchParameter(32,0) {
             if(token==fieldGeneration)client.vibrato(0) {
@@ -593,7 +596,7 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
                     rejected={if(token==fieldGeneration){fieldRequested=false;fieldGeneration++}},
                     completed={if(token==fieldGeneration)client.parameter(S11Protocol.FIELD_TEST,S11Protocol.field(voices),"现场测试 $voices 路",4,
                         rejected={if(token==fieldGeneration){fieldRequested=false;fieldGeneration++}},
-                        completed={handler.postDelayed({if(token==fieldGeneration)fieldRequested=false},if(voices==48)31000L else 1000L)})})
+                        completed={handler.postDelayed({if(token==fieldGeneration)fieldRequested=false},if(voices>=48)31000L else 1000L)})})
             }
         }
     }

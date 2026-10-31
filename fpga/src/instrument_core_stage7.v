@@ -116,7 +116,7 @@ module instrument_core_stage7 #(
     output wire [127:0] observe_audio_metrics,
     output wire observe_load,
     output wire signed [15:0] observe_l,observe_r,
- output wire [47:0] observe_full_slot_valid,observe_full_slot_gate,
+ output wire [63:0] observe_full_slot_valid,observe_full_slot_gate,
     output wire [31:0] observe_slot_valid,observe_slot_gate,
     output wire [95:0] observe_slot_timbres,
     output wire [351:0] observe_fx_config,
@@ -169,7 +169,7 @@ module instrument_core_stage7 #(
     output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
     wire [7:0] vibrato_depth;
-    wire [47:0] slot_valid,slot_gate,slot_trigger;
+    wire [63:0] slot_valid,slot_gate,slot_trigger;
     wire [31:0] slot_cancel,working_public_equal;
     wire [223:0] slot_notes;
     wire [255:0] slot_pressures;
@@ -178,7 +178,7 @@ module instrument_core_stage7 #(
     wire [95:0] slot_timbres;
     assign observe_full_slot_valid=slot_valid;assign observe_full_slot_gate=slot_gate;
     assign observe_slot_valid=slot_valid[31:0];
-    assign observe_slot_gate=slot_gate;
+    assign observe_slot_gate=slot_gate[31:0];
     assign observe_slot_timbres=slot_timbres;
     assign observe_test_linear=TEST_LINEAR_ENABLE!=0&&field_active;
     wire [815:0] envelope_levels;

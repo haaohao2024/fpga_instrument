@@ -16,7 +16,7 @@ final class SpectrumTestTests: XCTestCase {
             XCTAssertEqual(p,[n==0 ? 2 : 1,UInt8(n),0,0,0,0,0,0])
             XCTAssertEqual(RequestRules.error(Message(channel:1,opcode:86,session:sid,sequence:1,payload:p)),0)
         }
-        for n in [-1,4,47,49,64] { XCTAssertThrowsError(try SpectrumTest.nativeCommand(n)) }
+        for n in [-1,4,47,49,63,65] { XCTAssertThrowsError(try SpectrumTest.nativeCommand(n)) }
     }
     func testSustained32WaitsForConfigurationAndAllNoteAcknowledgments() throws {
         var sent: [Message]=[];var failure=""

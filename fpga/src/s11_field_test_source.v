@@ -12,7 +12,7 @@ module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
  output wire [63:0] ctrl_arg,
  output wire header_valid,eof_seen,output wire [63:0] last_verified_time,
  output wire record_valid,input wire record_ready,output reg [127:0] record_data,
- output wire [8:0] visible_records,output wire [5:0] voice_count
+ output wire [8:0] visible_records,output wire [6:0] voice_count
 );
  localparam integer HOLD_FRAMES=AUDIO_RATE_HZ*512/48000;
  localparam integer END_FRAMES=AUDIO_RATE_HZ*768/48000;
@@ -23,7 +23,7 @@ module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
  reg [5:0] key;
  reg [3:0] row_left;
  reg header_pending,launched,seen_busy,stop_requested;
- assign voice_count=size==0?6'd1:size==1?6'd8:size==2?6'd16:size==3?6'd32:6'd48;
+ assign voice_count=size==0?7'd1:size==1?7'd8:size==2?7'd16:size==3?7'd32:size==4?7'd48:7'd64;
  assign request_ready=!rst&&!ctrl_valid;
  assign committed=!rst&&ctrl_valid&&player_ctrl_ready;
  assign running=active&&player_state==2;
@@ -35,11 +35,11 @@ module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
  wire stop_boundary=stop_requested&&header_pending&&key==0;
  assign record_valid=active&&launched&&part<3&&!stop_boundary;
  assign visible_records=record_valid?9'd1:9'd0;
- wire last_key=key==voice_count-1;
- wire [5:0] remaining=voice_count-key;
+ wire last_key={1'b0,key}==voice_count-1'b1;
+ wire [6:0] remaining=voice_count-{1'b0,key};
  wire [3:0] row_count=remaining>9?4'd9:remaining[3:0];
  reg [2:0] row_index;
- wire full_test=size==4;
+ wire full_test=size>=4;
  wire [31:0] hold_frames=full_test?AUDIO_RATE_HZ*30:HOLD_FRAMES;
  wire [31:0] end_frames=full_test?AUDIO_RATE_HZ*30+END_FRAMES:END_FRAMES;
  wire [31:0] row_delay=full_test?{26'd0,row_index,3'd0}:32'd0;
@@ -96,7 +96,7 @@ module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
    end
    if(request_valid&&request_ready)begin
     if(request_start)begin
-     if(active||player_state!=0||request_size>4||(&run_id))rejected<=1;
+     if(active||player_state!=0||request_size>5||(&run_id))rejected<=1;
      else begin
       active<=1;size<=request_size;part<=0;key<=0;row_index<=0;row_left<=0;header_pending<=1;
       launched<=0;seen_busy<=0;stop_requested<=0;run_id<=run_id+1'b1;
@@ -109,7 +109,7 @@ module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
  end
  // synthesis translate_off
  always @(posedge clk)if(!rst&&record_valid&&!header_pending&&part<2)begin
-  if(row_left==0||key>=voice_count)$fatal(1,"FIELD_RAW_ROW_STATE");
+  if(row_left==0||{1'b0,key}>=voice_count)$fatal(1,"FIELD_RAW_ROW_STATE");
   if(!record_data[95])$fatal(1,"FIELD_TOKEN_NAMESPACE");
  end
  // synthesis translate_on

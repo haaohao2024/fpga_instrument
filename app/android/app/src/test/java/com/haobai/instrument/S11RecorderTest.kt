@@ -95,8 +95,8 @@ class S11RecorderTest {
         val p=S11Protocol.field(48)
         assertArrayEquals(byteArrayOf(1,48,0,0,0,0,0,0),p)
         assertEquals(0,S9RequestRules.error(S9Message(1,86,sid,1,p)))
-        for(n in listOf(0,1,8,16,32,48))assertEquals(0,S9RequestRules.error(S9Message(1,86,sid,2,S11Protocol.field(n))))
-        for(n in listOf(-1,4,47,49,64))try{S11Protocol.field(n);fail("unsupported count accepted")}catch(_:IllegalArgumentException){}
+        for(n in listOf(0,1,8,16,32,48,64))assertEquals(0,S9RequestRules.error(S9Message(1,86,sid,2,S11Protocol.field(n))))
+        for(n in listOf(-1,4,47,49,63,65))try{S11Protocol.field(n);fail("unsupported count accepted")}catch(_:IllegalArgumentException){}
     }
     @Test fun requestRangesAndNoAckImpliesSaved() {
         val m=S9Message(2,80,sid,1,S11Protocol.start(77,3));assertEquals(0,S9RequestRules.error(m))

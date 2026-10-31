@@ -83,7 +83,7 @@ module instrument_core_stage10 #(
     output wire underrun,
     output wire observe_load,
     output wire signed [15:0] observe_l,observe_r,
- output wire [47:0] observe_full_slot_valid,observe_full_slot_gate,
+ output wire [63:0] observe_full_slot_valid,observe_full_slot_gate,
     output wire [31:0] observe_slot_valid,observe_slot_gate,
     output wire [95:0] observe_slot_timbres,
     output wire [351:0] observe_fx_config,

@@ -3845,7 +3845,7 @@ module r18_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  wire accept=config_valid&&config_ready;
  assign field_valid=accept&&opcode==86&&ENABLE_FIELD;
  assign field_start=config_bytes[263:256]==1;
- assign field_size=config_bytes[271:264]==1?0:config_bytes[271:264]==8?1:config_bytes[271:264]==16?2:config_bytes[271:264]==32?3:4;
+ assign field_size=config_bytes[271:264]==1?0:config_bytes[271:264]==8?1:config_bytes[271:264]==16?2:config_bytes[271:264]==32?3:config_bytes[271:264]==64?5:4;
  assign fx_cfg_valid=accept&&opcode==35;assign fx_cfg_data=config_bytes[607:256];
  assign gain_cfg_valid=accept&&opcode==36;
  assign gain_local=config_bytes[271:256];assign gain_external=config_bytes[287:272];
@@ -4046,7 +4046,7 @@ module r18_recording_subsystem #(parameter integer PCM_BLOCK_PAIRS=128, SERIAL_E
  input wire fact_valid,input wire[95:0] fact_item,input wire[7:0] fact_outcome,
  input wire[5:0] fact_slot,input wire fact_steal,input wire[314:0] fact_before,fact_after,
  input wire[63:0] fact_frame,input wire[15:0] fact_subcycle,input wire reclaim_batch_busy,
- input wire[47:0] slot_valid,slot_gate,
+ input wire[63:0] slot_valid,slot_gate,
  input wire cfg_tx_valid,
  input wire [5:0] cfg_tx_count,
  input wire [255:0] cfg_tx_cell,
@@ -4314,7 +4314,7 @@ module r18_recording_subsystem #(parameter integer PCM_BLOCK_PAIRS=128, SERIAL_E
   .batch_begin(batch_begin),.publish_ok(publish_ok),.batch_abort(batch_abort),.batch_timestamp(batch_timestamp),
   .fact_valid(fact_valid),.fact_item(fact_item),.fact_outcome(fact_outcome),.fact_slot(fact_slot),.fact_steal(fact_steal),
   .fact_before(fact_before),.fact_after(fact_after),.fact_frame(fact_frame),.fact_subcycle(fact_subcycle),.reclaim_batch_busy(reclaim_batch_busy),
-  .slot_valid(slot_valid),.slot_gate(slot_gate),.allocated_persistent_id(allocated_persistent_id),
+  .slot_valid(slot_valid[47:0]),.slot_gate(slot_gate[47:0]),.allocated_persistent_id(allocated_persistent_id),
   .snapshot_query_valid(snapshot_query_valid),.snapshot_query_ready(snapshot_query_ready),.snapshot_query_slot(snapshot_query_slot),
   .snapshot_response_valid(snapshot_response_valid),.snapshot_response_slot(snapshot_response_slot),.snapshot_response_word(snapshot_response_word),
   .active(exec_active),.arming(exec_arming),.incomplete(exec_incomplete),.error_code(exec_error),.first_missing_frame(exec_missing),
@@ -4539,7 +4539,7 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  wire accept=config_valid&&config_ready;
  assign field_valid=accept&&opcode==86&&ENABLE_FIELD;
  assign field_start=config_bytes[71:64]==1;
- assign field_size=config_bytes[79:72]==1?0:config_bytes[79:72]==8?1:config_bytes[79:72]==16?2:config_bytes[79:72]==32?3:4;
+ assign field_size=config_bytes[79:72]==1?0:config_bytes[79:72]==8?1:config_bytes[79:72]==16?2:config_bytes[79:72]==32?3:config_bytes[79:72]==64?5:4;
  assign fx_cfg_valid=accept&&opcode==35;assign fx_cfg_data=config_bytes[415:64];
  assign gain_cfg_valid=accept&&opcode==36;
  assign gain_local=config_bytes[79:64];assign gain_external=config_bytes[95:80];
@@ -6329,7 +6329,7 @@ module r28_execution_observer(
  input wire fact_valid,input wire[95:0] fact_item,input wire[7:0] fact_outcome,
  input wire[5:0] fact_slot,input wire fact_steal,input wire[314:0] fact_before,fact_after,
  input wire[63:0] fact_frame,input wire[15:0] fact_subcycle,input wire reclaim_batch_busy,
- input wire[47:0] slot_valid,slot_gate,
+ input wire[63:0] slot_valid,slot_gate,
  output wire[63:0] allocated_persistent_id,
  output wire snapshot_query_valid,input wire snapshot_query_ready,output wire[5:0] snapshot_query_slot,
  input wire snapshot_response_valid,input wire[5:0] snapshot_response_slot,input wire[314:0] snapshot_response_word,
@@ -6352,7 +6352,7 @@ module r28_execution_observer(
  reg[2:0] read_phase;reg[5:0] request_index;reg[15:0] request_epoch;
  reg[63:0] request_frame;reg[15:0] request_subcycle;
  reg inflight,stop_pending,stop_cell;reg[1:0] owner;
- reg[47:0] initial_mask;reg[5:0] snap_index;
+ reg[63:0] initial_mask;reg[6:0] snap_index;
  reg[58:0] snap_word;reg snap_loaded,snap_wait;
  reg[63:0] snap_frame,stop_frame;reg[15:0] snap_subcycle,stop_subcycle;
  reg[223:0] response;
@@ -6376,9 +6376,9 @@ module r28_execution_observer(
  assign tx_valid=!incomplete&&!inflight&&(arming?(snap_index==0||snap_loaded):(pending[read_bank]||stop_cell));
  always @* tx_count=selected_owner==2?{2'd0,chunk}+6'd1:6'd1;
  assign snapshot_query_valid=arming&&snap_index>0&&!snap_loaded&&!snap_wait&&!incomplete;
- assign snapshot_query_slot=snap_index-1'b1;
- reg[5:0] next_snapshot;
- always @*begin next_snapshot=49;for(integer i=47;i>=0;i--)if(initial_mask[i]&&i+1>snap_index)next_snapshot=i+1;end
+ assign snapshot_query_slot=6'(snap_index-1'b1);
+ reg[6:0] next_snapshot;
+ always @*begin next_snapshot=65;for(integer i=63;i>=0;i--)if(initial_mask[i]&&i+1>snap_index)next_snapshot=i+1;end
  function automatic[223:0] cell_data(input[7:0] typ,flags,src,key,input[63:0] fr,id,p);
   cell_data={p,id,fr,key,src,flags,typ};
  endfunction
@@ -6461,7 +6461,7 @@ module r28_execution_observer(
     if(owner==1)begin
      if(snap_index!=0)initial_instances<=initial_instances+1'b1;
      snap_loaded<=0;snap_wait<=0;snap_index<=next_snapshot;
-     if(next_snapshot==49)arming<=0;
+     if(next_snapshot==65)arming<=0;
     end else if(owner==2)begin
      if(remaining<=9)begin pending[read_bank]<=0;read_bank<=~read_bank;offset<=0;end
      else offset<=offset+chunk;
@@ -6535,14 +6535,17 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
  output wire[7:0] fact_outcome,output wire[5:0] fact_slot,output wire fact_steal,
  output wire[314:0] fact_before,fact_after,output wire[63:0] fact_frame,output wire[15:0] fact_subcycle,
  output wire identity_stable,output wire event_busy,audio_busy,
- output wire[47:0] control_valid,control_gate,
+ output wire[63:0] control_valid,control_gate,
  output wire[1487:0] control_state,output wire[3:0] batch_source
 );
  reg[2:0] delivery;reg[8:0] mask;reg[3:0] index,source_q;reg[31:0] stamp;
  reg started;reg[2:0] loop_timbre_q;reg[95:0] item_q;reg[5:0] query_slot_q;
  wire controller_ready,controller_busy,controller_error,batch_done,controller_abort,snapshot_done;
- // Ports above keep the 48-slot, 6-bit layout; with more voices the probe's
- // wider slot fields and vectors are truncated or zero-extended here.
+ // Ports above keep the 6-bit slot layout (control vectors are 64 wide);
+ // with more voices the probe's wider slot fields are truncated here.
+ localparam integer PSW=(VOICES==(1<<$clog2(VOICES)))?$clog2(VOICES)+1:$clog2(VOICES);
+ wire[PSW-1:0] probe_fact_slot;
+ assign fact_slot=probe_fact_slot[5:0];
  wire[4*VOICES-1:0] audio_flags;wire[7:0] audio_vibrato;
  wire[VOICES-1:0] audio_reclaim;wire audio_protocol;
  function[3:0] next_item(input[8:0] m,input[3:0] begin_at);
@@ -6562,8 +6565,9 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
  assign event_busy=controller_busy||delivery!=0;
  assign reclaim_batch_busy=fact_valid&&fact_outcome==10;
  assign query_response_slot=query_slot_q;
- for(genvar s=0;s<48;s++)begin
-  assign control_valid[s]=audio_flags[s*4+1];assign control_gate[s]=audio_flags[s*4+2];
+ for(genvar s=0;s<64;s++)begin
+  if(s<VOICES)begin assign control_valid[s]=audio_flags[s*4+1];assign control_gate[s]=audio_flags[s*4+2];end
+  else begin assign control_valid[s]=0;assign control_gate[s]=0;end
  end
  always @(posedge clk)begin
   if(rst)begin delivery<=0;mask<=0;index<=0;source_q<=0;stamp<=0;started<=0;loop_timbre_q<=0;item_q<=0;query_slot_q<=0;end
@@ -6589,6 +6593,9 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
   if(!rst&&delivery==2)leased_reference<=indexed_item;
   if(!rst&&LEASED_ITEM&&delivery==3&&controller_ready&&indexed_item!==leased_reference)
    $fatal(1,"R45_EVENT_LEASE_CHANGED");
+  // No-slot (all ones) is only reported where consumers ignore the slot.
+  if(!rst&&fact_valid&&probe_fact_slot=={PSW{1'b1}}&&fact_outcome!=4&&fact_outcome!=5&&fact_outcome!=6)
+   $fatal(1,"R28_NO_SLOT_OUTCOME");
  end
  // synthesis translate_on
  r28_control_audio_probe #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ID_WIDTH(ID_WIDTH),.SHARE_FX(SHARE_FX),.LOOP_ENABLE(LOOP_ENABLE),.VOICES(VOICES)) core(.test_linear(test_linear),.ensemble_metrics(ensemble_metrics),.loop_cleanup_valid(loop_cleanup_valid),.loop_cleanup_sources(loop_cleanup_sources),.loop_cleanup_all(loop_cleanup_all),.loop_cleanup_revision(loop_cleanup_revision),.loop_cleanup_ready(loop_cleanup_ready),.loop_cleanup_done(loop_cleanup_done),.loop_abort_batch(loop_abort_batch),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
@@ -6600,7 +6607,7 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
  .audio_reclaim(audio_reclaim),.envelope_levels(envelope_levels),.glide_code(glide_code),.mix_valid(mix_valid),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
  .audio_busy(audio_busy),.audio_protocol_error(audio_protocol),.audio_deadline_error(deadline_error),.voice_samples(voice_samples),.envelope_states(envelope_states),
  .event_valid(delivery==3),.event_ready(controller_ready),.event_item(LEASED_ITEM?indexed_item:item_q),.event_last(following==9),.timbre(LOOP_ENABLE&&source_q==3?loop_timbre_q:timbre_id),
- .fact_valid(fact_valid),.fact_item(fact_item),.fact_outcome(fact_outcome),.fact_slot(fact_slot),.fact_steal(fact_steal),.fact_before(fact_before),.fact_after(fact_after),
+ .fact_valid(fact_valid),.fact_item(fact_item),.fact_outcome(fact_outcome),.fact_slot(probe_fact_slot),.fact_steal(fact_steal),.fact_before(fact_before),.fact_after(fact_after),
  .batch_done(batch_done),.batch_abort(controller_abort),.published(audible_publish),.audio_flags(audio_flags),.audio_vibrato(audio_vibrato),.control_state(control_state),
  .busy(controller_busy),.protocol_error(controller_error),.snapshot_valid(snapshot_valid),.snapshot_ready(snapshot_ready),.snapshot_done(snapshot_done),
  .query_valid(query_valid),.query_ready(query_ready),.query_view(query_snapshot?2'd2:2'd0),.query_slot(query_slot),.query_response_valid(query_response_valid),.query_response(query_response_word),

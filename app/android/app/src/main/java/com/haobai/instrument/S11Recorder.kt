@@ -28,7 +28,7 @@ object S11Protocol {
             .putLong(id).putLong(offset).putShort(length.toShort()).put(kind.toByte()).put(0).array()
     }
     fun field(voices:Int):ByteArray {
-        require(voices in listOf(0,1,8,16,32,48))
+        require(voices in listOf(0,1,8,16,32,48,64))
         return ByteArray(8).also {it[0]=(if(voices==0)2 else 1).toByte();it[1]=voices.toByte()}
     }
     fun requestError(m:S9Message):Int? {
@@ -43,7 +43,7 @@ object S11Protocol {
             DOWNLOAD -> ok(m.channel==2 && p.size==20 && b.getLong(0)!=0L && b.getLong(8)>=0 &&
                 (b.getShort(16).toInt() and 65535) in 1..480 && (p[18].toInt() and 255) in 1..2 && p[19]==0.toByte())
             FIELD_TEST -> ok(m.channel==1 && p.size==8 && zero(2) &&
-                ((p[0]==1.toByte() && (p[1].toInt() and 255) in listOf(1,8,16,32,48)) || (p[0]==2.toByte() && p[1]==0.toByte())))
+                ((p[0]==1.toByte() && (p[1].toInt() and 255) in listOf(1,8,16,32,48,64)) || (p[0]==2.toByte() && p[1]==0.toByte())))
             else -> null
         }
     }

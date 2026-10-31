@@ -76,7 +76,7 @@ module s9_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0, 
  wire accept=config_valid&&config_ready;
  assign field_valid=accept&&opcode==86&&ENABLE_FIELD;
  assign field_start=config_bytes[263:256]==1;
- assign field_size=config_bytes[271:264]==1?0:config_bytes[271:264]==8?1:config_bytes[271:264]==16?2:config_bytes[271:264]==32?3:4;
+ assign field_size=config_bytes[271:264]==1?0:config_bytes[271:264]==8?1:config_bytes[271:264]==16?2:config_bytes[271:264]==32?3:config_bytes[271:264]==64?5:4;
  assign fx_cfg_valid=accept&&opcode==35;assign fx_cfg_data=config_bytes[607:256];
  assign gain_cfg_valid=accept&&opcode==36;
  assign gain_local=config_bytes[271:256];assign gain_external=config_bytes[287:272];

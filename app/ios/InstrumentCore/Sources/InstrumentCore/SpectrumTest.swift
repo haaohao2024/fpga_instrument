@@ -2,7 +2,7 @@ import Foundation
 
 /// Uses ordinary phone-note identities; never sends PCM or writes oscillator state.
 public final class SpectrumTest {
-    public static let sizes = [1, 8, 16, 32, 48]
+    public static let sizes = [1, 8, 16, 32, 48, 64]
     public enum State: Equatable {
         case idle, preparing(Int), submitted(Int)
     }
@@ -10,7 +10,7 @@ public final class SpectrumTest {
     public var changed: ((State)->Void)?
     private let client: ClientSession
     private var generation = 0
-    private var native48 = false
+    private var nativeLong = false
     public init(client: ClientSession) { self.client = client }
     public static func notes(_ count: Int) -> [Int] { sizes.contains(count) ? Array(48..<(48+count)) : [] }
     public static func frequency(_ note: Int) -> Double { 440 * pow(2, Double(note-69)/12) }
@@ -21,12 +21,12 @@ public final class SpectrumTest {
     private func update(_ value: State) { state=value;changed?(value) }
     public func stop() {
         generation += 1;client.releaseAll()
-        if native48 {
-            _=client.command(opcode:86,payload:try! Self.nativeCommand(0),label:"停止48路测试",target:4)
+        if nativeLong {
+            _=client.command(opcode:86,payload:try! Self.nativeCommand(0),label:"停止长测试",target:4)
         }
-        native48=false;update(.idle)
+        nativeLong=false;update(.idle)
     }
-    public func disconnected() { generation += 1;native48=false;update(.idle) }
+    public func disconnected() { generation += 1;nativeLong=false;update(.idle) }
     @discardableResult public func start(_ count: Int) -> Bool {
         guard state == .idle, Self.sizes.contains(count), client.connected, client.pitchReady else { return false }
         generation += 1;let token=generation
@@ -40,11 +40,12 @@ public final class SpectrumTest {
                 guard let self=self, self.generation==token else { return }
                 if !self.client.pitchParameter(opcode:32,value:0,completed:{[weak self] _ in
                     guard let self=self, self.generation==token else { return }
-                    if count==48 {
-                        self.native48=true
-                        let ticket=self.client.command(opcode:86,payload:try! Self.nativeCommand(48),label:"启动48路测试",target:4,completed:{[weak self] _ in
+                    // 48 and 64 run the FPGA's native 30 s generator.
+                    if count>=48 {
+                        self.nativeLong=true
+                        let ticket=self.client.command(opcode:86,payload:try! Self.nativeCommand(count),label:"启动\(count)路测试",target:4,completed:{[weak self] _ in
                             guard let self=self, self.generation==token else { return }
-                            self.update(.submitted(48))
+                            self.update(.submitted(count))
                         },rejected:{[weak self] _ in if self?.generation==token { self?.stop() }})
                         if ticket==nil { self.stop() }
                         return

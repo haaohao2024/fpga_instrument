@@ -35,7 +35,7 @@ module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,EXTERN
  wire field_cv,field_cr,field_rv,field_rr,field_hv,field_eof,field_internal_ready;
  assign field_ready=field_internal_ready&&!cv;
  wire [7:0] field_cmd;wire [63:0] field_ep,field_arg,field_verified;
- wire [127:0] field_record;wire [8:0] field_visible;wire [5:0] field_voices;
+ wire [127:0] field_record;wire [8:0] field_visible;wire [6:0] field_voices;
  wire player_cv=field_active?field_cv:cv;
  wire [7:0] player_cmd=field_active?field_cmd:cmd;
  wire [63:0] player_ep=field_active?field_ep:ep,player_arg=field_active?field_arg:arg;
