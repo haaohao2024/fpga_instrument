@@ -5758,7 +5758,11 @@ module r28_narrow_stereo_sum #(parameter integer COMPLETION_LIMIT=192)(
   end
  end
 endmodule
-module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6)(
+module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6, EXTERNAL_FRONTEND=0,
+  FE_EPW=37+4*(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13))(
+ // EXTERNAL_FRONTEND: envelope and timbre/LFO steps come from shared units outside.
+ output wire[FE_EPW+7:0] fe_envelope_request,output wire[69:0] fe_timbre_request,output wire[6:0] fe_release,
+ input wire[FE_EPW-1:0] fe_envelope_response,input wire[81:0] fe_timbre_response,
  output wire [127:0] ensemble_metrics,
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
@@ -5972,11 +5976,18 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
    $fatal(1,"ENVELOPE_PREPARE_WRONG_CONTEXT");
  // synthesis translate_on
 
- r28_shared_envelope_glide #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.PREPARED_RELEASE(SAMPLE_RATE_HZ==128000)) frontend(.prepared_release_q(release_estimate_q),.clk(clk),.rst(rst),.start(start),.busy(busy),
+ assign fe_envelope_request=selected_envelope;assign fe_timbre_request=timbre_request;assign fe_release=release_estimate_q;
+ if(EXTERNAL_FRONTEND!=0)begin: shared_frontend
+  // Glide and advance results are not consumed: pitch changes are direct.
+  assign envelope_response=fe_envelope_response;assign timbre_response=fe_timbre_response;
+  assign glide_response=0;assign advance_response=0;
+ end else begin: own_frontend
+ r28_shared_envelope_glide #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.PREPARED_RELEASE(SAMPLE_RATE_HZ==128000)) frontend(.prepared_release_q(release_estimate_q),.prepared_release_alt(release_estimate_q),.clk(clk),.rst(rst),.start(start),.busy(busy),
   .envelope_requests({4{selected_envelope}}),.envelope_response(envelope_response),
   .glide_requests({4{glide_request}}),.glide_response(glide_response),
   .advance_requests({4{advance_request}}),.advance_response(advance_response));
  r28_shared_timbre_lfo #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ)) timbre_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),.requests({4{timbre_request}}),.response(timbre_response));
+ end
  wire signed[17:0] pressure_delta=$signed({1'b0,pressure_request[67:51]})-$signed({1'b0,pressure_request[50:34]});
  wire[16:0] pressure_magnitude=pressure_delta[17]?-pressure_delta:pressure_delta;
  wire[17:0] pressure_difference_response={!pressure_delta[17]&&pressure_delta!=0,pressure_magnitude};
@@ -6179,7 +6190,15 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  output wire[314:0] query_response,
  output wire[31:0] accepted_events,output wire[31:0] max_event_cycles
 );
- localparam integer LANES=VOICES/8,ENGINES=VOICES>64?VOICES/64:1,EL=LANES/ENGINES,EV=8*EL,ESW=(EL>8?7:6);
+ localparam integer LANES=VOICES/8,ENGINES=VOICES>64?VOICES/64:1,EL=LANES/ENGINES,EV=8*EL,ESW=(EL>8?7:6),
+   EPW=37+4*(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13);
+ // Two engines: engine 1 runs the same schedule two clocks after engine 0.
+ // Engine 0 uses the shared envelope in lane slot 0 and the shared timbre/LFO
+ // unit in slot 2; engine 1 lands in slots 2 and 0, so neither collides.
+ reg[1:0] start_delay;
+ always @(posedge clk)start_delay<=rst?2'd0:{start_delay[0],frame_tick};
+ wire[EPW+7:0] fe_envelope_request[0:1];wire[69:0] fe_timbre_request[0:1];wire[6:0] fe_release[0:1];
+ wire[EPW-1:0] fe_envelope_response;wire[81:0] fe_timbre_response;
  wire[3*LANES-1:0] audio_read_slots,audio_pan_slots;
  wire[31*LANES-1:0] audio_read_controls;wire[9*LANES-1:0] audio_read_pans;
  wire audio_retire;
@@ -6190,9 +6209,11 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  wire[127:0] e_metrics[0:ENGINES-1];
  wire[16:0] e_level[0:ENGINES-1];
  for(genvar e=0;e<ENGINES;e++)begin: engines
-  r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL)) audio(.ensemble_metrics(e_metrics[e]),
+  r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL),.EXTERNAL_FRONTEND(ENGINES==2)) audio(.ensemble_metrics(e_metrics[e]),
    .fx_mac_use(e==0?fx_mac_use:1'b0),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(),
-   .control_retire(e_retire[e]),.clk(clk),.rst(rst),.start(frame_tick),.test_linear(test_linear),.flags(audio_flags[e*4*EV+:4*EV]),
+   .fe_envelope_request(fe_envelope_request[e]),.fe_timbre_request(fe_timbre_request[e]),.fe_release(fe_release[e]),
+   .fe_envelope_response(fe_envelope_response),.fe_timbre_response(fe_timbre_response),
+   .control_retire(e_retire[e]),.clk(clk),.rst(rst),.start(e==0?frame_tick:start_delay[1]),.test_linear(test_linear),.flags(audio_flags[e*4*EV+:4*EV]),
    .read_controls(audio_read_controls[e*31*EL+:31*EL]),.read_pans(audio_read_pans[e*9*EL+:9*EL]),
    .read_slots(audio_read_slots[e*3*EL+:3*EL]),.pan_slots(audio_pan_slots[e*3*EL+:3*EL]),
    .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(e_busy[e]),.mix_valid(e_mix_valid[e]),.mix_l_q8(e_mix_l[e]),.mix_r_q8(e_mix_r[e]),
@@ -6206,7 +6227,18 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  assign level_read_value=ENGINES==1?e_level[0]:e_level[level_read_slot>>6];
  // Engines share one schedule, so retire and publish edges coincide.
  assign audio_retire=e_retire[0];
- assign mix_valid=e_mix_valid[0];
+ if(ENGINES==2)begin: shared_frontends
+  r28_shared_envelope_glide #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.PREPARED_RELEASE(SAMPLE_RATE_HZ==128000)) frontend(
+   .prepared_release_q(fe_release[0]),.prepared_release_alt(fe_release[1]),.clk(clk),.rst(rst),.start(frame_tick),.busy(e_busy[0]),
+   .envelope_requests({fe_envelope_request[1],fe_envelope_request[1],fe_envelope_request[0],fe_envelope_request[0]}),
+   .envelope_response(fe_envelope_response),.glide_requests(456'd0),.glide_response(),.advance_requests(500'd0),.advance_response());
+  r28_shared_timbre_lfo #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ)) timbre_prepare(.clk(clk),.rst(rst),.start(frame_tick),.busy(e_busy[0]),
+   .requests({fe_timbre_request[0],fe_timbre_request[0],fe_timbre_request[1],fe_timbre_request[1]}),.response(fe_timbre_response));
+ end else begin: own_frontends
+  assign fe_envelope_response=0;assign fe_timbre_response=0;
+ end
+ // The last engine finishes two clocks later; earlier mixes are held until then.
+ assign mix_valid=e_mix_valid[ENGINES-1];
  assign audio_busy=|e_busy;
  assign audio_protocol_error=|e_protocol;
  assign audio_deadline_error=|e_deadline;
@@ -6768,7 +6800,8 @@ endmodule
 // Each 16-clock group prepares lane L at offsets L..L+6. All four
 // backends still launch together at16. Only combinational operators are shared.
 module r28_shared_envelope_glide #(parameter integer SAMPLE_RATE_HZ=48000, PREPARED_RELEASE=0, EW=(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13),EPW=37+4*EW)(
- input wire[6:0] prepared_release_q,
+ // Release estimate for lanes 0/1 and for lanes 2/3 (a second engine two clocks later).
+ input wire[6:0] prepared_release_q,prepared_release_alt,
  input wire[499:0] advance_requests,output wire[101:0] advance_response,
  input wire clk,rst,start,busy,input wire[4*(EPW+8)-1:0] envelope_requests,input wire[455:0] glide_requests,
  output wire[EPW-1:0] envelope_response,output wire[124:0] glide_response
@@ -6784,7 +6817,7 @@ module r28_shared_envelope_glide #(parameter integer SAMPLE_RATE_HZ=48000, PREPA
  wire new_owner,up;wire[6:0] note,target;wire[3:0] code,stored_code;wire[22:0] pitch;
  wire[2:0] state_next;wire[16:0] level_next,quotient_next;
  wire[31:0] remaining_next,duration_next,remainder_next,error_next;
- voice_release_adsr_step #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.PREPARED_RELEASE(PREPARED_RELEASE)) adsr(.prepared_release_q(prepared_release_q),.release_code(code),.state(state),.level(level),.quotient(quotient),.remaining({{(32-EW){1'b0}},remaining}),.duration({{(32-EW){1'b0}},duration}),
+ voice_release_adsr_step #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.PREPARED_RELEASE(PREPARED_RELEASE)) adsr(.prepared_release_q(envelope_lane[1]?prepared_release_alt:prepared_release_q),.release_code(code),.state(state),.level(level),.quotient(quotient),.remaining({{(32-EW){1'b0}},remaining}),.duration({{(32-EW){1'b0}},duration}),
   .remainder({{(32-EW){1'b0}},remainder}),.error_acc({{(32-EW){1'b0}},error_acc}),.gate(gate),.retrigger(retrigger),
   .state_next(state_next),.level_next(level_next),.quotient_next(quotient_next),.remaining_next(remaining_next),
   .duration_next(duration_next),.remainder_next(remainder_next),.error_next(error_next));
