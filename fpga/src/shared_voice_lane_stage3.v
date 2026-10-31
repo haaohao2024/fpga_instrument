@@ -7469,7 +7469,7 @@ module osc48_voice_metrics #(parameter integer CAPACITY=48)(
  // synthesis translate_off
  always @(posedge clk)if(!rst)begin
   if(start&&result_valid)$fatal(1,"R83_METRIC_OVERLAP");
-  if(done&&(completed!=48||result_valid))$fatal(1,"R83_METRIC_INCOMPLETE_FRAME");
+  if(done&&(completed!=CAPACITY||result_valid))$fatal(1,"R83_METRIC_INCOMPLETE_FRAME");
  end
  // synthesis translate_on
 endmodule
