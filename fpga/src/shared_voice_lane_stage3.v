@@ -5038,7 +5038,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  wire memory_write=!rst&&(state==WRITE_WORDS||copying||state==INIT);
  reg[31:0] memory_write_data;
  reg[3:0] audible[0:VOICES-1];
- reg[4*VOICES-1:0] prepared_flags;reg[4*VOICES-1:0] frozen_flags;reg prepared_valid;reg[SW-1:0] prepare_slot;
+ reg[4*VOICES-1:0] prepared_flags;reg prepared_valid;reg[SW-1:0] prepare_slot;
  reg[SW-1:0] rank[0:VOICES-1] /* synthesis syn_ramstyle="distributed_ram" */;
  reg[SW-1:0] rank_cursor,selected_rank;
  // After reset, INIT writes every row with the empty-slot value (control
@@ -5190,7 +5190,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   if(copying)begin
    memory_write_data=memory_q;
    if(read_cycle==1)memory_write_data={1'b0,memory_q[30:4],
-     copy_snapshot?frozen_flags[3:0]:audible[read_slot_q]};
+     audible[read_slot_q]};
   end else if(state==INIT)memory_write_data=init_word==0?32'd2048:32'd0;
   else if(write_mode==1)memory_write_data={1'b0,old_control[30:13],control_pan,old_control[3:0]};
   else if(write_mode==2)memory_write_data={1'b0,control_q[30:2],1'b0,control_q[0]};
@@ -5276,7 +5276,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
    loop_scan<=0;loop_all<=0;loop_sources<=0;loop_revision<=0;loop_cleanup_done<=0;loop_cleanup_pending<=0;loop_wait_output<=0;
    state<=INIT;init_word<=0;return_state<=IDLE;read_address<=0;write_base<=0;
    record_q<=0;control_q<=0;prepared_key<=0;read_cycle<=0;write_cycle<=0;write_last<=0;write_mode<=0;read_slot_q<=0;read_bank_q<=0;meta_equal<=0;id_equal<=0;token_equal<=0;id_carry<=0;next_generation<=0;
-   prepared_flags<=0;frozen_flags<=0;prepared_valid<=0;prepare_slot<=0;
+   prepared_flags<=0;prepared_valid<=0;prepare_slot<=0;
    work_bank<=0;audio_bank<=1;dirty<=0;in_batch<=0;copy_snapshot<=0;copy_slot<=0;
    panic_pending<=0;panic_urgent<=0;allocated_since_publish<=0;publish_due<=0;
    phone_owned<=0;session_live<=0;lookup_cancelled<=0;lookup_key_q<=0;control_id<=0;
@@ -5335,8 +5335,9 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
       prepare_slot<=0;state<=PREP_READ;
      end else if(snapshot_valid&&snapshot_ready)begin
       // The audio bank and non-flag controls cannot change while copying.
-      // Only retire may clear flags, so freeze those 128 bits at START.
-      for(integer s=0;s<VOICES;s++)frozen_flags[s*4+:4]<=audible[s][3:0];
+      // The frozen bank's reader (execution observer) uses only the gate
+      // flag, which changes only at publication; copying blocks publication,
+      // so the live gate equals its value at START.
       copy_snapshot<=1;copy_slot<=0;state<=COPY_READ;
      end else if(pan_valid&&pan_ready)begin
       selected_slot<=pan_slot;control_id<=pan_id;control_generation<=pan_generation;control_pan<=pan_value;
@@ -5464,7 +5465,6 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     COPY_READ:read_row({1'b0,audio_bank},copy_slot,COPY_GOT);
     COPY_GOT:state<=COPY_NEXT;
     COPY_NEXT:begin
-     if(copy_snapshot)frozen_flags<=frozen_flags>>4;
      if(copy_slot==VOICES-1)begin state<=IDLE;if(copy_snapshot)snapshot_done<=1;end
      else begin copy_slot<=copy_slot+1'b1;state<=COPY_READ;end
     end
