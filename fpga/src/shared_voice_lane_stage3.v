@@ -5011,10 +5011,15 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  // Banks 0/1 (work/audio) and 2 (frozen snapshot); bank 3 is never addressed.
  // Six words per row: control, metadata, two identity words, two token words.
  localparam integer ROW_WORDS=6,BANK_WORDS=ROW_WORDS*(1<<SIW);
- reg[31:0] memory[0:3*BANK_WORDS-1] /* synthesis syn_ramstyle="block_ram" */;
+ // Work/audio banks and the frozen bank are separate arrays so each maps to
+ // the widest BSRAM shape its depth allows.
+ localparam[AW-1:0] FROZEN_BASE=2*BANK_WORDS;
+ reg[31:0] live_memory[0:2*BANK_WORDS-1] /* synthesis syn_ramstyle="block_ram" */;
+ reg[31:0] frozen_memory[0:BANK_WORDS-1] /* synthesis syn_ramstyle="block_ram" */;
  reg[2:0] init_word;
  reg[AW-1:0] read_address,write_base;
- reg[31:0] memory_q;
+ reg[31:0] live_q,frozen_q;reg frozen_read;
+ wire[31:0] memory_q=frozen_read?frozen_q:live_q;
  // R46: stream each aligned word. Only valid reply/fact operands are
  // assembled; scans and bank copies never instantiate a whole-row shifter.
  reg[186:0] record_q;
@@ -5200,8 +5205,12 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   endcase
  end
  always @(posedge clk)begin
-  memory_q<=memory[read_address];
-  if(memory_write)memory[write_base]<=memory_write_data;
+  frozen_read<=read_address>=FROZEN_BASE;
+  live_q<=live_memory[read_address];frozen_q<=frozen_memory[read_address-FROZEN_BASE];
+  if(memory_write)begin
+   if(write_base>=FROZEN_BASE)frozen_memory[write_base-FROZEN_BASE]<=memory_write_data;
+   else live_memory[write_base]<=memory_write_data;
+  end
  end
  assign loop_cleanup_ready=LOOP_ENABLE&&!rst&&state==IDLE&&!in_batch&&!loop_cleanup_pending&&!panic&&!panic_pending;
  assign event_ready=!rst&&!(LOOP_ENABLE&&((loop_cleanup_valid&&!in_batch)||loop_cleanup_pending))&&state==IDLE&&
