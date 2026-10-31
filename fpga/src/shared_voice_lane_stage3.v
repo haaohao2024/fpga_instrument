@@ -6174,9 +6174,9 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
 endmodule
 
 
-// VOICES <= 64: one engine with VOICES/8 Lanes. VOICES > 64: ENGINES engines
-// of 64 slots (8 Lanes) each run the same schedule in parallel; engine e owns
-// slots e*64..e*64+63 and the stereo mixes are added.
+// VOICES <= 64: one engine with VOICES/8 Lanes. VOICES > 64: two engines of
+// VOICES/16 Lanes each (an even Lane count is required); engine e owns slots
+// e*EV..e*EV+EV-1 and the stereo mixes are added.
 module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,parameter integer ID_WIDTH=64,parameter integer SHARE_FX=0,LOOP_ENABLE=0,VOICES=48,
   SW=(VOICES==(1<<$clog2(VOICES)))?$clog2(VOICES)+1:$clog2(VOICES))(
  output wire [127:0] ensemble_metrics,
@@ -6215,7 +6215,7 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  output wire[314:0] query_response,
  output wire[31:0] accepted_events,output wire[31:0] max_event_cycles
 );
- localparam integer LANES=VOICES/8,ENGINES=VOICES>64?VOICES/64:1,EL=LANES/ENGINES,EV=8*EL,ESW=(EL>8?7:6),
+ localparam integer LANES=VOICES/8,ENGINES=VOICES>64?2:1,EL=LANES/ENGINES,EV=8*EL,ESW=(EL>8?7:6),
    EPW=37+4*(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13);
  // Two engines: engine 1 runs the same schedule two clocks after engine 0.
  // Engine 0 uses the shared envelope in lane slot 0 and the shared timbre/LFO
@@ -6230,6 +6230,10 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  wire[31*LANES-1:0] audio_read_controls;wire[9*LANES-1:0] audio_read_pans;
  wire audio_retire;
  wire[SW-1:0] level_read_slot;wire[16:0] level_read_value;
+ // Controller level reads: slot -> (engine, slot within that engine).
+ localparam[SW-1:0] ENGINE_SLOTS=EV;
+ wire level_engine=ENGINES==2&&level_read_slot>=ENGINE_SLOTS;
+ wire[SW-1:0] level_local_slot=level_engine?level_read_slot-ENGINE_SLOTS:level_read_slot;
  r28_serial_control #(.ID_WIDTH(ID_WIDTH),.LOOP_ENABLE(LOOP_ENABLE),.VOICES(VOICES)) controller(.*);
  wire[ENGINES-1:0] e_busy,e_mix_valid,e_retire,e_protocol,e_deadline;
  wire signed[31:0] e_mix_l[0:ENGINES-1],e_mix_r[0:ENGINES-1];
@@ -6247,14 +6251,14 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
    .read_controls(audio_read_controls[e*31*EL+:31*EL]),.read_pans(audio_read_pans[e*9*EL+:9*EL]),
    .read_slots(audio_read_slots[e*3*EL+:3*EL]),.pan_slots(audio_pan_slots[e*3*EL+:3*EL]),
    .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(e_busy[e]),.mix_valid(e_mix_valid[e]),.mix_l_q8(e_mix_l[e]),.mix_r_q8(e_mix_r[e]),
-   .level_read_slot(ENGINES==1?ESW'(level_read_slot):ESW'(level_read_slot[5:0])),.level_read_value(e_level[e]),
+   .level_read_slot(ESW'(level_local_slot)),.level_read_value(e_level[e]),
    .envelope_levels(envelope_levels[e*17*EV+:17*EV]),.envelope_states(envelope_states[e*3*EV+:3*EV]),
    .reclaim_pending(audio_reclaim[e*EV+:EV]),.voice_samples(voice_samples[e*18*EV+:18*EV]),
    .completion_valid(),.completion_accept(),.completion_slot(),.completion_sample(),.protocol_error(e_protocol[e]),
    .deadline_error(e_deadline[e]),.last_complete_cycle());
  end
  assign fx_mac_q=54'd0;
- assign level_read_value=ENGINES==1?e_level[0]:e_level[level_read_slot>>6];
+ assign level_read_value=e_level[level_engine];
  // Engines share one schedule, so retire and publish edges coincide.
  assign audio_retire=e_retire[0];
  if(ENGINES==2)begin: shared_frontends
