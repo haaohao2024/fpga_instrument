@@ -5009,7 +5009,10 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  reg[7:0] state,return_state;
  localparam integer AW=2+SIW+3;
  // Banks 0/1 (work/audio) and 2 (frozen snapshot); bank 3 is never addressed.
- reg[31:0] memory[0:3*(1<<(AW-2))-1] /* synthesis syn_ramstyle="block_ram" */;
+ // Six words per row: control, metadata, two identity words, two token words.
+ localparam integer ROW_WORDS=6,BANK_WORDS=ROW_WORDS*(1<<SIW);
+ reg[31:0] memory[0:3*BANK_WORDS-1] /* synthesis syn_ramstyle="block_ram" */;
+ reg[2:0] init_word;
  reg[AW-1:0] read_address,write_base;
  reg[31:0] memory_q;
  // R46: stream each aligned word. Only valid reply/fact operands are
@@ -5143,7 +5146,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   else if(kind==3)begin new_control[27:20]=item_q[8:1];new_control[19:13]=item_q[15:9];end
  end
  function[AW-1:0] row_address(input[1:0] bank,input[SW-1:0] slot);
-  row_address={bank,slot[SIW-1:0],3'd0};
+  row_address=AW'(bank)*AW'(BANK_WORDS)+AW'(slot[SIW-1:0])*AW'(ROW_WORDS);
  endfunction
  // Every per-slot flag read happens while the row of read_slot_q is being
  // read (scan, prepare, copy, query, lookup, reclaim, loop, apply), so all of
@@ -5177,7 +5180,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
    memory_write_data=memory_q;
    if(read_cycle==1)memory_write_data={1'b0,memory_q[30:4],
      copy_snapshot?frozen_flags[3:0]:audible[read_slot_q]};
-  end else if(state==INIT)memory_write_data=write_base[2:0]==0?32'd2048:32'd0;
+  end else if(state==INIT)memory_write_data=init_word==0?32'd2048:32'd0;
   else if(write_mode==1)memory_write_data={1'b0,old_control[30:13],control_pan,old_control[3:0]};
   else if(write_mode==2)memory_write_data={1'b0,control_q[30:2],1'b0,control_q[0]};
   else if(write_mode==3)memory_write_data={1'b0,old_control[30:4],allocated_since_publish[read_slot_q]?4'd0:(old_control[3:0]&4'b1011)};
@@ -5256,7 +5259,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   loop_cleanup_done<=0;fact_valid<=0;batch_done<=0;batch_abort<=0;published<=0;snapshot_done<=0;query_response_valid<=0;
   if(rst)begin
    loop_scan<=0;loop_all<=0;loop_sources<=0;loop_revision<=0;loop_cleanup_done<=0;loop_cleanup_pending<=0;loop_wait_output<=0;
-   state<=INIT;return_state<=IDLE;read_address<=0;write_base<=0;
+   state<=INIT;init_word<=0;return_state<=IDLE;read_address<=0;write_base<=0;
    record_q<=0;control_q<=0;prepared_key<=0;read_cycle<=0;write_cycle<=0;write_last<=0;write_mode<=0;read_slot_q<=0;read_bank_q<=0;meta_equal<=0;id_equal<=0;token_equal<=0;id_carry<=0;next_generation<=0;
    prepared_flags<=0;frozen_flags<=0;prepared_valid<=0;prepare_slot<=0;
    work_bank<=0;audio_bank<=1;dirty<=0;in_batch<=0;copy_snapshot<=0;copy_slot<=0;
@@ -5483,7 +5486,10 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
      end else state<=RECLAIM_WRITTEN;
     end
     RECLAIM_WRITTEN:state<=IDLE;
-    INIT:begin write_base<=write_base+1'b1;if(write_base==AW'(3*(1<<(AW-2))-1))state<=IDLE;end
+    INIT:begin
+     write_base<=write_base+1'b1;init_word<=init_word==ROW_WORDS-1?3'd0:init_word+1'b1;
+     if(write_base==AW'(3*BANK_WORDS-1))state<=IDLE;
+    end
     PREP_READ:read_row({1'b0,work_bank},prepare_slot,PREP_GOT);
     PREP_GOT:begin
      prepared_flags<={4'(work_control(control_q)),prepared_flags[4*VOICES-1:4]};
@@ -5758,11 +5764,13 @@ module r28_narrow_stereo_sum #(parameter integer COMPLETION_LIMIT=192)(
   end
  end
 endmodule
-module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6, EXTERNAL_FRONTEND=0,
+module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6, EXTERNAL_FRONTEND=0,PITCH_ROM_ROLE=0,
   FE_EPW=37+4*(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13))(
  // EXTERNAL_FRONTEND: envelope and timbre/LFO steps come from shared units outside.
  output wire[FE_EPW+7:0] fe_envelope_request,output wire[69:0] fe_timbre_request,output wire[6:0] fe_release,
  input wire[FE_EPW-1:0] fe_envelope_response,input wire[81:0] fe_timbre_response,
+ output wire fe_pitch_issue,output wire[6:0] fe_pitch_note,output wire[31:0] fe_pitch_data,
+ input wire fe_alt_issue,input wire[6:0] fe_alt_note,input wire[31:0] fe_pitch_data_in,
  output wire [127:0] ensemble_metrics,
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
@@ -6003,7 +6011,9 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire[22:0] backend_pitch=timbre==5?next_pitch+drum_sweep:next_pitch;
  // These 17 bits formerly carry FM taper; the drum path carries role+noise.
  wire[16:0] drum_payload={captured_note[2:0],lfo_sine[15:2]};
- osc_ii4_pitch_prepare #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ISSUE_END(ISSUE_END)) pitch_prepare(.clk(clk),.rst(rst),.start(start),.busy(busy),.test_linear(test_linear),.pitch(pending_job[160:138]),.steps(prepared_steps),.taper_out(prepared_taper));
+ osc_ii4_pitch_prepare #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ISSUE_END(ISSUE_END),.ROM_ROLE(PITCH_ROM_ROLE)) pitch_prepare(
+  .alt_issue(fe_alt_issue),.alt_note(fe_alt_note),.rom_data_in(fe_pitch_data_in),
+  .issue_out(fe_pitch_issue),.note_out(fe_pitch_note),.rom_data_out(fe_pitch_data),.clk(clk),.rst(rst),.start(start),.busy(busy),.test_linear(test_linear),.pitch(pending_job[160:138]),.steps(prepared_steps),.taper_out(prepared_taper));
  wire[BACKENDS-1:0] backend_ready,backend_valid;
  wire[BACKENDS*6-1:0] backend_tags;wire[BACKENDS*18-1:0] backend_samples;wire[BACKENDS*32-1:0] backend_phases;
  wire[1:0] selected_backend=BACKENDS==1?2'd0:BACKENDS==4?pending_tag[4:3]:{1'b0,pending_tag[3]};
@@ -6199,6 +6209,8 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  always @(posedge clk)start_delay<=rst?2'd0:{start_delay[0],frame_tick};
  wire[EPW+7:0] fe_envelope_request[0:1];wire[69:0] fe_timbre_request[0:1];wire[6:0] fe_release[0:1];
  wire[EPW-1:0] fe_envelope_response;wire[81:0] fe_timbre_response;
+ // Engine 0 owns the pitch pROM; engine 1 reads it on engine 0's idle ages.
+ wire pitch_issue[0:1];wire[6:0] pitch_note[0:1];wire[31:0] pitch_data[0:1];
  wire[3*LANES-1:0] audio_read_slots,audio_pan_slots;
  wire[31*LANES-1:0] audio_read_controls;wire[9*LANES-1:0] audio_read_pans;
  wire audio_retire;
@@ -6209,7 +6221,10 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  wire[127:0] e_metrics[0:ENGINES-1];
  wire[16:0] e_level[0:ENGINES-1];
  for(genvar e=0;e<ENGINES;e++)begin: engines
-  r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL),.EXTERNAL_FRONTEND(ENGINES==2)) audio(.ensemble_metrics(e_metrics[e]),
+  r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL),.EXTERNAL_FRONTEND(ENGINES==2),
+   .PITCH_ROM_ROLE(ENGINES==2?(e==0?1:2):0)) audio(
+   .fe_pitch_issue(pitch_issue[e]),.fe_pitch_note(pitch_note[e]),.fe_pitch_data(pitch_data[e]),
+   .fe_alt_issue(ENGINES==2&&e==0?pitch_issue[ENGINES-1]:1'b0),.fe_alt_note(pitch_note[ENGINES-1]),.fe_pitch_data_in(pitch_data[0]),.ensemble_metrics(e_metrics[e]),
    .fx_mac_use(e==0?fx_mac_use:1'b0),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(),
    .fe_envelope_request(fe_envelope_request[e]),.fe_timbre_request(fe_timbre_request[e]),.fe_release(fe_release[e]),
    .fe_envelope_response(fe_envelope_response),.fe_timbre_response(fe_timbre_response),
@@ -7227,7 +7242,11 @@ endmodule
 // test_linear: every job's step is the exact FFT-bin multiple (2*note+65)*2^20,
 // i.e. (2*note+65)*31.25 Hz at 128 kHz, so each test oscillator lands on its
 // own 4096-point bin, two bins from its neighbours.
-module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000,ISSUE_END=192)(
+// ROM_ROLE 0: own pROM. 1: owner, also serves alt_note on alt_issue cycles.
+// 2: borrower, reads the owner's pROM output (issues two clocks after it).
+module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000,ISSUE_END=192,ROM_ROLE=0)(
+ input wire alt_issue,input wire[6:0] alt_note,input wire[31:0] rom_data_in,
+ output wire issue_out,output wire[6:0] note_out,output wire[31:0] rom_data_out,
  input wire clk,rst,start,busy,test_linear,input wire[22:0] pitch,
  output wire[63:0] steps,output reg[16:0] taper_out
 );
@@ -7239,7 +7258,8 @@ module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000,ISSUE_END=
  wire rom_issue=busy&&age>=9&&age<=ISSUE_END+6&&(age[1:0]==1||age[1:0]==2);
  wire upper=age[1:0]==2;
  wire[6:0] rom_note=upper&&selected_note!=127?selected_note+1'b1:selected_note;
- wire[31:0] rom_data;reg rom_valid,upper_q;
+ wire[31:0] rom_q;wire[31:0] rom_data=ROM_ROLE==2?rom_data_in:rom_q;reg rom_valid,upper_q;
+ assign issue_out=rom_issue;assign note_out=rom_note;assign rom_data_out=rom_q;
  wire[16:0] taper=pitch_q<=23'd7077888 ? 17'd65536:
    pitch_q>=23'd7864320 ? 17'd0:(23'd7864320-pitch_q)/12;
  // Four lower-note requests at7..10, four upper requests at11..14.
@@ -7264,7 +7284,7 @@ module osc_ii4_pitch_prepare #(parameter integer SAMPLE_RATE_HZ=48000,ISSUE_END=
   .INIT_RAM_0D(SAMPLE_RATE_HZ==128000 ? 256'h09f4c0930965b3a808deae1c085f3c9407e6f22d07756822070a3d7106a5168a : SAMPLE_RATE_HZ==96000 ? 256'h0d46561a0c879a350bd392d00b29a61a0a8942e709f1e02d0962fc9608dc1e0d : SAMPLE_RATE_HZ==72000 ? 256'h11b31d7810b4cd9c0fc4c3c00ee232ce0e0c59340d42803c0c83fb730bd02812 : 256'h1a8cac34190f346a17a725a016534c35151285ce13e3c05a12c5f92c11b83c1a),
   .INIT_RAM_0E(SAMPLE_RATE_HZ==128000 ? 256'h0fcde45a0eead0440e147ae10d4a2d140c8b3a030bd6fe8b0b2ce0af0a8c4f17 : SAMPLE_RATE_HZ==96000 ? 256'h151285ce13e3c05a12c5f92c11b83c1a10b9a2af0fc953640ee680e90e106974 : SAMPLE_RATE_HZ==72000 ? 256'h1c18b2681a8500791907f6e617a05023164cd8e9150c6f3013de013712c08c9b : 256'h2a250b9c27c780b5258bf259237078352173455e1f92a6c81dcd01d31c20d2e8),
   .INIT_RAM_0F(SAMPLE_RATE_HZ==128000 ? 256'h1916740617adfd161659c15e15189e2e13e9812712cb675011bd5c3810be7928 : SAMPLE_RATE_HZ==96000 ? 256'h2173455e1f92a6c81dcd01d31c20d2e81a8cac34190f346a17a725a016534c35 : SAMPLE_RATE_HZ==72000 ? 256'h2c99b1d32a18de6127bc026f2581193623663af021699b381f8987801dc4659c : 256'h42e68abc3f254d913b9a03a63841a5d135195868321e68d42f4e4b3f2ca6986a)) frequency_table(.CLK(clk),.CE(rom_issue),.OCE(1'b1),.RESET(rst),
-  .AD({2'b0,rom_note,5'b0}),.DO(rom_data));
+  .AD({2'b0,(ROM_ROLE==1&&alt_issue)?alt_note:rom_note,5'b0}),.DO(rom_q));
 
  always @(posedge clk)begin
   if(rst||start)begin age<=0;pitch_q<=0;request_valid<=0;table_steps<=0;exact_step<=0;taper_out<=0;rom_valid<=0;upper_q<=0;end
