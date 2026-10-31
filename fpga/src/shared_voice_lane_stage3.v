@@ -5779,7 +5779,7 @@ module r28_narrow_stereo_sum #(parameter integer COMPLETION_LIMIT=192)(
   end
  end
 endmodule
-module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6, EXTERNAL_FRONTEND=0,PITCH_ROM_ROLE=0,
+module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX=0, SAMPLE_RATE_HZ=48000, LANES=6, EXTERNAL_FRONTEND=0,PITCH_ROM_ROLE=0,EXTERNAL_MIX=0,PUBLISH_AGE=305,
   FE_EPW=37+4*(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13))(
  // EXTERNAL_FRONTEND: envelope and timbre/LFO steps come from shared units outside.
  output wire[FE_EPW+7:0] fe_envelope_request,output wire[69:0] fe_timbre_request,output wire[6:0] fe_release,
@@ -5800,7 +5800,9 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  output reg[8*LANES-1:0] reclaim_pending,output reg[18*8*LANES-1:0] voice_samples,
  output reg[LANES-1:0] completion_valid,completion_accept,
  output reg[3*LANES-1:0] completion_slot,output reg[18*LANES-1:0] completion_sample,
- output wire protocol_error,output reg deadline_error,output wire[8:0] last_complete_cycle
+ output wire protocol_error,output reg deadline_error,output wire[8:0] last_complete_cycle,
+ // EXTERNAL_MIX: completions go to a stereo sum shared with the other engine.
+ input wire ext_mix_valid,ext_protocol_error,ext_deadline,input wire[8:0] ext_last_complete_cycle
 );
  localparam integer EW=(SAMPLE_RATE_HZ>=128000?15:SAMPLE_RATE_HZ>=72000?14:13),CW=240+4*EW,EPW=37+4*EW;
  // Slot = {Lane, index within Lane}. Each slot takes four issue cycles, so
@@ -6070,12 +6072,17 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   else begin
    published_mix_valid<=0;
    if(computed_mix_valid)mix_prepared<=1;
-   if(busy&&age==305)begin published_mix_valid<=mix_prepared;mix_prepared<=0;end
+   if(busy&&age==PUBLISH_AGE)begin published_mix_valid<=mix_prepared;mix_prepared<=0;end
   end
  end
+ if(EXTERNAL_MIX!=0)begin: shared_mix
+  assign mix_l_q8=0;assign mix_r_q8=0;assign computed_mix_valid=ext_mix_valid;
+  assign protocol_error=ext_protocol_error;assign mixer_deadline=ext_deadline;assign last_complete_cycle=ext_last_complete_cycle;
+ end else begin: own_mix
  osc_stereo_sum #(.LANES(LANES)) stereo(.clk(clk),.rst(rst),.sample_tick(start),.completion_valid(completion_valid),.completion_accept(completion_accept),
   .completion_slot(completion_slot),.completion_sample(completion_sample),.completion_pan(read_pans),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
   .mix_valid(computed_mix_valid),.protocol_error(protocol_error),.deadline_error(mixer_deadline),.last_complete_cycle(last_complete_cycle));
+ end
  osc48_voice_metrics #(.CAPACITY(V)) monitor(.clk(clk),.rst(rst),.start(start),.done(mix_valid),
   .result_valid(result_valid),.result_accepted(frame_flags[result_slot*4+1]),
   .result_gate(frame_flags[result_slot*4+2]),.result_sample(result_sample),
@@ -6162,7 +6169,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  // synthesis translate_off
  always @(posedge clk)if(!rst)begin
   if(SHARE_FX!=0||BACKENDS!=1)$fatal(1,"II4_UNSUPPORTED_CONFIGURATION");
-  if(busy&&age==305&&!mix_prepared)$fatal(1,"II4_MISSED_FX_HANDOFF");
+  if(busy&&age==PUBLISH_AGE&&!mix_prepared)$fatal(1,"II4_MISSED_FX_HANDOFF");
   if(start&&busy)$fatal(1,"R40_OVERLAPPING_FRAME");
   if(work_active&&work_step==0&&age>=8&&pending&&!launch)$fatal(1,"R40_PENDING_OVERWRITE");
   if(observe_valid&&main_envelope)$fatal(1,"R40_ADSR_COLLISION");
@@ -6239,9 +6246,13 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  wire signed[31:0] e_mix_l[0:ENGINES-1],e_mix_r[0:ENGINES-1];
  wire[127:0] e_metrics[0:ENGINES-1];
  wire[16:0] e_level[0:ENGINES-1];
+ // Shared stereo sum (two engines): engine e drives Lanes e*EL..e*EL+EL-1.
+ wire[LANES-1:0] mix_cv,mix_ca;wire[3*LANES-1:0] mix_cs;wire[18*LANES-1:0] mix_cd;
+ wire signed[31:0] shared_l,shared_r;wire shared_mix_valid,shared_protocol,shared_deadline;wire[8:0] shared_cycle;
  for(genvar e=0;e<ENGINES;e++)begin: engines
   r28_frame_audio #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.SHARE_FX(SHARE_FX),.LANES(EL),.EXTERNAL_FRONTEND(ENGINES==2),
-   .PITCH_ROM_ROLE(ENGINES==2?(e==0?1:2):0)) audio(
+   .PITCH_ROM_ROLE(ENGINES==2?(e==0?1:2):0),.EXTERNAL_MIX(ENGINES==2),.PUBLISH_AGE(ENGINES==2&&e==0?307:305)) audio(
+   .ext_mix_valid(shared_mix_valid),.ext_protocol_error(shared_protocol),.ext_deadline(shared_deadline),.ext_last_complete_cycle(shared_cycle),
    .fe_pitch_issue(pitch_issue[e]),.fe_pitch_note(pitch_note[e]),.fe_pitch_data(pitch_data[e]),
    .fe_alt_issue(ENGINES==2&&e==0?pitch_issue[ENGINES-1]:1'b0),.fe_alt_note(pitch_note[ENGINES-1]),.fe_pitch_data_in(pitch_data[0]),.ensemble_metrics(e_metrics[e]),
    .fx_mac_use(e==0?fx_mac_use:1'b0),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(),
@@ -6254,7 +6265,8 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
    .level_read_slot(ESW'(level_local_slot)),.level_read_value(e_level[e]),
    .envelope_levels(envelope_levels[e*17*EV+:17*EV]),.envelope_states(envelope_states[e*3*EV+:3*EV]),
    .reclaim_pending(audio_reclaim[e*EV+:EV]),.voice_samples(voice_samples[e*18*EV+:18*EV]),
-   .completion_valid(),.completion_accept(),.completion_slot(),.completion_sample(),.protocol_error(e_protocol[e]),
+   .completion_valid(mix_cv[e*EL+:EL]),.completion_accept(mix_ca[e*EL+:EL]),.completion_slot(mix_cs[e*3*EL+:3*EL]),
+   .completion_sample(mix_cd[e*18*EL+:18*EL]),.protocol_error(e_protocol[e]),
    .deadline_error(e_deadline[e]),.last_complete_cycle());
  end
  assign fx_mac_q=54'd0;
@@ -6278,15 +6290,15 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  assign audio_deadline_error=|e_deadline;
  if(ENGINES==1)begin: single
   assign mix_l_q8=e_mix_l[0];assign mix_r_q8=e_mix_r[0];
+  assign shared_mix_valid=0;assign shared_protocol=0;assign shared_deadline=0;assign shared_cycle=0;
   assign ensemble_metrics=e_metrics[0];
  end else begin: summed
-  // Saturate the engine sum to the existing 32-bit mix width.
-  reg signed[33:0] sum_l,sum_r;
-  always @*begin sum_l=0;sum_r=0;for(integer e=0;e<ENGINES;e++)begin sum_l=sum_l+e_mix_l[e];sum_r=sum_r+e_mix_r[e];end end
-  function signed[31:0] clip(input signed[33:0] v);
-   clip=(v[33:31]==3'b000||v[33:31]==3'b111)?v[31:0]:v[33]?32'h80000000:32'h7fffffff;
-  endfunction
-  assign mix_l_q8=clip(sum_l);assign mix_r_q8=clip(sum_r);
+  // Engine results never coincide (engine 1 is two clocks behind), so one
+  // saturating sum over all Lanes collects both.
+  osc_stereo_sum #(.LANES(LANES),.WIDE(1)) mixer(.clk(clk),.rst(rst),.sample_tick(frame_tick),.completion_valid(mix_cv),.completion_accept(mix_ca),
+   .completion_slot(mix_cs),.completion_sample(mix_cd),.completion_pan(audio_read_pans),.mix_l_q8(shared_l),.mix_r_q8(shared_r),
+   .mix_valid(shared_mix_valid),.protocol_error(shared_protocol),.deadline_error(shared_deadline),.last_complete_cycle(shared_cycle));
+  assign mix_l_q8=shared_l;assign mix_r_q8=shared_r;
   // Count fields add across engines; flags OR; cycles and frame from engine 0.
   reg[7:0] allocated,gated,nonzero,peak,completed;reg[7:0] faults;
   always @*begin
@@ -7404,7 +7416,7 @@ endmodule
 // One completion per cycle at most; each accepted sample is panned and
 // accumulated as it arrives. Integer sums are order-independent, so the
 // mix equals the former fixed-pair schedule for any number of Lanes.
-module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400)(
+module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400, WIDE=0)(
  input wire clk,rst,sample_tick,
  input wire[LANES-1:0] completion_valid,completion_accept,
  input wire[3*LANES-1:0] completion_slot,input wire[18*LANES-1:0] completion_sample,
@@ -7423,7 +7435,12 @@ module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400)(
  reg signed[27:0] product_l,product_r;reg product_valid,product_last,mix_pending;
  wire signed[27:0] variable_product=$signed(operand)*$signed({1'b0,coefficient});
  wire signed[27:0] unity_product=$signed({{10{operand[17]}},operand})<<<8;
- reg signed[31:0] sum_l,sum_r;
+ // 34-bit accumulation; WIDE saturates the 32-bit output, otherwise the low
+ // 32 bits are kept exactly as a 32-bit accumulator would.
+ reg signed[33:0] sum_l,sum_r;
+ function signed[31:0] mix_out(input signed[33:0] v);
+  mix_out=(WIDE==0||v[33:31]==3'b000||v[33:31]==3'b111) ? v[31:0] : v[33] ? 32'h80000000 : 32'h7fffffff;
+ endfunction
  reg busy;reg[8:0] age;reg[7:0] seen[0:LANES-1];
  always @(posedge clk)begin
   if(rst)begin
@@ -7442,8 +7459,8 @@ module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400)(
     busy<=1;age<=0;sum_l<=0;sum_r<=0;
     for(integer k=0;k<LANES;k++)seen[k]<=0;
    end else if(product_valid)begin
-    sum_l<=sum_l+{{4{product_l[27]}},product_l};
-    sum_r<=sum_r+{{4{product_r[27]}},product_r};
+    sum_l<=sum_l+{{6{product_l[27]}},product_l};
+    sum_r<=sum_r+{{6{product_r[27]}},product_r};
    end
    if(any)begin
     if((completion_valid&(completion_valid-1'b1))!=0)protocol_error<=1;
@@ -7459,7 +7476,7 @@ module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400)(
     product_r<=right_unity?unity_product:variable_product;
    end
    if(mix_pending)begin
-    mix_l_q8<=sum_l;mix_r_q8<=sum_r;busy<=0;last_complete_cycle<=age+1'b1;
+    mix_l_q8<=mix_out(sum_l);mix_r_q8<=mix_out(sum_r);busy<=0;last_complete_cycle<=age+1'b1;
     if(!busy||age>=COMPLETION_LIMIT)deadline_error<=1;
    end
   end
