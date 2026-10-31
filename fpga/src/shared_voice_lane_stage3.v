@@ -5002,7 +5002,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
    QUERY_GOT=10,RECLAIM_AUDIO=11,RECLAIM_WORK=12,RECLAIM_DONE=13,
    PREP_READ=14,PREP_GOT=15,RECLAIM_WRITTEN=16,
    LOOKUP_GOT=17,LOOKUP_REPLY=18,PAN_GOT=19,PAN_APPLY=20,PAN_REPLY=21,
-   RANK_UPDATE=22,ID_LOW=23,ID_HIGH=24,SELECT_DONE=25,READ_WORDS=250,WRITE_WORDS=251;
+   RANK_UPDATE=22,ID_LOW=23,ID_HIGH=24,SELECT_DONE=25,INIT=26,READ_WORDS=250,WRITE_WORDS=251;
  localparam[7:0] LOOP_READ=40,LOOP_GOT=41,LOOP_APPLY=42,LOOP_NEXT=43;
  reg[SW-1:0] loop_scan;reg loop_all;reg[1:0] loop_sources;reg[15:0] loop_revision;
  reg loop_cleanup_pending,loop_wait_output;
@@ -5027,14 +5027,16 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  reg meta_equal,id_equal,token_equal,id_carry;
  reg[15:0] next_generation;
  wire copying=state==READ_WORDS&&return_state==COPY_GOT&&read_cycle!=0;
- wire memory_write=!rst&&(state==WRITE_WORDS||copying);
+ wire memory_write=!rst&&(state==WRITE_WORDS||copying||state==INIT);
  reg[31:0] memory_write_data;
  reg[3:0] audible[0:VOICES-1];
  reg[4*VOICES-1:0] prepared_flags;reg[4*VOICES-1:0] frozen_flags;reg prepared_valid;reg[SW-1:0] prepare_slot;
  reg[SW-1:0] rank[0:VOICES-1] /* synthesis syn_ramstyle="distributed_ram" */;
- reg[VOICES-1:0] rank_initialized;
  reg[SW-1:0] rank_cursor,selected_rank;
- reg[VOICES-1:0] work_initialized,audio_initialized,frozen_initialized;
+ // After reset, INIT writes every row with the empty-slot value (control
+ // 2048, other words 0) and rank[s]=s. Reads then need no per-slot
+ // row-valid masks; only the audio directory waits for its first publish.
+ reg audio_published;
  reg work_bank,audio_bank,dirty,in_batch,copy_snapshot,panic_pending,panic_urgent,publish_due;
  reg[VOICES-1:0] allocated_since_publish;
  reg[VOICES-1:0] phone_owned;reg session_live,lookup_cancelled;
@@ -5078,13 +5080,12 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  wire collision_scan=kind==1&&collision_mode;
  wire[30:0] scan_control=work_control(control_q);
  wire[SW-1:0] rank_read_slot=state==RANK_UPDATE?rank_cursor:read_slot_q;
- wire[SW-1:0] rank_read=rank_initialized[rank_read_slot]?rank[rank_read_slot]:rank_read_slot;
+ wire[SW-1:0] rank_read=rank[rank_read_slot];
  wire rank_we=!rst&&state==RANK_UPDATE;
  wire[SW-1:0] rank_next=rank_cursor==selected_slot?SW'(VOICES-1):rank_read>selected_rank?rank_read-1'b1:rank_read;
  always @(posedge clk)begin
-  if(rst)rank_initialized<=0;
-  else if(rank_we)rank_initialized[rank_cursor]<=1;
   if(rank_we)rank[rank_cursor]<=rank_next;
+  else if(!rst&&state==INIT&&write_base<VOICES)rank[SW'(write_base)]<=SW'(write_base);
  end
  wire[KW-1:0] candidate={(!scan_control[1]?2'd0:(!scan_control[2]?2'd1:2'd2)),
    (!scan_control[1]||scan_control[2]||scan_control[0])?17'd0:level_read_value,
@@ -5121,13 +5122,10 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  wire[32:0] alu_sum={1'b0,alu_a}+{1'b0,alu_b^{32{alu_sub}}}+alu_sub;
  wire alu_equal=r54_equal_0;
  wire candidate_less=!alu_sum[32];
- wire row_initialized=read_bank_q==2?frozen_initialized[read_slot_q]:
-   read_bank_q[0]==work_bank?work_initialized[read_slot_q]:audio_initialized[read_slot_q];
  wire capture_record=return_state==BEFORE||return_state==QUERY_GOT||return_state==LOOKUP_GOT||return_state==PAN_GOT||return_state==RECLAIM_WORK||return_state==LOOP_GOT;
- wire[31:0] record_data=row_initialized?memory_q:32'd0;
- wire[30:0] record_control=read_bank_q==2?(row_initialized?memory_q[30:0]:31'd2048):
-   read_bank_q[0]==work_bank?work_control(memory_q[30:0]):
-   row_initialized?{memory_q[30:4],audible[read_slot_q]}:31'd2048;
+ wire[31:0] record_data=memory_q;
+ wire[30:0] record_control=read_bank_q==2?memory_q[30:0]:
+   read_bank_q[0]==work_bank?work_control(memory_q[30:0]):{memory_q[30:4],audible[read_slot_q]};
  reg[30:0] new_control;reg[155:0] new_metadata;
  // Fact consumers sample only while fact_valid. These operands already stay
  // registered through that edge; a second pair of wide result registers is redundant.
@@ -5152,7 +5150,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  // them share that one index: one VOICES-input selector per flag vector.
  function[30:0] work_control(input[30:0] raw);
   begin
-   work_control=work_initialized[read_slot_q]?raw:31'd2048;
+   work_control=raw;
    if(!allocated_since_publish[read_slot_q])begin work_control[0]=0;work_control[3]=0;end
    if(panic_urgent)work_control[3:0]=0;
   end
@@ -5176,10 +5174,11 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  always @*begin
   memory_write_data=0;
   if(copying)begin
-   memory_write_data=audio_initialized[read_slot_q]?memory_q:32'd0;
-   if(read_cycle==1)memory_write_data={1'b0,audio_initialized[read_slot_q]?memory_q[30:4]:27'd128,
+   memory_write_data=memory_q;
+   if(read_cycle==1)memory_write_data={1'b0,memory_q[30:4],
      copy_snapshot?frozen_flags[3:0]:audible[read_slot_q]};
-  end else if(write_mode==1)memory_write_data={1'b0,old_control[30:13],control_pan,old_control[3:0]};
+  end else if(state==INIT)memory_write_data=write_base[2:0]==0?32'd2048:32'd0;
+  else if(write_mode==1)memory_write_data={1'b0,old_control[30:13],control_pan,old_control[3:0]};
   else if(write_mode==2)memory_write_data={1'b0,control_q[30:2],1'b0,control_q[0]};
   else if(write_mode==3)memory_write_data={1'b0,old_control[30:4],allocated_since_publish[read_slot_q]?4'd0:(old_control[3:0]&4'b1011)};
   else case(write_cycle)
@@ -5243,12 +5242,12 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   end
   always @(posedge clk)if(!rst&&state==PREP_GOT&&prepare_slot[SW-1:3]==l)
    controls[{work_bank,prepare_slot[2:0]}]<=preparing[30:4];
-  assign audio_read_controls[l*31+:31]=audio_initialized[slot]?{rc[26:0],audible[slot]}:31'd2048;
-  assign audio_read_pans[l*9+:9]=audio_initialized[pan_slot]?pc[8:0]:9'd128;
+  assign audio_read_controls[l*31+:31]=audio_published?{rc[26:0],audible[slot]}:31'd2048;
+  assign audio_read_pans[l*9+:9]=audio_published?pc[8:0]:9'd128;
   // The board retains the three timbre bits per slot for its visual status;
   // unused note/pressure/Pan observation bits are removed by synthesis.
   for(genvar v=0;v<8;v++)begin: observation
-   assign control_state[(l*8+v)*31+:31]=audio_initialized[l*8+v]?
+   assign control_state[(l*8+v)*31+:31]=audio_published?
     {controls[{audio_bank,3'(v)}],audible[l*8+v]}:31'd2048;
   end
  end
@@ -5257,14 +5256,14 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   loop_cleanup_done<=0;fact_valid<=0;batch_done<=0;batch_abort<=0;published<=0;snapshot_done<=0;query_response_valid<=0;
   if(rst)begin
    loop_scan<=0;loop_all<=0;loop_sources<=0;loop_revision<=0;loop_cleanup_done<=0;loop_cleanup_pending<=0;loop_wait_output<=0;
-   state<=IDLE;return_state<=IDLE;read_address<=0;write_base<=0;
+   state<=INIT;return_state<=IDLE;read_address<=0;write_base<=0;
    record_q<=0;control_q<=0;prepared_key<=0;read_cycle<=0;write_cycle<=0;write_last<=0;write_mode<=0;read_slot_q<=0;read_bank_q<=0;meta_equal<=0;id_equal<=0;token_equal<=0;id_carry<=0;next_generation<=0;
    prepared_flags<=0;frozen_flags<=0;prepared_valid<=0;prepare_slot<=0;
    work_bank<=0;audio_bank<=1;dirty<=0;in_batch<=0;copy_snapshot<=0;copy_slot<=0;
    panic_pending<=0;panic_urgent<=0;allocated_since_publish<=0;publish_due<=0;
    phone_owned<=0;session_live<=0;lookup_cancelled<=0;lookup_key_q<=0;control_id<=0;
    control_generation<=0;control_tag<=0;control_pan<=128;lookup_found_q<=0;pan_status<=0;
-   work_initialized<=0;audio_initialized<=0;frozen_initialized<=0;
+   audio_published<=0;
    scan_slot<=0;selected_slot<=0;query_slot_q<=0;query_view_q<=0;
    working_vibrato<=0;audio_vibrato<=0;
    item_q<=0;last_q<=0;timbre_q<=0;id_cursor<=1;collision_mode<=0;collision_hit<=0;retry_scan<=0;search_id<=1;identity_retries<=0;
@@ -5309,7 +5308,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
       state<=RECLAIM_AUDIO;
      end else if(frame_tick&&dirty&&prepared_valid&&!in_batch&&(!hold_publication||panic_urgent||loop_cleanup_pending))begin
       for(integer s=0;s<VOICES;s++)audible[s]<=prepared_flags[s*4+:4];
-      audio_vibrato<=working_vibrato;audio_initialized<=work_initialized;
+      audio_vibrato<=working_vibrato;audio_published<=1;
       audio_bank<=work_bank;work_bank<=audio_bank;published<=1;dirty<=0;
       if(LOOP_ENABLE&&loop_cleanup_pending)loop_wait_output<=1;
       allocated_since_publish<=0;panic_urgent<=0;publish_due<=0;prepared_valid<=0;
@@ -5320,7 +5319,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
       // The audio bank and non-flag controls cannot change while copying.
       // Only retire may clear flags, so freeze those 128 bits at START.
       for(integer s=0;s<VOICES;s++)frozen_flags[s*4+:4]<=audible[s][3:0];
-      frozen_initialized<=audio_initialized;copy_snapshot<=1;copy_slot<=0;state<=COPY_READ;
+      copy_snapshot<=1;copy_slot<=0;state<=COPY_READ;
      end else if(pan_valid&&pan_ready)begin
       selected_slot<=pan_slot;control_id<=pan_id;control_generation<=pan_generation;control_pan<=pan_value;
       read_row({1'b0,work_bank},pan_slot,PAN_GOT);
@@ -5369,7 +5368,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
      if(!retry_scan&&candidate_less)begin best<=candidate;victim<=scan_slot;end
      if(!retry_scan&&matching)begin found<=1;target<=scan_slot;end
      if(collision_scan&&scan_control[1]&&id_equal)collision_hit<=1;
-     if(collision_scan&&audio_initialized[read_slot_q])read_row({1'b0,audio_bank},scan_slot,SCAN_AUDIO);
+     if(collision_scan&&audible[read_slot_q][1])read_row({1'b0,audio_bank},scan_slot,SCAN_AUDIO);
      else next_scan();
     end
     SCAN_AUDIO:begin
@@ -5404,7 +5403,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
       if(kind==1)begin
        allocated_since_publish[selected_slot]<=1;
        phone_owned[selected_slot]<=item_q[31:28]==2&&session_live&&session_ready;
-       work_initialized[selected_slot]<=1;id_cursor<=following_id;
+       id_cursor<=following_id;
        if(following_id<id_cursor)collision_mode<=1;
        // Freeze the old rank before updating any slot. Audio reads the
        // published bank; event/query admission stays closed until FINISH.
@@ -5429,7 +5428,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     end
     LOOP_READ:begin selected_slot<=loop_scan;read_row({1'b0,work_bank},loop_scan,LOOP_GOT);end
     LOOP_GOT:begin
-     if(work_initialized[read_slot_q]&&old_control[1]&&
+     if(old_control[1]&&
        ((loop_sources[0]&&old_metadata[11:8]==1)||
         (loop_sources[1]&&old_metadata[11:8]==3&&(loop_all||old_metadata[155:140]==loop_revision))))begin
       item_q<={old_metadata[155:92],old_metadata[11:8],4'd2,old_metadata[7:0],16'd0};state<=LOOP_APPLY;
@@ -5452,11 +5451,11 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
      else begin copy_slot<=copy_slot+1'b1;state<=COPY_READ;end
     end
     QUERY_GOT:begin
-     if(query_view_q==1&&audio_initialized[read_slot_q])record_q[3:0]<=audible[read_slot_q];
+     if(query_view_q==1)record_q[3:0]<=audible[read_slot_q];
      query_response_valid<=1;state<=IDLE;
     end
     LOOKUP_GOT:begin
-     lookup_found_q<=lookup_key_q<VOICES&&phone_owned[read_slot_q]&&work_initialized[read_slot_q]&&
+     lookup_found_q<=lookup_key_q<VOICES&&phone_owned[read_slot_q]&&
       control_q[1]&&!panic_urgent&&meta_equal&&token_equal;
      state<=LOOKUP_REPLY;
     end
@@ -5472,18 +5471,19 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     PAN_REPLY:state<=IDLE;
     RECLAIM_AUDIO:read_row({1'b0,audio_bank},selected_slot,RECLAIM_WORK);
     RECLAIM_WORK:begin
-     if(audio_initialized[read_slot_q])record_q[3:0]<=audible[read_slot_q];
+     record_q[3:0]<=audible[read_slot_q];
      read_row({1'b0,work_bank},selected_slot,RECLAIM_DONE);
     end
     RECLAIM_DONE:begin
      prepared_valid<=0;
      fact_valid<=1;fact_outcome<=10;fact_slot<=selected_slot;fact_steal<=0;
-     if(work_initialized[read_slot_q]&&id_equal&&meta_equal&&!control_q[2])begin
+     if(id_equal&&meta_equal&&!control_q[2])begin
       phone_owned[selected_slot]<=0;
       write_words(2,0,RECLAIM_WRITTEN);
      end else state<=RECLAIM_WRITTEN;
     end
     RECLAIM_WRITTEN:state<=IDLE;
+    INIT:begin write_base<=write_base+1'b1;if(write_base==AW'(3*(1<<(AW-2))-1))state<=IDLE;end
     PREP_READ:read_row({1'b0,work_bank},prepare_slot,PREP_GOT);
     PREP_GOT:begin
      prepared_flags<={4'(work_control(control_q)),prepared_flags[4*VOICES-1:4]};
@@ -6414,7 +6414,7 @@ module r28_execution_observer(
  // synthesis translate_on
 endmodule
 
-module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter integer LEASED_ITEM=0,NO_UNDO=0,INDEXED_INPUT=0,ID_WIDTH=64,PHONE_LOOKUP=0,CLK_FREQ_HZ=50_000_000,parameter integer SHARE_FX=0,LOOP_ENABLE=0)(
+module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter integer LEASED_ITEM=0,NO_UNDO=0,INDEXED_INPUT=0,ID_WIDTH=64,PHONE_LOOKUP=0,CLK_FREQ_HZ=50_000_000,parameter integer SHARE_FX=0,LOOP_ENABLE=0,VOICES=48)(
  output wire [127:0] ensemble_metrics,
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
@@ -6455,8 +6455,10 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
  reg[2:0] delivery;reg[8:0] mask;reg[3:0] index,source_q;reg[31:0] stamp;
  reg started;reg[2:0] loop_timbre_q;reg[95:0] item_q;reg[5:0] query_slot_q;
  wire controller_ready,controller_busy,controller_error,batch_done,controller_abort,snapshot_done;
- wire[191:0] audio_flags;wire[7:0] audio_vibrato;
- wire[47:0] audio_reclaim;wire audio_protocol;
+ // Ports above keep the 48-slot, 6-bit layout; with more voices the probe's
+ // wider slot fields and vectors are truncated or zero-extended here.
+ wire[4*VOICES-1:0] audio_flags;wire[7:0] audio_vibrato;
+ wire[VOICES-1:0] audio_reclaim;wire audio_protocol;
  function[3:0] next_item(input[8:0] m,input[3:0] begin_at);
   begin next_item=9;for(integer i=8;i>=0;i--)if(i>=begin_at&&m[i])next_item=4'(i);end
  endfunction
@@ -6503,7 +6505,7 @@ module r28_instrument_engine #(parameter integer SAMPLE_RATE_HZ=48000,parameter 
    $fatal(1,"R45_EVENT_LEASE_CHANGED");
  end
  // synthesis translate_on
- r28_control_audio_probe #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ID_WIDTH(ID_WIDTH),.SHARE_FX(SHARE_FX),.LOOP_ENABLE(LOOP_ENABLE)) core(.test_linear(test_linear),.ensemble_metrics(ensemble_metrics),.loop_cleanup_valid(loop_cleanup_valid),.loop_cleanup_sources(loop_cleanup_sources),.loop_cleanup_all(loop_cleanup_all),.loop_cleanup_revision(loop_cleanup_revision),.loop_cleanup_ready(loop_cleanup_ready),.loop_cleanup_done(loop_cleanup_done),.loop_abort_batch(loop_abort_batch),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
+ r28_control_audio_probe #(.SAMPLE_RATE_HZ(SAMPLE_RATE_HZ),.ID_WIDTH(ID_WIDTH),.SHARE_FX(SHARE_FX),.LOOP_ENABLE(LOOP_ENABLE),.VOICES(VOICES)) core(.test_linear(test_linear),.ensemble_metrics(ensemble_metrics),.loop_cleanup_valid(loop_cleanup_valid),.loop_cleanup_sources(loop_cleanup_sources),.loop_cleanup_all(loop_cleanup_all),.loop_cleanup_revision(loop_cleanup_revision),.loop_cleanup_ready(loop_cleanup_ready),.loop_cleanup_done(loop_cleanup_done),.loop_abort_batch(loop_abort_batch),.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),.clk(clk),.rst(rst),.frame_tick(sample_tick),.hold_publication(hold_publication),.panic(panic),
  .session_flush(PHONE_LOOKUP?session_flush:1'b0),.session_ready(PHONE_LOOKUP?session_ready:1'b1),.lookup_valid(PHONE_LOOKUP?lookup_valid:1'b0),.lookup_key(lookup_key),.lookup_identity(lookup_identity),
  .lookup_generation(lookup_generation),.lookup_tag(lookup_tag),.lookup_ready(lookup_ready),.lookup_response_valid(lookup_response_valid),
  .lookup_found(lookup_found),.lookup_response_slot(lookup_response_slot),.lookup_response_word(lookup_response_word),.lookup_response_tag(lookup_response_tag),
