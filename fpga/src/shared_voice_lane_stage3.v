@@ -5076,8 +5076,8 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   (kind!=4&&item_q[95:32]==0);
  wire stale=(kind==1&&found)||((kind==2||kind==3)&&!found);
  wire collision_scan=kind==1&&collision_mode;
- wire[30:0] scan_control=work_control(scan_slot,control_q);
- wire[SW-1:0] rank_read_slot=state==RANK_UPDATE?rank_cursor:state==APPLY?selected_slot:scan_slot;
+ wire[30:0] scan_control=work_control(control_q);
+ wire[SW-1:0] rank_read_slot=state==RANK_UPDATE?rank_cursor:read_slot_q;
  wire[SW-1:0] rank_read=rank_initialized[rank_read_slot]?rank[rank_read_slot]:rank_read_slot;
  wire rank_we=!rst&&state==RANK_UPDATE;
  wire[SW-1:0] rank_next=rank_cursor==selected_slot?SW'(VOICES-1):rank_read>selected_rank?rank_read-1'b1:rank_read;
@@ -5091,7 +5091,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
    scan_control[1]?rank_read:SW'(0)};
  // Victim choice reads the current envelope level of the scanned slot
  // through the engine's read port instead of a whole-pool snapshot.
- assign level_read_slot=scan_slot;
+ assign level_read_slot=read_slot_q;
  wire matching=scan_control[1]&&scan_control[2]&&meta_equal&&token_equal;
  // One pair of 32-bit operands serves streaming equality, victim ordering,
  // generation increment and both halves of identity increment.
@@ -5126,7 +5126,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  wire capture_record=return_state==BEFORE||return_state==QUERY_GOT||return_state==LOOKUP_GOT||return_state==PAN_GOT||return_state==RECLAIM_WORK||return_state==LOOP_GOT;
  wire[31:0] record_data=row_initialized?memory_q:32'd0;
  wire[30:0] record_control=read_bank_q==2?(row_initialized?memory_q[30:0]:31'd2048):
-   read_bank_q[0]==work_bank?work_control(read_slot_q,memory_q[30:0]):
+   read_bank_q[0]==work_bank?work_control(memory_q[30:0]):
    row_initialized?{memory_q[30:4],audible[read_slot_q]}:31'd2048;
  reg[30:0] new_control;reg[155:0] new_metadata;
  // Fact consumers sample only while fact_valid. These operands already stay
@@ -5147,10 +5147,13 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  function[AW-1:0] row_address(input[1:0] bank,input[SW-1:0] slot);
   row_address={bank,slot[SIW-1:0],3'd0};
  endfunction
- function[30:0] work_control(input[SW-1:0] slot,input[30:0] raw);
+ // Every per-slot flag read happens while the row of read_slot_q is being
+ // read (scan, prepare, copy, query, lookup, reclaim, loop, apply), so all of
+ // them share that one index: one VOICES-input selector per flag vector.
+ function[30:0] work_control(input[30:0] raw);
   begin
-   work_control=work_initialized[slot]?raw:31'd2048;
-   if(!allocated_since_publish[slot])begin work_control[0]=0;work_control[3]=0;end
+   work_control=work_initialized[read_slot_q]?raw:31'd2048;
+   if(!allocated_since_publish[read_slot_q])begin work_control[0]=0;work_control[3]=0;end
    if(panic_urgent)work_control[3:0]=0;
   end
  endfunction
@@ -5173,12 +5176,12 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  always @*begin
   memory_write_data=0;
   if(copying)begin
-   memory_write_data=audio_initialized[copy_slot]?memory_q:32'd0;
-   if(read_cycle==1)memory_write_data={1'b0,audio_initialized[copy_slot]?memory_q[30:4]:27'd128,
-     copy_snapshot?frozen_flags[3:0]:audible[copy_slot]};
+   memory_write_data=audio_initialized[read_slot_q]?memory_q:32'd0;
+   if(read_cycle==1)memory_write_data={1'b0,audio_initialized[read_slot_q]?memory_q[30:4]:27'd128,
+     copy_snapshot?frozen_flags[3:0]:audible[read_slot_q]};
   end else if(write_mode==1)memory_write_data={1'b0,old_control[30:13],control_pan,old_control[3:0]};
   else if(write_mode==2)memory_write_data={1'b0,control_q[30:2],1'b0,control_q[0]};
-  else if(write_mode==3)memory_write_data={1'b0,old_control[30:4],allocated_since_publish[selected_slot]?4'd0:(old_control[3:0]&4'b1011)};
+  else if(write_mode==3)memory_write_data={1'b0,old_control[30:4],allocated_since_publish[read_slot_q]?4'd0:(old_control[3:0]&4'b1011)};
   else case(write_cycle)
    0:memory_write_data={1'b0,new_control};
    1:memory_write_data={4'd0,next_generation,item_q[31:28],item_q[23:16]};
@@ -5224,7 +5227,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
   wire[27:0] rc;
   wire[11:0] pc;
   wire[SW-1:0] slot=SW'(l*8)+rs,pan_slot=SW'(l*8)+ps;
-  wire[30:0] preparing=work_control(prepare_slot,control_q);
+  wire[30:0] preparing=work_control(control_q);
   wire directory_write=!rst&&state==PREP_GOT&&prepare_slot[SW-1:3]==l;
   wire[26:0] sound_controls=preparing[30:28]==3'd5 ?
    {preparing[30:20],4'd0,prepared_key,preparing[12:4]}:preparing[30:4];
@@ -5366,12 +5369,12 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
      if(!retry_scan&&candidate_less)begin best<=candidate;victim<=scan_slot;end
      if(!retry_scan&&matching)begin found<=1;target<=scan_slot;end
      if(collision_scan&&scan_control[1]&&id_equal)collision_hit<=1;
-     if(collision_scan&&audio_initialized[scan_slot])read_row({1'b0,audio_bank},scan_slot,SCAN_AUDIO);
+     if(collision_scan&&audio_initialized[read_slot_q])read_row({1'b0,audio_bank},scan_slot,SCAN_AUDIO);
      else next_scan();
     end
     SCAN_AUDIO:begin
      // Even an un-gated audible tail reserves its identity until it retires.
-     if(audible[scan_slot][1]&&id_equal)collision_hit<=1;
+     if(audible[read_slot_q][1]&&id_equal)collision_hit<=1;
      next_scan();
     end
     SELECT:begin
@@ -5426,7 +5429,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     end
     LOOP_READ:begin selected_slot<=loop_scan;read_row({1'b0,work_bank},loop_scan,LOOP_GOT);end
     LOOP_GOT:begin
-     if(work_initialized[loop_scan]&&old_control[1]&&
+     if(work_initialized[read_slot_q]&&old_control[1]&&
        ((loop_sources[0]&&old_metadata[11:8]==1)||
         (loop_sources[1]&&old_metadata[11:8]==3&&(loop_all||old_metadata[155:140]==loop_revision))))begin
       item_q<={old_metadata[155:92],old_metadata[11:8],4'd2,old_metadata[7:0],16'd0};state<=LOOP_APPLY;
@@ -5434,7 +5437,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     end
     LOOP_APPLY:begin
      dirty<=1;prepared_valid<=0;phone_owned[selected_slot]<=0;
-     if(!allocated_since_publish[selected_slot]&&old_control[2])begin fact_valid<=1;fact_outcome<=2;fact_slot<=selected_slot;fact_steal<=0;end
+     if(!allocated_since_publish[read_slot_q]&&old_control[2])begin fact_valid<=1;fact_outcome<=2;fact_slot<=selected_slot;fact_steal<=0;end
      write_words(3,0,LOOP_NEXT);
     end
     LOOP_NEXT:begin
@@ -5449,11 +5452,11 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
      else begin copy_slot<=copy_slot+1'b1;state<=COPY_READ;end
     end
     QUERY_GOT:begin
-     if(query_view_q==1&&audio_initialized[query_slot_q])record_q[3:0]<=audible[query_slot_q];
+     if(query_view_q==1&&audio_initialized[read_slot_q])record_q[3:0]<=audible[read_slot_q];
      query_response_valid<=1;state<=IDLE;
     end
     LOOKUP_GOT:begin
-     lookup_found_q<=lookup_key_q<VOICES&&phone_owned[selected_slot]&&work_initialized[selected_slot]&&
+     lookup_found_q<=lookup_key_q<VOICES&&phone_owned[read_slot_q]&&work_initialized[read_slot_q]&&
       control_q[1]&&!panic_urgent&&meta_equal&&token_equal;
      state<=LOOKUP_REPLY;
     end
@@ -5469,13 +5472,13 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     PAN_REPLY:state<=IDLE;
     RECLAIM_AUDIO:read_row({1'b0,audio_bank},selected_slot,RECLAIM_WORK);
     RECLAIM_WORK:begin
-     if(audio_initialized[selected_slot])record_q[3:0]<=audible[selected_slot];
+     if(audio_initialized[read_slot_q])record_q[3:0]<=audible[read_slot_q];
      read_row({1'b0,work_bank},selected_slot,RECLAIM_DONE);
     end
     RECLAIM_DONE:begin
      prepared_valid<=0;
      fact_valid<=1;fact_outcome<=10;fact_slot<=selected_slot;fact_steal<=0;
-     if(work_initialized[selected_slot]&&id_equal&&meta_equal&&!control_q[2])begin
+     if(work_initialized[read_slot_q]&&id_equal&&meta_equal&&!control_q[2])begin
       phone_owned[selected_slot]<=0;
       write_words(2,0,RECLAIM_WRITTEN);
      end else state<=RECLAIM_WRITTEN;
@@ -5483,7 +5486,7 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
     RECLAIM_WRITTEN:state<=IDLE;
     PREP_READ:read_row({1'b0,work_bank},prepare_slot,PREP_GOT);
     PREP_GOT:begin
-     prepared_flags<={4'(work_control(prepare_slot,control_q)),prepared_flags[4*VOICES-1:4]};
+     prepared_flags<={4'(work_control(control_q)),prepared_flags[4*VOICES-1:4]};
      if(prepare_slot==VOICES-1)begin prepared_valid<=1;state<=IDLE;end
      else begin prepare_slot<=prepare_slot+1'b1;state<=PREP_READ;end
     end
@@ -5796,7 +5799,8 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  end
  wire[SW-1:0] read_slot=early_read?SW'(early_slot):work_slot;
  wire[LW-1:0] read_lane=read_slot[SW-1:3];
- wire[3:0] read_flags=age==0?flags[read_slot*4+:4]:frame_flags[read_slot*4+:4];
+ // work_slot is reset by start, so the age-0 read is always slot 0.
+ wire[3:0] read_flags=age==0?flags[3:0]:frame_flags[read_slot*4+:4];
  // Select one complete Lane field. Constant slices avoid a general barrel
  // selection network for the non-power-of-two 31-bit Lane stride.
  wire[26:0] lane_control[0:LANES-1];
@@ -6094,7 +6098,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
        (timbre==5?drum_payload:17'd0),timbre};
       pending_tag<=6'(captured_slot);pending<=1;if(captured_valid)initialized[captured_slot]<=1;
      end
-      if(age<=192)begin
+      if(age<=ISSUE_END)begin
       captured_slot<=read_slot;captured_valid<=read_control[1];captured_gate<=read_control[2];captured_trigger<=read_control[3]&&read_control[1];
       new_owner<=read_control[0]||!initialized[read_slot];captured_note<=read_control[19:13];captured_pressure<=read_control[27:20];captured_timbre<=read_control[30:28];
       state_q<=captured_state;phase_q<=initialized[read_slot]?phase_read:32'd0;
