@@ -5929,8 +5929,14 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  // three edges, so the read and write ports never address the same slot.
  wire context_read_issue=!rst&&!start&&busy&&age>=1&&age<=ISSUE_END-1&&age[1:0]!=0;
  wire[1:0] context_read_word=age[1:0]-2'd1;
+ // Word 3 of each slot holds its oscillator phase. It is read on the capture
+ // age (the read port's idle age) and loaded one clock later; a completed
+ // phase waits in a one-entry buffer for the write port's idle age.
+ wire phase_read_issue=!rst&&!start&&busy&&work_active&&work_step==0&&age<=ISSUE_END;
+ reg phase_load_q,phase_init_q,phase_pending;reg[SW-1:0] phase_pending_slot;reg[31:0] phase_pending_value;
  reg[323:0] context_buffer;reg[SW-1:0] context_write_slot;reg[1:0] context_writes_left;
  wire context_write_issue=!rst&&context_writes_left!=0;
+ wire phase_write_issue=!rst&&phase_pending&&!context_write_issue;
  wire[1:0] context_write_word=2'd3-context_writes_left;
  always @(posedge clk)begin
   if(rst||start)context_writes_left<=0;
@@ -5943,9 +5949,10 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire[107:0] context_do;
  for(genvar word=0;word<3;word++)begin: context_wide
   SDPX9B #(.BIT_WIDTH_0(36),.BIT_WIDTH_1(36),.READ_MODE(0),.RESET_MODE("SYNC")) memory(
-   .CLKA(clk),.CLKB(clk),.CEA(context_write_issue),.CEB(context_read_issue),
-   .ADA({(7-SW)'(0),context_write_slot,context_write_word,5'b01111}),.ADB({(7-SW)'(0),work_slot,context_read_word,5'b00000}),
-   .DI(context_di[word*36+:36]),.DO(context_do[word*36+:36]),
+   .CLKA(clk),.CLKB(clk),.CEA(context_write_issue||phase_write_issue),.CEB(context_read_issue||phase_read_issue),
+   .ADA(phase_write_issue?{(7-SW)'(0),phase_pending_slot,2'd3,5'b01111}:{(7-SW)'(0),context_write_slot,context_write_word,5'b01111}),
+   .ADB({(7-SW)'(0),work_slot,phase_read_issue?2'd3:context_read_word,5'b00000}),
+   .DI(phase_write_issue?(word==0?{4'd0,phase_pending_value}:36'd0):context_di[word*36+:36]),.DO(context_do[word*36+:36]),
    .BLKSELA(3'd0),.BLKSELB(3'd0),.OCE(1'b1),.RESET(1'b0));
  end
  reg[107:0] context_word0,context_word1;
@@ -6055,11 +6062,20 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
    completion_slot[result_lane*3+:3]=result_slot[2:0];completion_sample[result_lane*18+:18]=result_sample;
   end
  end
- wire[32*LANES-1:0] phase_reads;wire[31:0] phase_read=phase_reads[read_lane*32+:32];
- for(genvar l=0;l<LANES;l++)begin: phase_banks
-  s3_private_context_store #(.WIDTH(32)) phase_store(.clk(clk),.write_enable(!rst&&result_valid&&frame_flags[result_slot*4+1]&&result_lane==l),
-   .write_slot(result_slot[2:0]),.read_slot(read_slot[2:0]),.write_value(result_phase),.read_value(phase_reads[l*32+:32]));
+ always @(posedge clk)begin
+  if(rst)begin phase_pending<=0;phase_load_q<=0;phase_init_q<=0;end
+  else begin
+   phase_load_q<=phase_read_issue;
+   if(phase_read_issue)phase_init_q<=initialized[read_slot];
+   if(result_valid&&frame_flags[result_slot*4+1])begin
+    phase_pending<=1;phase_pending_slot<=SW'(result_slot);phase_pending_value<=result_phase;
+   end else if(phase_write_issue)phase_pending<=0;
+  end
  end
+ // synthesis translate_off
+ always @(posedge clk)if(!rst&&result_valid&&frame_flags[result_slot*4+1]&&phase_pending&&!phase_write_issue)
+  $fatal(1,"PHASE_WRITE_BUFFER_OVERRUN");
+ // synthesis translate_on
  // The whole-pool level/state buses have no consumer; levels are read
  // through level_read_value only.
  assign envelope_levels='0;
@@ -6125,6 +6141,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
     busy<=1;age<=0;pending<=0;observe_valid<=0;reclaim_pending<=0;control_retire<=0;expression_q<={vibrato_depth,glide_code};
    end else if(busy)begin
     age<=age+1'b1;
+    if(phase_load_q)phase_q<=phase_init_q?context_do[31:0]:32'd0;
     if(age==0)frame_flags<=flags;
     if(early_read)begin observe_request<={read_control[30:28],read_control[15:13],captured_state[153+:EPW],read_control[2],read_control[3]&&read_control[1]};observe_lane<=early_lane;end
     if(observe_valid)observe_result[observe_lane]<=envelope_response[EPW-1-:20];
@@ -6144,7 +6161,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
       if(age<=ISSUE_END)begin
       captured_slot<=read_slot;captured_valid<=read_control[1];captured_gate<=read_control[2];captured_trigger<=read_control[3]&&read_control[1];
       new_owner<=read_control[0]||!initialized[read_slot];captured_note<=read_control[19:13];captured_pressure<=read_control[27:20];captured_timbre<=read_control[30:28];
-      state_q<=captured_state;phase_q<=initialized[read_slot]?phase_read:32'd0;
+      state_q<=captured_state;
       end
      end
      1:begin
