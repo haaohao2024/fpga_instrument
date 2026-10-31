@@ -7464,14 +7464,16 @@ module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400, WIDE=0)
  function signed[31:0] mix_out(input signed[33:0] v);
   mix_out=(WIDE==0||v[33:31]==3'b000||v[33:31]==3'b111) ? v[31:0] : v[33] ? 32'h80000000 : 32'h7fffffff;
  endfunction
- reg busy;reg[8:0] age;reg[7:0] seen[0:LANES-1];
+ // One flat bit per (Lane, slot): an array indexed by the variable Lane was
+ // synthesized as RAM whose whole-array clear did not take effect.
+ reg busy;reg[8:0] age;reg[8*LANES-1:0] seen;
  always @(posedge clk)begin
   if(rst)begin
    operand<=0;coefficient<=256;right_unity<=0;op_valid<=0;op_last<=0;
    product_l<=0;product_r<=0;product_valid<=0;product_last<=0;mix_pending<=0;
    sum_l<=0;sum_r<=0;busy<=0;age<=0;
    mix_l_q8<=0;mix_r_q8<=0;mix_valid<=0;protocol_error<=0;deadline_error<=0;last_complete_cycle<=0;
-   for(integer k=0;k<LANES;k++)seen[k]<=0;
+   seen<=0;
   end else begin
    op_valid<=any;op_last<=any&&in_last;
    product_valid<=op_valid;product_last<=op_valid&&op_last;
@@ -7480,16 +7482,16 @@ module osc_stereo_sum #(parameter integer LANES=6, COMPLETION_LIMIT=400, WIDE=0)
    if(sample_tick)begin
     if(busy||op_valid||product_valid||any)deadline_error<=1;
     busy<=1;age<=0;sum_l<=0;sum_r<=0;
-    for(integer k=0;k<LANES;k++)seen[k]<=0;
+    seen<=0;
    end else if(product_valid)begin
     sum_l<=sum_l+{{6{product_l[27]}},product_l};
     sum_r<=sum_r+{{6{product_r[27]}},product_r};
    end
    if(any)begin
     if((completion_valid&(completion_valid-1'b1))!=0)protocol_error<=1;
-    if(!busy||seen[lane][in_index])protocol_error<=1;
-    if(in_index==7&&seen[lane]!=8'h7f)protocol_error<=1;
-    seen[lane][in_index]<=1;
+    if(!busy||seen[{lane,in_index}])protocol_error<=1;
+    if(in_index==7&&seen[{lane,3'd0}+:8]!=8'h7f)protocol_error<=1;
+    seen[{lane,in_index}]<=1;
     if(in_pan>256)protocol_error<=1;
     operand<=in_sample;right_unity<=in_pan>128;
     coefficient<=in_pan>128?((9'd256-in_pan)<<1):(in_pan<<1);
