@@ -4463,7 +4463,7 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  input wire config_valid,output wire config_ready,input wire[2:0] config_slot,input wire[1535:0] config_bytes,
  input wire sample_tick,input wire[31:0] sample_time,now_ms,
  input wire[3:0] local_glide_code,output reg[3:0] glide_code,output reg[2:0] timbre_id,
- output wire fx_cfg_valid,output wire[351:0] fx_cfg_data,
+ output reg fx_cfg_valid,output reg[351:0] fx_cfg_data,
  input wire[31:0] fx_accepted,fx_frame_version,
  output wire gain_cfg_valid,output wire[15:0] gain_local,gain_external,
  output wire gain_local_mute,gain_external_mute,
@@ -4499,19 +4499,23 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  reg[255:0] result_fields;reg[7:0] result_flags;
  reg metrics_pending;reg[127:0] metrics_snapshot;
  reg hello_pending,field_pending,field_target_start;reg[70:0] hello_snapshot;
- wire[7:0] opcode=config_bytes[39:32];
- reg[2:0] index;integer i;
- always @*begin
-  case(opcode)33:index=1;34:index=2;35:index=3;36:index=4;37:index=5;39:index=6;default:index=0;endcase
+ // Opcode decode is registered; a command is ready only once the registered
+ // opcode matches the port, so index always belongs to the current bytes.
+ wire[7:0] port_opcode=config_bytes[39:32];
+ reg[7:0] opcode;reg[2:0] index;integer i;
+ wire decoded=port_opcode==opcode;
+ always @(posedge clk)begin
+  opcode<=port_opcode;
+  case(port_opcode)33:index<=1;34:index<=2;35:index<=3;36:index<=4;37:index<=5;39:index<=6;default:index<=0;endcase
  end
  wire map_accepted,map_rejected,map_applied,map_cancelled,map_pending;
  wire[31:0] map_applied_sequence,map_cancelled_sequence;wire[2:0] map_applied_slot,map_cancelled_slot;
  wire local_idle=local_gate==0&&!local_pending;
  wire replace_gain=index==4&&valid[4]&&phase[4]<5;
  wire replace_map=index==5&&valid[5]&&phase[5]==3&&map_pending&&!local_idle;
- wire replaceable=config_valid&&(replace_gain||replace_map)&&!result_valid;
+ wire replaceable=config_valid&&decoded&&(replace_gain||replace_map)&&!result_valid;
  wire identity_needed=opcode==34||opcode==39;
- wire command_available=!rst&&!session_flush&&session_ready&&(!valid[index]||replaceable);
+ wire command_available=!rst&&!session_flush&&session_ready&&decoded&&(!valid[index]||replaceable);
  reg pan_request_pending;
  reg id_wait,id_prepared,id_found;reg[5:0] id_slot;reg[314:0] id_word;
  reg[15:0] id_serial,id_active_tag;reg pan_watch_valid;
@@ -4540,7 +4544,7 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  assign field_valid=accept&&opcode==86&&ENABLE_FIELD;
  assign field_start=config_bytes[71:64]==1;
  assign field_size=config_bytes[79:72]==1?0:config_bytes[79:72]==8?1:config_bytes[79:72]==16?2:config_bytes[79:72]==32?3:config_bytes[79:72]==64?5:4;
- assign fx_cfg_valid=accept&&opcode==35;assign fx_cfg_data=config_bytes[415:64];
+ always @(posedge clk)begin fx_cfg_valid<=!rst&&accept&&opcode==35;fx_cfg_data<=config_bytes[415:64];end
  assign gain_cfg_valid=accept&&opcode==36;
  assign gain_local=config_bytes[79:64];assign gain_external=config_bytes[95:80];
  assign gain_local_mute=config_bytes[96];assign gain_external_mute=config_bytes[97];
@@ -4564,14 +4568,18 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
  assign lookup_valid=0;assign lookup_channel=0;assign lookup_sequence=0;assign lookup_echo=0;
  assign result_sequence=result_fields[31:0];
  assign result_bytes={64'd0,result_fields,session_id,result_flags,8'd0,8'd0,8'd0,32'd0};
- reg found_dirty;reg[2:0] selected;integer n;
+ // Round-robin choice is registered; issue re-checks the chosen entry.
+ reg found_dirty;reg[2:0] search;integer n;
  always @*begin
-  found_dirty=0;selected=0;
+  found_dirty=0;search=0;
   for(integer k=0;k<7;k=k+1)begin
    n=cursor+k;if(n>=7)n=n-7;
-   if(valid[n]&&dirty[n]&&!found_dirty)begin found_dirty=1;selected=n;end
+   if(valid[n]&&dirty[n]&&!found_dirty)begin found_dirty=1;search=n;end
   end
  end
+ reg[2:0] selected;
+ always @(posedge clk)selected<=search;
+ wire issue_ready=valid[selected]&&dirty[selected];
  task prepare_result(input[2:0] which,input[2:0] p);
   begin
    result_valid<=1;result_index<=which;result_slot<=slot[which];result_fields<=0;result_flags<=0;
@@ -4605,7 +4613,7 @@ module r22_config_bridge #(parameter integer ENABLE_FIELD=0, DEFER_RESULT_CRC=0)
     result_valid<=0;
     if(result_final&&slot[result_index]==result_slot)begin valid[result_index]<=0;dirty[result_index]<=0;if(result_index==0)field_pending<=0;end
    end
-   if(!result_valid&&found_dirty&&!replaceable)begin
+   if(!result_valid&&issue_ready&&!replaceable)begin
     prepare_result(selected,phase[selected]);dirty[selected]<=0;cursor<=selected==6?0:selected+1'b1;
    end
    if(field_pending&&valid[0])begin
