@@ -1,4 +1,4 @@
-module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,EXTERNAL_SCORE_RX=0,SERIAL_CONTROL=0,SHARED_STORE=0,COMM_SEPARATE=0,
+module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,FIELD_ROW_FRAMES=8,EXTERNAL_SCORE_RX=0,SERIAL_CONTROL=0,SHARED_STORE=0,COMM_SEPARATE=0,
  parameter integer CLK_FREQ_HZ=50_000_000,TOKEN_WIDTH=64, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_S11=0, STREAM_STATUS_CRC=0, EARLY_DEADLINE=960)(
  output wire event_write_valid,output wire[3:0] event_write_index,output wire[95:0] event_write_data,input wire event_write_ready,
  input wire comm_clk, input wire clk,rst,sample_tick,stereo_locked,
@@ -45,7 +45,7 @@ module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,EXTERN
  assign field_rr=mready&&field_active;
  wire fifo_ready=mready&&!field_active;
  generate if(ENABLE_S11)begin: field_enabled
-  s11_field_test_source #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ)) field(.raw_frame(raw_frame),.clk(clk),.rst(rst),.request_valid(field_valid&&!cv),
+  s11_field_test_source #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.ROW_FRAMES(FIELD_ROW_FRAMES)) field(.raw_frame(raw_frame),.clk(clk),.rst(rst),.request_valid(field_valid&&!cv),
    .request_start(field_start),.request_size(field_size),.request_ready(field_internal_ready),
    .player_state(score_state),.player_epoch(player_epoch),.player_ctrl_ready(field_cr),.parser_clear(pc),
    .active(field_active),.rejected(field_rejected),.committed(field_committed),.running(field_running),.ctrl_valid(field_cv),.ctrl_cmd(field_cmd),

@@ -1,7 +1,9 @@
 // Native RAW field producer: ordinary source1 events, no direct oscillator writes.
 // Source1 tokens with bit63=1 are reserved for this producer. MCU score tokens
 // retain all64 bits but are allocated below2^63. Each run reserves32 identities.
-module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
+// ROW_FRAMES spaces the 9-note rows of the 30 s test; the serial controller
+// needs about 9.3 clocks per slot per note, so a 64-slot engine needs > 8.
+module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000, ROW_FRAMES=8)(
  input wire clk,rst,request_valid,request_start,input wire [2:0] request_size,
  input wire [31:0] raw_frame,
  input wire [7:0] player_state,input wire [63:0] player_epoch,
@@ -42,7 +44,7 @@ module s11_field_test_source #(parameter integer AUDIO_RATE_HZ=48000)(
  wire full_test=size>=4;
  wire [31:0] hold_frames=full_test?AUDIO_RATE_HZ*30:HOLD_FRAMES;
  wire [31:0] end_frames=full_test?AUDIO_RATE_HZ*30+END_FRAMES:END_FRAMES;
- wire [31:0] row_delay=full_test?{26'd0,row_index,3'd0}:32'd0;
+ wire [31:0] row_delay=full_test?32'(row_index)*ROW_FRAMES:32'd0;
  wire [31:0] target=anchor+(part==0?0:part==1?hold_frames:end_frames)+row_delay;
  wire [7:0] key_byte={2'd0,key};
  wire [6:0] note=part==0?7'd48+key:7'd0;
