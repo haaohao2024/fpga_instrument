@@ -4983,8 +4983,8 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  output reg[7:0] fact_outcome,output reg[SW-1:0] fact_slot,
  output reg fact_steal,output wire[314:0] fact_before,fact_after,
  output reg batch_done,batch_abort,published,
- input wire[3*LANES-1:0] audio_read_slots,audio_pan_slots,
- output wire[31*LANES-1:0] audio_read_controls,output wire[9*LANES-1:0] audio_read_pans,
+ // Audio directory write port; each engine keeps the directory of its slots.
+ output wire dir_we,dir_bank,dir_read_bank,dir_published,output wire[SW-1:0] dir_slot,output wire[26:0] dir_data,
  output wire[4*VOICES-1:0] audio_flags,output reg[7:0] audio_vibrato,
  output wire[31*VOICES-1:0] control_state,
  output wire busy,output reg protocol_error,
@@ -5235,33 +5235,15 @@ module r28_serial_control #(parameter integer ID_WIDTH=64,LOOP_ENABLE=0,VOICES=4
  for(genvar s=0;s<VOICES;s++)begin: view
   assign audio_flags[s*4+:4]=audible[s];
  end
+ wire[30:0] preparing=work_control(control_q);
+ assign dir_we=!rst&&state==PREP_GOT;assign dir_slot=prepare_slot;assign dir_bank=work_bank;
+ assign dir_read_bank=audio_bank;assign dir_published=audio_published;
+ assign dir_data=preparing[30:28]==3'd5 ? {preparing[30:20],4'd0,prepared_key,preparing[12:4]}:preparing[30:4];
  for(genvar l=0;l<LANES;l++)begin: audio_directory
-  // Audio has two selected-slot read ports. Display has a parallel timbre
-  // snapshot. Keep its observation mirror separate so those parallel reads
-  // cannot turn the audio directory into a many-port register file.
+  // Display-only timbre mirror; the audio directory itself lives in the engines.
   reg[26:0] controls[0:15];
-  wire[2:0] rs=audio_read_slots[l*3+:3],ps=audio_pan_slots[l*3+:3];
-  wire[27:0] rc;
-  wire[11:0] pc;
-  wire[SW-1:0] slot=SW'(l*8)+rs,pan_slot=SW'(l*8)+ps;
-  wire[30:0] preparing=work_control(control_q);
-  wire directory_write=!rst&&state==PREP_GOT&&prepare_slot[SW-1:3]==l;
-  wire[26:0] sound_controls=preparing[30:28]==3'd5 ?
-   {preparing[30:20],4'd0,prepared_key,preparing[12:4]}:preparing[30:4];
-  wire[27:0] write_controls={1'b0,sound_controls};
-  wire[11:0] write_pan={3'b0,preparing[12:4]};
-  for(genvar w=0;w<7;w++)begin: audio_words
-   RAM16SDP4 memory(.CLK(clk),.WRE(directory_write),.WAD({work_bank,prepare_slot[2:0]}),
-    .RAD({audio_bank,rs}),.DI(write_controls[w*4+:4]),.DO(rc[w*4+:4]));
-  end
-  for(genvar w=0;w<3;w++)begin: pan_words
-   RAM16SDP4 memory(.CLK(clk),.WRE(directory_write),.WAD({work_bank,prepare_slot[2:0]}),
-    .RAD({audio_bank,ps}),.DI(write_pan[w*4+:4]),.DO(pc[w*4+:4]));
-  end
   always @(posedge clk)if(!rst&&state==PREP_GOT&&prepare_slot[SW-1:3]==l)
    controls[{work_bank,prepare_slot[2:0]}]<=preparing[30:4];
-  assign audio_read_controls[l*31+:31]=audio_published?{rc[26:0],audible[slot]}:31'd2048;
-  assign audio_read_pans[l*9+:9]=audio_published?pc[8:0]:9'd128;
   // The board retains the three timbre bits per slot for its visual status;
   // unused note/pressure/Pan observation bits are removed by synthesis.
   for(genvar v=0;v<8;v++)begin: observation
@@ -5790,8 +5772,10 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  input wire fx_mac_use,input wire signed[35:0] fx_mac_a,input wire signed[17:0] fx_mac_b,
  output wire signed[53:0] fx_mac_q,
  input wire clk,rst,start,test_linear,
- input wire[4*8*LANES-1:0] flags,input wire[31*LANES-1:0] read_controls,input wire[9*LANES-1:0] read_pans,
- output wire[3*LANES-1:0] read_slots,pan_slots,
+ input wire[4*8*LANES-1:0] flags,
+ // Audio directory of this engine's slots, written by the controller.
+ input wire dir_we,dir_bank,dir_read_bank,dir_published,input wire[(LANES>8?7:6)-1:0] dir_slot,input wire[26:0] dir_data,
+ output wire[9*LANES-1:0] completion_pan,
  input wire[7:0] vibrato_depth,input wire[3:0] glide_code,
  input wire[(LANES>8?7:6)-1:0] level_read_slot,output wire[16:0] level_read_value,
  output reg busy,output wire mix_valid,output reg control_retire,
@@ -5830,19 +5814,23 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
  wire[LW-1:0] read_lane=read_slot[SW-1:3];
  // work_slot is reset by start, so the age-0 read is always slot 0.
  wire[3:0] read_flags=age==0?flags[3:0]:frame_flags[read_slot*4+:4];
- // Select one complete Lane field. Constant slices avoid a general barrel
- // selection network for the non-power-of-two 31-bit Lane stride.
- wire[26:0] lane_control[0:LANES-1];
- for(genvar l=0;l<LANES;l++)begin: lane_fields
-  assign lane_control[l]=read_controls[l*31+4+:27];
+ // Directory: control words of both banks. The word of read_slot is read
+ // every clock and consumed at capture, three clocks after read_slot settles;
+ // the controller writes only the bank audio is not reading.
+ reg[26:0] directory[0:2*(1<<SW)-1] /* synthesis syn_ramstyle="block_ram" */;
+ reg[26:0] directory_q;
+ always @(posedge clk)begin
+  if(dir_we)directory[{dir_bank,dir_slot}]<=dir_data;
+  directory_q<=directory[{dir_read_bank,read_slot}];
  end
- wire[26:0] selected_control=read_lane<LANES?lane_control[read_lane]:27'bx;
+ wire[26:0] selected_control=dir_published?directory_q:27'd128;
  wire[30:0] read_control={selected_control,read_flags};
- assign read_slots={LANES{read_slot[2:0]}};
- assign pan_slots=completion_slot;
  reg[SW-1:0] captured_slot;
  reg captured_valid,captured_gate,captured_trigger,new_owner;
  reg[6:0] captured_note;reg[7:0] captured_pressure;reg[2:0] captured_timbre;
+ // Pan of each launched job, in launch order; jobs complete in launch order.
+ reg[8:0] captured_pan;reg[8:0] pan_queue[0:15];reg[3:0] pan_head,pan_tail;
+ assign completion_pan={LANES{pan_queue[pan_head]}};
  reg[31:0] phase_q;reg[CW-1:0] state_q;
  wire[CW-1:0] state_read;
  reg[CW-1:0] captured_state;
@@ -6096,7 +6084,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   assign protocol_error=ext_protocol_error;assign mixer_deadline=ext_deadline;assign last_complete_cycle=ext_last_complete_cycle;
  end else begin: own_mix
  osc_stereo_sum #(.LANES(LANES)) stereo(.clk(clk),.rst(rst),.sample_tick(start),.completion_valid(completion_valid),.completion_accept(completion_accept),
-  .completion_slot(completion_slot),.completion_sample(completion_sample),.completion_pan(read_pans),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
+  .completion_slot(completion_slot),.completion_sample(completion_sample),.completion_pan(completion_pan),.mix_l_q8(mix_l_q8),.mix_r_q8(mix_r_q8),
   .mix_valid(computed_mix_valid),.protocol_error(protocol_error),.deadline_error(mixer_deadline),.last_complete_cycle(last_complete_cycle));
  end
  osc48_voice_metrics #(.CAPACITY(V)) monitor(.clk(clk),.rst(rst),.start(start),.done(mix_valid),
@@ -6133,12 +6121,13 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
    phase_q<=0;state_q<=0;env_q<=0;prepared_q<=0;pressure_target<=0;pressure_difference<=0;pressure_step<=0;pressure_up<=0;
    pending_job<=0;pending_tag<=0;pending<=0;observe_request<=0;observe_valid<=0;observe_lane<=0;
    reclaim_pending<=0;voice_samples<=0;control_retire<=0;deadline_error<=0;
+   pan_head<=0;pan_tail<=0;captured_pan<=0;
   end else begin
    control_retire<=busy&&age==RETIRE_AGE;
    observe_valid<=early_read;
    if(start)begin
     if(busy)deadline_error<=1;
-    busy<=1;age<=0;pending<=0;observe_valid<=0;reclaim_pending<=0;control_retire<=0;expression_q<={vibrato_depth,glide_code};
+    busy<=1;age<=0;pending<=0;pan_head<=0;pan_tail<=0;observe_valid<=0;reclaim_pending<=0;control_retire<=0;expression_q<={vibrato_depth,glide_code};
    end else if(busy)begin
     age<=age+1'b1;
     if(phase_load_q)phase_q<=phase_init_q?context_do[31:0]:32'd0;
@@ -6156,11 +6145,11 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
       pending_job<={32'(new_owner?0:phase_q),captured_trigger,backend_pitch,lfo_sine,
        (timbre==5||test_linear?17'd0:depth),next_level,next_gain,next_transient,next_body,17'd0,
        (timbre==5?drum_payload:17'd0),timbre};
-      pending_tag<=6'(captured_slot);pending<=1;if(captured_valid)initialized[captured_slot]<=1;
+      pending_tag<=6'(captured_slot);pending<=1;pan_queue[pan_tail]<=captured_pan;pan_tail<=pan_tail+1'b1;if(captured_valid)initialized[captured_slot]<=1;
      end
       if(age<=ISSUE_END)begin
       captured_slot<=read_slot;captured_valid<=read_control[1];captured_gate<=read_control[2];captured_trigger<=read_control[3]&&read_control[1];
-      new_owner<=read_control[0]||!initialized[read_slot];captured_note<=read_control[19:13];captured_pressure<=read_control[27:20];captured_timbre<=read_control[30:28];
+      new_owner<=read_control[0]||!initialized[read_slot];captured_note<=read_control[19:13];captured_pressure<=read_control[27:20];captured_timbre<=read_control[30:28];captured_pan<=read_control[12:4];
       state_q<=captured_state;
       end
      end
@@ -6179,6 +6168,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
     if(age>=399)deadline_error<=1;
    end
    if(result_valid&&frame_flags[result_slot*4+1])voice_samples[result_slot*18+:18]<=result_sample;
+   if(result_valid)pan_head<=pan_head+1'b1;
    if(mix_valid)busy<=0;
    if(mixer_deadline)deadline_error<=1;
   end
@@ -6188,6 +6178,7 @@ module r28_frame_audio #(parameter integer BACKENDS=1,parameter integer SHARE_FX
   if(SHARE_FX!=0||BACKENDS!=1)$fatal(1,"II4_UNSUPPORTED_CONFIGURATION");
   if(busy&&age==PUBLISH_AGE&&!mix_prepared)$fatal(1,"II4_MISSED_FX_HANDOFF");
   if(start&&busy)$fatal(1,"R40_OVERLAPPING_FRAME");
+  if(start&&pan_head!=pan_tail)$fatal(1,"PAN_QUEUE_NOT_DRAINED");
   if(work_active&&work_step==0&&age>=8&&pending&&!launch)$fatal(1,"R40_PENDING_OVERWRITE");
   if(observe_valid&&main_envelope)$fatal(1,"R40_ADSR_COLLISION");
   if(work_active&&work_step==1&&(old_glide_remaining!=0||old_glide_base!=0||old_glide_remainder!=0||old_glide_error!=0||old_code!=0))$fatal(1,"II4_DIRECT_PITCH_INVARIANT");
@@ -6250,8 +6241,8 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
  wire[EPW-1:0] fe_envelope_response;wire[81:0] fe_timbre_response;
  // Engine 0 owns the pitch pROM; engine 1 reads it on engine 0's idle ages.
  wire pitch_issue[0:1];wire[6:0] pitch_note[0:1];wire[31:0] pitch_data[0:1];
- wire[3*LANES-1:0] audio_read_slots,audio_pan_slots;
- wire[31*LANES-1:0] audio_read_controls;wire[9*LANES-1:0] audio_read_pans;
+ wire dir_we,dir_bank,dir_read_bank,dir_published;wire[SW-1:0] dir_slot;wire[26:0] dir_data;
+ wire[9*LANES-1:0] mix_cp;
  wire audio_retire;
  wire[SW-1:0] level_read_slot;wire[16:0] level_read_value;
  // Controller level reads: slot -> (engine, slot within that engine).
@@ -6276,8 +6267,8 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
    .fe_envelope_request(fe_envelope_request[e]),.fe_timbre_request(fe_timbre_request[e]),.fe_release(fe_release[e]),
    .fe_envelope_response(fe_envelope_response),.fe_timbre_response(fe_timbre_response),
    .control_retire(e_retire[e]),.clk(clk),.rst(rst),.start(e==0?frame_tick:start_delay[1]),.test_linear(test_linear),.flags(audio_flags[e*4*EV+:4*EV]),
-   .read_controls(audio_read_controls[e*31*EL+:31*EL]),.read_pans(audio_read_pans[e*9*EL+:9*EL]),
-   .read_slots(audio_read_slots[e*3*EL+:3*EL]),.pan_slots(audio_pan_slots[e*3*EL+:3*EL]),
+   .dir_we(dir_we&&(ENGINES==1||((dir_slot>=ENGINE_SLOTS)==(e==1)))),.dir_bank(dir_bank),.dir_read_bank(dir_read_bank),.dir_published(dir_published),
+   .dir_slot(ESW'(ENGINES==2&&dir_slot>=ENGINE_SLOTS?dir_slot-ENGINE_SLOTS:dir_slot)),.dir_data(dir_data),.completion_pan(mix_cp[e*9*EL+:9*EL]),
    .vibrato_depth(audio_vibrato),.glide_code(glide_code),.busy(e_busy[e]),.mix_valid(e_mix_valid[e]),.mix_l_q8(e_mix_l[e]),.mix_r_q8(e_mix_r[e]),
    .level_read_slot(ESW'(level_local_slot)),.level_read_value(e_level[e]),
    .envelope_levels(envelope_levels[e*17*EV+:17*EV]),.envelope_states(envelope_states[e*3*EV+:3*EV]),
@@ -6313,7 +6304,7 @@ module r28_control_audio_probe #(parameter integer SAMPLE_RATE_HZ=48000,paramete
   // Engine results never coincide (engine 1 is two clocks behind), so one
   // saturating sum over all Lanes collects both.
   osc_stereo_sum #(.LANES(LANES),.WIDE(1)) mixer(.clk(clk),.rst(rst),.sample_tick(frame_tick),.completion_valid(mix_cv),.completion_accept(mix_ca),
-   .completion_slot(mix_cs),.completion_sample(mix_cd),.completion_pan(audio_read_pans),.mix_l_q8(shared_l),.mix_r_q8(shared_r),
+   .completion_slot(mix_cs),.completion_sample(mix_cd),.completion_pan(mix_cp),.mix_l_q8(shared_l),.mix_r_q8(shared_r),
    .mix_valid(shared_mix_valid),.protocol_error(shared_protocol),.deadline_error(shared_deadline),.last_complete_cycle(shared_cycle));
   assign mix_l_q8=shared_l;assign mix_r_q8=shared_r;
   // Count fields add across engines; flags OR; cycles and frame from engine 0.
