@@ -76,7 +76,7 @@ public enum RequestRules {
             case 35:
                 if n != 44 { return -1 }
                 _ = try Commands.effects((0..<11).map{try LE.u32(p,$0*4)}); return 0
-            case 86: return ok(n==8 && zero(2) && ((p[0]==1 && [1,8,16,32,48].contains(p[1]))||(p[0]==2 && p[1]==0)))
+            case 86: return ok(n==8 && zero(2) && ((p[0]==1 && [1,8,16,32,48,64].contains(p[1]))||(p[0]==2 && p[1]==0)))
             default: return -2
             }
         }
