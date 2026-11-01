@@ -100,7 +100,9 @@ module margin_spectrum_bars_core #(parameter BOUNDS_FILE="src/visual_band_bounds
  reg [3:0] state;
  initial $readmemh(BOUNDS_FILE,bounds);
  always @(posedge clk)bound_data<=bounds[address];
- assign spectrum_ready=state==6&&spectrum_valid&&bin<high_bin || state==9;
+ // Linear windows end at bin 319; state 7 drains the rest (up to 2047, state 9
+ // takes 2048) so the FFT can finish the window like a normal one.
+ assign spectrum_ready=state==6&&spectrum_valid&&bin<high_bin || state==7&&spectrum_valid&&bin<12'd2048 || state==9;
  always @(posedge clk)begin
   if(rst)begin state<=0;address<=0;low_bin<=1;high_bin<=1;column<=0;peak_l<=0;peak_r<=0;
    write_enable<=0;write_column<=0;write_data<=0;done<=0;dc_left<=0;dc_right<=0;
@@ -120,11 +122,12 @@ module margin_spectrum_bars_core #(parameter BOUNDS_FILE="src/visual_band_bounds
        write_enable<=1;write_column<=column;
        write_data<={(hl>peak_l?hl:peak_l),(hr>peak_r?hr:peak_r)};
        peak_l<=0;peak_r<=0;
-       if(column==255)state<=9;
+       if(column==255)state<=linear?4'd7:4'd9;
        else begin column<=column+1'b1;address<=({1'b0,column}+9'd1)<<1;state<=1;end
       end
      end
     end
+    7:if(spectrum_valid&&bin==12'd2048)state<=9;
     9:begin done<=1;state<=0;end
     default:state<=0;
    endcase
