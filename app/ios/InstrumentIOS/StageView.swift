@@ -137,7 +137,7 @@ struct StageView: View {
         }
     }
 
-    // MARK: Row B: timbre, record/accompaniment, loop, score/teaching, metronome.
+    // MARK: Row B: timbre, record/accompaniment, loop, score/teaching.
     private var controlStrip: some View {
         ScrollView(.horizontal,showsIndicators:false) {
             HStack(alignment:.bottom,spacing:12) {
@@ -168,13 +168,6 @@ struct StageView: View {
                     }
                     PanelButton(title:"教学",led:Panel.ledOn,isOn:model.teachMode,compact:compact) { model.teachMode.toggle() }.disabled(model.scorePlaying)
                 }.disabled(!link.ready)
-                divider
-                PanelGroup(title:"节拍器 · \(model.tempo) BPM",showTitle:!compact) {
-                    PanelButton(title:"节拍",led:Panel.ledOn,isOn:model.metronomeOn,compact:compact) { model.toggleMetronome() }
-                    PanelButton(title:"预备拍",led:Panel.ledOn,isOn:model.countIn,compact:compact) { model.countIn.toggle() }
-                    Stepper("",value:$model.tempo,in:40...200,step:5).labelsHidden().fixedSize()
-                        .onChange(of:model.tempo) { t in if model.metronomeOn { model.metronome.start(bpm:t) };model.saveSettings() }
-                }
             }.padding(.vertical,2)
         }
     }

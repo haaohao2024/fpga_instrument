@@ -179,7 +179,7 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
             addView(hscroll(row(effects,sound,volume)),LinearLayout.LayoutParams(0,-2,1f))
             addView(display,LinearLayout.LayoutParams(-2,-2).apply{marginStart=dp(8f).toInt();marginEnd=dp(8f).toInt()})
             addView(side)})
-        // Row B: timbre, record/accompaniment, loop layers, score/teaching, metronome
+        // Row B: timbre, record/accompaniment, loop layers, score/teaching
         val timbres=panelGroup("音色",!c,*toneNames.indices.map{i->pb("timbre$i",toneNames[i]){timbre=i;stageRelease();client.pitchParameter(32,i);saveSettings();refreshStage()}}.toTypedArray())
         val recordGroup=panelGroup("录音 · 伴奏",!c,pb("record","录音",StagePalette.LED_REC,true){toggleRecording()},pb("ensemble","自动伴奏",StagePalette.LED_GO){toggleEnsemble()})
         val loopGroup=panelGroup("循环叠录",!c,pb("loopRec","录第1层",StagePalette.LED_REC,true){recordLoopLayer()},
@@ -187,9 +187,7 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
             pb("loopPlay","停止",StagePalette.LED_GO){if(loopState==5)loopCommand(102,"恢复循环") else loopCommand(99,"停止循环")},
             pb("loopClear","清空"){loopCommand(100,"清空循环")})
         val scoreGroup=panelGroup("曲谱 · 教学",!c,pb("score","▶ 播放曲谱",StagePalette.LED_GO){toggleScore()},pb("teach","教学",StagePalette.LED_ON){teachMode=!teachMode;refreshStage()})
-        val metroGroup=panelGroup("节拍器",!c,pb("metro","节拍",StagePalette.LED_ON){toggleMetronome()},pb("countIn","预备拍",StagePalette.LED_ON){countIn=!countIn;refreshStage()},
-            pb("slower","−"){tempo=(tempo-5).coerceAtLeast(40);tempoChanged()},pb("faster","＋"){tempo=(tempo+5).coerceAtMost(200);tempoChanged()})
-        stage.addView(hscroll(row(timbres,recordGroup,loopGroup,scoreGroup,metroGroup)),LinearLayout.LayoutParams(-1,-2).apply{topMargin=dp(if(c)4f else 8f).toInt()})
+        stage.addView(hscroll(row(timbres,recordGroup,loopGroup,scoreGroup)),LinearLayout.LayoutParams(-1,-2).apply{topMargin=dp(if(c)4f else 8f).toInt()})
         // Keyboard: overview strip, then octave buttons around the piano
         overview=KeyboardOverviewView(this){start->piano.startWhite=start;overview.startWhite=start;refreshStage()}
         stage.addView(overview,LinearLayout.LayoutParams(-1,dp(if(c)20f else 28f).toInt()).apply{topMargin=dp(if(c)4f else 8f).toInt()})
@@ -312,7 +310,6 @@ class MainActivity : Activity(), BleInstrumentLink.Listener {
         panel["loopPlay"]?.apply{label=if(loopState==5)"播放" else "停止";on=loopState==2;isEnabled=ready&&!recordingLayer&&loopLayers>0}
         panel["score"]?.apply{label=if(scorePlaying)"■ 停止曲谱" else "▶ 播放曲谱";on=scorePlaying}
         panel["teach"]?.apply{on=teachMode;isEnabled=!scorePlaying}
-        panel["metro"]?.apply{on=metronomeOn;label="节拍 $tempo"};panel["countIn"]?.on=countIn
         listOf("echo","chorus","reverb","bypass","record","ensemble","score","teach").forEach{panel[it]?.isEnabled=ready&&(it!="teach"||!scorePlaying)}
         toneNames.indices.forEach{panel["timbre$it"]?.isEnabled=ready}
         piano.enabledForPlay=ready;piano.guideNote=guideNote;piano.litNotes=physicalNotes
