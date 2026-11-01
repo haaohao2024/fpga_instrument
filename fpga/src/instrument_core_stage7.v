@@ -5,7 +5,7 @@ module instrument_core_stage7 #(
     parameter integer AUDIO_RATE_HZ=48000,
     // 1: native field tests use exact-bin oscillator frequencies (see osc_ii4_pitch_prepare).
     parameter integer TEST_LINEAR_ENABLE=1,
-    parameter integer ENGINE_VOICES=48,
+    parameter integer ENGINE_VOICES=64,
     parameter integer EXTERNAL_SCORE_RX=0,STREAM_PHONE=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,
