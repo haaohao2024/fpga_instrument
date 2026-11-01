@@ -152,6 +152,10 @@ module instrument_core_stage9 #(
     output wire [31:0] observe_keymap_version,
     output wire [103:0] observe_gain_state,input wire [540:0] shared_score_rx
 );
+ // The frame pulse goes on a global buffer (CLOCK_LOC in the .cst). A kept
+ // net gives that constraint a name synthesis cannot change.
+ wire frame_pulse_bufg /* synthesis syn_keep=1 */;
+ assign frame_pulse=frame_pulse_bufg;
  wire [127:0] ensemble_metrics;
  wire  phone_session_flush;
  wire  phone_session_ready;
@@ -394,7 +398,7 @@ module instrument_core_stage9 #(
   .dac_bck(dac_bck),
   .dac_ws(dac_ws),
   .dac_din(dac_din),
-  .frame_pulse(frame_pulse),
+  .frame_pulse(frame_pulse_bufg),
   .sample_overrun(sample_overrun),
   .underrun(underrun),
   .observe_load(observe_load),
