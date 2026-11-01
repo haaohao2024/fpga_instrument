@@ -189,7 +189,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/visual_font.mem", LABEL_
     // Linear view ticks: x=32+2c shows bin 64+c, i.e. 2, 4.25, 6.63, 9 kHz.
     if(x<64)text_line_id=linear_view?6'd12:6'd8;
     else if(x>=176&&x<224)begin local_x=x-176;text_line_id=linear_view?6'd13:6'd9;end
-    else if(x>=328&&x<368)begin local_x=x-328;text_line_id=linear_view?6'd14:6'd10;end
+    else if(x>=328&&x<376)begin local_x=x-328;text_line_id=linear_view?6'd14:6'd10;end
     else if(x>=480&&x<528)begin local_x=x-480;text_line_id=linear_view?6'd15:6'd11;end
     else text_enable=0;
    end
