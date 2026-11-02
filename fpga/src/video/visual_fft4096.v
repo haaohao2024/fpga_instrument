@@ -1,5 +1,5 @@
 // One in-place complex DIF FFT packs L+jR. 12 stages, /2 per stage.
-// Input/window, twiddles and every rounding operation obey the Stage8A contract.
+// Input/window, twiddles and every rounding operation are fixed-point and bit-exact.
 // 8 BSRAM work + 1 quarter-wave ROM. Two shared signed 18x18 multipliers.
 module visual_fft4096 #(parameter ROM_FILE="src/video/visual_cos_q16.mem")(
  input wire clk,rst,start,rectangular,

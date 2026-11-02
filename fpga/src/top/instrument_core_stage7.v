@@ -1,8 +1,9 @@
 // Digital instrument core: already-digitized controls to PT8211 serial pins.
 // All logic uses clk; rst is synchronous and HIGH active. No vendor IP.
-// Voice tables and ADSR use 48 kHz, so the system audio rate is fixed at 48 kHz.
+// Audio frame rate is AUDIO_RATE_HZ. The board top sets 128 kHz; the effects
+// path (fx128_multirate) supports only that rate.
 module instrument_core_stage7 #(
-    parameter integer AUDIO_RATE_HZ=48000,
+    parameter integer AUDIO_RATE_HZ=128000,
     // 1: native field tests use exact-bin oscillator frequencies (see osc_ii4_pitch_prepare).
     parameter integer TEST_LINEAR_ENABLE=1,
     parameter integer ENGINE_VOICES=64,
@@ -270,24 +271,12 @@ module instrument_core_stage7 #(
         .note_gate(local_gate), .note_trigger(local_trigger),
         .pressure_value(local_pressure), .note_code(unmapped_local_notes), .vibrato_depth(local_vibrato)
     );
-    generate if(STREAM_PHONE || !ENABLE_REMOTE)begin: compact_local_input
     r28_local_adapter u_event_adapter(.clk(clk),.rst(rst),.overflow_recover(!observe_local_pending),
      .sample_time(sample_time),.note_gate(local_gate),.note_trigger(local_trigger),.vibrato_depth(local_vibrato),
      .pressure_value(local_pressure),.note_code(local_notes),.write_valid(local_write_valid),.write_ready(local_write_ready),
      .write_index(local_write_index),.write_data(local_write_data),.commit_valid(local_event_valid),.commit_ready(local_event_ready),
      .commit_header(local_header),.overflow(event_overflow),.pending(local_adapter_pending),.occupancy(local_buffer_occupancy));
     assign local_event_packet={local_header,864'd0};
-    end else begin: legacy_local_input
-    local_performance_event_adapter #(.RECOVER_OVERFLOW(1)) u_event_adapter (.overflow_recover(!observe_local_pending),
-        .clk(clk), .rst(rst), .sample_time(sample_time),
-        .note_gate(local_gate), .note_trigger(local_trigger), .vibrato_depth(local_vibrato),
-        .pressure_value(local_pressure), .note_code(local_notes),
-        .event_valid(local_event_valid), .event_ready(local_event_ready),
-        .event_packet(local_event_packet), .overflow(event_overflow)
-    );
-    assign local_adapter_pending=local_event_valid;
-    assign local_write_valid=0;assign local_write_index=0;assign local_write_data=0;assign local_header=local_event_packet[904:864];
-    end endgenerate
     // Stage7 connection only: existing arbiter/queue/allocator algorithms unchanged.
     wire buffered_local_valid,buffered_local_ready,score_event_valid,score_event_ready;
     wire [904:0] buffered_local_packet,score_event_packet;
@@ -344,7 +333,6 @@ module instrument_core_stage7 #(
             endcase
         end
     end
-    generate if(STREAM_PHONE || !ENABLE_REMOTE)begin: compact_event_store
     r28_event_pool #(.LOCAL_BUFFER(0),.FAST_READ(1),.RAW_SCORE(1)) event_pool(.score_owner(score_owner),.score_timbre(score_timbre),.event_timbre(pool_timbre),.clk(clk),.rst(rst),
      .write_valid({ENABLE_REMOTE&&remote_write_valid,score_write_valid,local_write_valid}),
      .write_ready({remote_write_ready,score_write_ready,local_write_ready}),
@@ -356,17 +344,6 @@ module instrument_core_stage7 #(
      .event_valid(queue_source_valid),.event_ready(queue_source_ready),.event_header(pool_header),.event_source(pool_source),
      .retire(observe_allocator_publish||allocator_abort),.item_request(1'b0),.item_index(pool_item_index),.item_ready(),.item_response(),.item_data(pool_item),
      .local_occupancy(),.occupancy(pool_occupancy));
-    end else begin: legacy_event_store
-    r26_event_pool #(.SHARED_SCORE(1),.SHARED_PHONE(STREAM_PHONE),.VALIDATE(1),.DISCARD_LOCAL(1)) event_pool(.score_write_valid(score_write_valid),.score_write_index(score_write_index),.score_write_data(score_write_data),.score_write_ready(score_write_ready),.clk(clk),.rst(rst),
-     .phone_write_valid(remote_write_valid),.phone_write_index(remote_write_index),.phone_write_data(remote_write_data),.phone_write_ready(remote_write_ready),.phone_write_abort(remote_write_abort),
-     .local_valid(local_event_valid),.local_ready(local_event_ready),.local_packet(local_event_packet),
-     .score_valid(score_event_valid),.score_ready(score_event_ready),.score_packet(score_event_packet),
-     .phone_valid(ENABLE_REMOTE&&remote_event_valid),.phone_ready(remote_event_ready),.phone_packet(remote_event_packet),
-     .score_urgent(score_dispatch_active),.event_valid(queue_source_valid),.event_ready(queue_source_ready),
-     .discard_local(event_overflow),.discarded(pool_discarded),.rejected(pool_rejected),.event_header(pool_header),.event_source(pool_source),.retire(observe_allocator_publish||allocator_abort),
-     .item_index(pool_item_index),.item_data(pool_item),.local_occupancy(local_buffer_occupancy),.occupancy(pool_occupancy));
-    assign pool_timbre=0;assign local_write_ready=0;assign pool_rejected_source=pool_source[1:0];
-    end endgenerate
     wire[1487:0] r18_controls;wire r18_identity_stable,r18_audio_busy,r18_event_busy,r18_deadline;
     wire[7:0] r18_outcome;wire[5:0] r18_slot;wire[95:0] r18_item;wire[3:0] r18_lane;wire r18_steal;
     wire fx_mac_use;wire signed[35:0] fx_mac_a;wire signed[17:0] fx_mac_b;wire signed[53:0] fx_mac_q;
@@ -414,7 +391,6 @@ module instrument_core_stage7 #(
     assign observe_fx_bypass=fx_bypass;
     wire [31:0] fx_frames,fx_cfg_accepted,fx_cfg_rejected;
     assign observe_fx_accepted=fx_cfg_accepted;
-    generate if(AUDIO_RATE_HZ==128000)begin: native128_effects
     assign fx_mac_use=0;assign fx_mac_a=0;assign fx_mac_b=0;
     fx128_multirate #(.MIX_SHIFT(MIX_SHIFT)) u_effects(
         .clk(clk),.rst(rst),.sample_tick(frame_pulse),
@@ -424,35 +400,6 @@ module instrument_core_stage7 #(
         .protocol_error(fx_error),.frame_count(fx_frames),
         .cfg_accepted(fx_cfg_accepted),.cfg_rejected(fx_cfg_rejected),.effective_bypass(fx_bypass),
         .observe_config(observe_fx_config),.observe_version(observe_fx_version));
-    end else if(AUDIO_RATE_HZ==96000)begin: native96_effects
-    assign fx_mac_use=0;assign fx_mac_a=0;assign fx_mac_b=0;
-    fx96_multirate #(.MIX_SHIFT(MIX_SHIFT)) u_effects(
-        .clk(clk),.rst(rst),.sample_tick(frame_pulse),
-        .in_l_q8(mix_l_q8),.in_r_q8(mix_r_q8),.in_valid(mix_valid),
-        .cfg_valid(fx_cfg_valid),.cfg_data(fx_cfg_data),
-        .out_l_q8(fx_l_q8),.out_r_q8(fx_r_q8),.out_valid(fx_valid),
-        .protocol_error(fx_error),.frame_count(fx_frames),
-        .cfg_accepted(fx_cfg_accepted),.cfg_rejected(fx_cfg_rejected),.effective_bypass(fx_bypass),
-        .observe_config(observe_fx_config),.observe_version(observe_fx_version));
-    end else if(AUDIO_RATE_HZ==72000)begin: native72_effects
-    assign fx_mac_use=0;assign fx_mac_a=0;assign fx_mac_b=0;
-    fx72_multirate #(.MIX_SHIFT(MIX_SHIFT)) u_effects(
-        .clk(clk),.rst(rst),.sample_tick(frame_pulse),
-        .in_l_q8(mix_l_q8),.in_r_q8(mix_r_q8),.in_valid(mix_valid),
-        .cfg_valid(fx_cfg_valid),.cfg_data(fx_cfg_data),
-        .out_l_q8(fx_l_q8),.out_r_q8(fx_r_q8),.out_valid(fx_valid),
-        .protocol_error(fx_error),.frame_count(fx_frames),
-        .cfg_accepted(fx_cfg_accepted),.cfg_rejected(fx_cfg_rejected),.effective_bypass(fx_bypass),
-        .observe_config(observe_fx_config),.observe_version(observe_fx_version));
-    end else begin: original48_effects
-    r46_serial_effects #(.MIX_SHIFT(MIX_SHIFT),.SCHEDULED_CONTROL(1),.SHARED_MAC(0)) u_effects(.fx_mac_use(fx_mac_use),.fx_mac_a(fx_mac_a),.fx_mac_b(fx_mac_b),.fx_mac_q(fx_mac_q),
-        .clk(clk),.rst(rst),.sample_tick(frame_pulse),
-        .in_l_q8(mix_l_q8),.in_r_q8(mix_r_q8),.in_valid(mix_valid),
-        .cfg_valid(fx_cfg_valid),.cfg_data(fx_cfg_data),
-        .out_l_q8(fx_l_q8),.out_r_q8(fx_r_q8),.out_valid(fx_valid),
-        .protocol_error(fx_error),.frame_count(fx_frames),
-        .cfg_accepted(fx_cfg_accepted),.cfg_rejected(fx_cfg_rejected),.effective_bypass(fx_bypass),.observe_config(observe_fx_config),.observe_version(observe_fx_version));
-    end endgenerate
     digital_audio_output_master #(
         .CLK_FREQ_HZ(CLK_FREQ_HZ), .SAMPLE_RATE_HZ(AUDIO_RATE_HZ), .MIX_SHIFT(MIX_SHIFT)
     ) u_output (

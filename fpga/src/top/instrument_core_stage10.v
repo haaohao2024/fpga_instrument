@@ -2,7 +2,7 @@
 // Stage8 composition only; the complete Stage7 implementation remains the audio owner.
 module instrument_core_stage10 #(
     parameter integer S11_VERSION=1,
-    parameter integer AUDIO_RATE_HZ=48000,
+    parameter integer AUDIO_RATE_HZ=128000,
     parameter integer PINNED_RECORD_PREFIX=0,COMM_SEPARATE=0,
  parameter integer VERSIONED_TOKENS=0,
     parameter integer CLK_FREQ_HZ = 50_000_000,

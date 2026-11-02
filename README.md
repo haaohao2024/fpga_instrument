@@ -24,9 +24,10 @@
 
 ## 当前版本
 
-- **FPGA**：64 路合成引擎，128 kHz 输出；比特流 `fpga/impl/pnr/formal_one.bin` SHA256 `210f7d2c…`，2026-11-01 写入板上 Flash。
-  资源：逻辑 41788/59904（70%）、寄存器 26393/60780（44%）、BSRAM 108/118（92%）、DSP 33.5/118（29%）。
-  时序：system_clk 约束 40 MHz，Fmax 45.73 MHz；全部时钟 setup/hold 违例 0。
+- **FPGA**：64 路合成引擎，128 kHz 输出；比特流 `fpga/impl/pnr/formal_one.bin` SHA256 `94ce681a…`（2026-11-02 由本目录源码构建）。
+  板上 Flash 目前仍是 2026-11-01 写入的上一版（SHA256 `210f7d2c…`），两版只差已删除的备选分支，电路功能相同；本版尚未上板。
+  资源：逻辑 41785/59904（70%）、寄存器 26393/60780（44%）、BSRAM 108/118（92%）、DSP 33.5/118（29%）。
+  时序：system_clk 约束 40 MHz，Fmax 43.40 MHz；全部时钟 setup/hold 违例 0。
 - **BL616**：64 路赛题测试放行；镜像 SHA256 `c20add42…`，2026-10-31 写入 Flash 偏移 0x40000。
 - **App**：2.0 演奏台（安卓 versionName `2.0-stage`）；横屏电子琴面板 + 可滑动钢琴键盘，iOS 26 液态玻璃。
 
@@ -35,7 +36,7 @@
 ### FPGA
 用 Gowin IDE（V1.9.12.04）打开 `fpga/formal_one.gprj`，顶层模块 `instrument_board_stage11_rev7`，布局选项 3、布线选项 2，Verilog 标准 SystemVerilog-2017。
 RTL 中的 ROM 文件以 `src/<子目录>/xxx.mem` 相对 `fpga/` 引用，请保持 `fpga/` 内的相对位置不变。
-`.vh` 头文件位于 `src/mcu_link/` 与 `src/video/`，这两个目录写在 `impl/formal_one_process_config.json` 的 `IncludePath` 中（绝对路径）；工程移到其他位置后，需在 IDE 的工程综合配置中把 Include Path 改成新位置。
+`.vh` 头文件与引用它的 `.v` 放在同一目录，综合器按引用文件所在目录查找，无需设置 Include Path；`.mem` 路径相对于 `fpga/` 工程目录。工程可整体复制到任意位置直接打开构建。
 
 ## FPGA 模块结构
 
@@ -132,7 +133,7 @@ instrument_board_stage11_rev7              板级顶层：引脚、复位、八�
 - `audio_out/`：主混音与 PT8211 输出。`digital_audio_output_master.v`、`pcm_stream_input.v`、`pcm_pair_fifo.v`、`master_gain_config.v`、`stereo_master_mixer.v`、`master_pcm_stream.v`、`pt8211_audio_out.v`、`pt8211_serializer.v`
 - `video/`：HDMI 可视化。`visual_*.v`、`video_*.v`、ROM 初始化 `r30_cosine_init.vh`、`r30_text_init.vh` 与 `visual_*.mem`
 - `score/`：乐谱、教学灯珠、赛题测试源。`score_subsystem.v`、`score_spi_transport.v`、`r28_borrowed_score_parser.v`、`score_record_fifo.v`、`score_sequencer.v`、`r28_serial_guide.v`、`s11_field_test_source.v`
-- `record/`：录音。`r18_recording_subsystem.v`、`r18_cell_prefetch_control.v`、`rec48_downsample.v`（系数 `rec48_ram.mem`）、`s11_pcm_recorder.v`、`s11_event_recorder.v`、`r28_execution_observer.v`、`r18_execution_observer.v`、`r18_config_observer.v`
+- `record/`：录音。`r18_recording_subsystem.v`、`r18_cell_prefetch_control.v`、`rec48_downsample.v`（系数 `rec48_ram.mem`）、`s11_pcm_recorder.v`、`s11_event_recorder.v`、`r28_execution_observer.v`、`r18_config_observer.v`
 - `mcu_link/`：与 BL616 的 SPI 通信。`s10_pcm_transport.v`、`s11_spi_response.v`、`r22_control_link.v`、`s9_session_control.v`、`r22_event_endpoint.v`、`r22_config_bridge.v`、`s9_keymap_config.v`、`s9_constants.vh`
 - `common/`：通用小模块。`r54_full_equal.v`
 
@@ -140,7 +141,6 @@ instrument_board_stage11_rev7              板级顶层：引脚、复位、八�
 
 - `instrument_core_stage7`～`stage11`：开发时每个阶段在外面包一层新功能，层号即阶段号。第 7 层是完整音频通路，第 8 层加 HDMI，第 9 层加手机控制，第 10 层加手机音频与应答，第 11 层加录音。
 - `r18_`、`r22_`、`r28_` 等前缀是该模块定型时的开发轮次编号；`s9_`、`s10_`、`s11_` 是 BL616 通信协议的阶段号；`osc_ii4_` 表示每 4 个时钟发起一个声部的运算后端。前缀只是历史编号，不表示层次。
-- 下列模块位于参数选择的备选分支，当前配置（128 kHz、64 路）下不被综合：`fx72_multirate`、`fx72_downsample`、`div3_pair35`、`fx96_multirate`、`fx96_downsample`（72/96 kHz 采样率时的效果器），`fx_frame_control_parallel`，`local_performance_event_adapter`、`r26_event_pool`（旧事件通路），`r18_execution_observer`（旧录音观察器）。
 
 ### BL616
 需要 Bouffalo SDK（环境变量 `BL_SDK_BASE`）与 RISC-V 工具链。`firmware/bl616/project/CMakeLists.txt` 通过 `../src` 引用源码。

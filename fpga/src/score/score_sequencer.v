@@ -53,11 +53,9 @@ module score_sequencer # (parameter integer RAW_ONLY=0,PARALLEL_PRESSURE_VIEW=1,
   assign event_packet[s*96+:96]=!SHARED_STORE&&offered_header[s]?build_items[s*96+:96]:96'd0;
  end endgenerate
 
- // At the fixed 50 MHz / 48 kHz interface, the next sample edge is
- // at least1041 clocks away. Permit the banked event engine to use960
- // clocks, leaving at least81 clocks before that immutable sample edge.
- // The sample_tick unfinished-group guard below is retained unchanged.
- // This changes only the internal early-abort budget, not sample cadence.
+ // Early-abort budget (EARLY_DEADLINE clocks after a sample edge) for the
+ // banked event engine. Used only when SERIAL_CONTROL=0; the board build
+ // sets SERIAL_CONTROL=1 and relies on the audible-publish handshake instead.
  reg [15:0] frame_age;
  reg [31:0] system_sample;
  wire [31:0] outstanding=events_accepted-events_completed;

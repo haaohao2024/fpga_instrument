@@ -1,4 +1,4 @@
-// 50MHz oversampled Mode0 shared-SPI slave. RAM content is never reset.
+// comm_clk (80 MHz) oversampled Mode0 shared-SPI slave. RAM content is never reset.
 // A page is visible only after both complete transaction and CRC validation.
 module score_spi_transport # (parameter integer RAW_ONLY=0,EXTERNAL_SCORE_RX=0,COMM_SEPARATE=0, WATCHDOG_CLOCKS=5000000, ENABLE_S10_ROUTE=0, ENABLE_FIELD=0, STREAM_STATUS_CRC=0)(
  input wire comm_clk,clk,rst,spi_sck,fpga_cs_n,sd_cs_n,spi_mosi,

@@ -1,5 +1,7 @@
 
-// Local release knob: 0=immediate, 1..7=1024..7168 samples at 48 kHz.
+// Local release knob: 0=immediate, 1..7 = 1..7 x 1024 samples at the 48 kHz
+// reference rate (about 21 ms per step); voice_release_adsr_step rescales
+// the step for the 128 kHz frame rate.
 // The existing config/record transport retains its legacy glide_code name.
 module release_parameter_control (
  input wire clk,rst,step_pulse,step_dir,

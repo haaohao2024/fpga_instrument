@@ -1,4 +1,4 @@
-// 40/80 MHz candidate: existing video PLL uses this legal 800 MHz VCO; /20 and /10.
+// System PLL: 50 MHz input -> 800 MHz VCO; /20 = 40 MHz system_clk, /10 = 80 MHz comm_clk.
 //Copyright (C)2014-2024 Gowin Semiconductor Corporation.
 //All rights reserved.
 //File Title: IP file

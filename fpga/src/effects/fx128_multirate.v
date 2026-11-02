@@ -22,7 +22,7 @@ module fx128_multirate #(parameter integer MIX_SHIFT=5)(
   .filtered_l(filtered_l),.filtered_r(filtered_r),.dry_valid(dry_valid),
   .filtered_valid(filtered_valid),.protocol_error(fir_error));
  wire signed[31:0] effect_l,effect_r;wire effect_valid,effect_error;
- r46_serial_effects #(.MIX_SHIFT(MIX_SHIFT),.SCHEDULED_CONTROL(1),.SHARED_MAC(0)) engine(
+ r46_serial_effects #(.MIX_SHIFT(MIX_SHIFT),.SHARED_MAC(0)) engine(
   .clk(clk),.rst(rst),.sample_tick(config_tick),.in_valid(filtered_valid),.in_l_q8(filtered_l),.in_r_q8(filtered_r),
   .cfg_valid(cfg_valid),.cfg_data(cfg_data),.out_l_q8(effect_l),.out_r_q8(effect_r),.out_valid(effect_valid),
   .protocol_error(effect_error),.frame_count(),.cfg_accepted(cfg_accepted),.cfg_rejected(cfg_rejected),

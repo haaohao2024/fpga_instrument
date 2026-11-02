@@ -1,4 +1,4 @@
-// S10P v1, 50 MHz oversampled shared Mode0 SPI. 4 MHz is a digital
+// S10P v1, comm_clk (80 MHz) oversampled shared Mode0 SPI. 4 MHz is a digital
 // verification contract; this module does not qualify physical IO timing.
 // Two 512-byte synchronous byte RAMs own each accepted packet until its
 // stereo pairs handshake or an explicit stream barrier discards them.

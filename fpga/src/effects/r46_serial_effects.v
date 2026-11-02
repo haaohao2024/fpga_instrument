@@ -5,8 +5,8 @@
 // Histories/feedback retain their fixed /8192 scale. Sum weighted returns before
 // alignment; preserve full dry precision. Equal aligned wet preserves dry PCM
 // differences only without saturation. Reassess if Master Mixer/gain changes.
-// 30M/72k experiment: reverb schedule -6 cycles; output at 98 (was 128).
-module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, SHARED_MAC=0) (
+// Reverb schedule: the wet output is ready at cycle 98 of each effect frame.
+module r46_serial_effects #(parameter integer MIX_SHIFT=5, SHARED_MAC=0) (
     output wire fx_mac_use,output wire signed[35:0] fx_mac_a,output wire signed[17:0] fx_mac_b,
     input wire signed[53:0] fx_mac_q,
     input wire clk,rst,sample_tick,
@@ -229,7 +229,7 @@ module r46_serial_effects #(parameter integer MIX_SHIFT=5, SCHEDULED_CONTROL=0, 
         .cfg_valid(cfg_valid),.cfg_data(cfg_data),.frame_config(frame_config),
         .frame_clear(frame_clear),.frame_version(frame_version),
         .accepted_count(cfg_accepted),.rejected_count(cfg_rejected));
-    fx_frame_control #(.SCHEDULED_CONTROL(SCHEDULED_CONTROL)) control(.clk(clk),.rst(rst),.start(start),.sample_tick(sample_tick),
+    fx_frame_control control(.clk(clk),.rst(rst),.start(start),.sample_tick(sample_tick),
         .config_data(frame_config),.clear_request(frame_clear),.values(controls),
         .clear_pulse(clear_pulse),.effective_bypass(effective_bypass));
 

@@ -60,7 +60,7 @@ module s11_spi_response #(parameter integer S11_VERSION=1,SOURCE_SYNC_TX=0,COMM_
  always @(posedge serial_clk)tx_bit_sampled<=tx_bit_index;
  wire [14:0] address_bit_index=COMM_SEPARATE?tx_bit_sampled:tx_bit_index;
  // At bit4 request the following byte; capture at bit7's falling edge.
- // This gives the 25MHz synchronous recorder port >=600ns to respond at 5MHz SPI.
+ // This gives the synchronous recorder port three SCK bit times to respond.
  wire [11:0] read_byte=wire_byte+(((COMM_SEPARATE||SOURCE_SYNC_TX)&&tx_bit_index[2:0]>=4)?12'd1:12'd0);
  wire [11:0] address_byte=(address_bit_index>>3)+(((COMM_SEPARATE||SOURCE_SYNC_TX)&&address_bit_index[2:0]>=4)?12'd1:12'd0);
  generate if(!SOURCE_SYNC_TX)begin: old_payload_capture

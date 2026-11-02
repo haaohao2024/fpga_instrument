@@ -269,7 +269,6 @@ module r18_recording_subsystem #(parameter integer PCM_BLOCK_PAIRS=128, SERIAL_E
   .peek_byte_address(peek_byte_address),.peek_byte_data(pcm_peek),.ack_accepted(matching_ack&&ack_kind==1),.ack_valid(pcm_ack),
   .ack_record_id(command_record_id),.ack_block_sequence(ack_block_sequence),
   .stale_ack_count(pcm_stale_ack),.rejected_start_count(pcm_rejected_start));
- generate if(SERIAL_EVENTS)begin: serial_journal
  r28_execution_observer u_exec(.pan_applied(pan_applied),.pan_applied_slot(pan_applied_slot),.pan_applied_word(pan_applied_word),.clk(clk),.rst(rst),.audio_reset(audio_reset),
   .capture_fault((event_incomplete || cfg_fault_valid) && !new_start),
   .capture_fault_code(cfg_fault_valid?cfg_fault_code:event_error),.stop_delivery_idle(cfg_idle && tx_owner!=2),
@@ -287,26 +286,6 @@ module r18_recording_subsystem #(parameter integer PCM_BLOCK_PAIRS=128, SERIAL_E
   .tx_response_index(exec_response_index),.tx_response_epoch(exec_response_epoch),.tx_ready(exec_ready),.tx_done(exec_done),
   .published_batches(published_batches),.aborted_batches(aborted_batches),.applied_items(applied_items),.initial_instances(initial_instances),
   .persistent_id_next(persistent_id_next),.observer_idle(observer_idle),.pipeline_empty(exec_pipeline_empty));
- end else begin: legacy_journal
- assign exec_pipeline_empty=observer_idle;
- r18_execution_observer u_exec(.clk(clk),.rst(rst),.audio_reset(audio_reset),
-  .capture_fault((event_incomplete || cfg_fault_valid) && !new_start),
-  .capture_fault_code(cfg_fault_valid?cfg_fault_code:event_error),.stop_delivery_idle(cfg_idle && tx_owner!=2),
-  .start_valid(new_start && command_mask[1]),.stop_valid(new_stop),.start_record_id(command_record_id),
-  .frame_id(event_frame_id),.subcycle(event_subcycle),.allocator_busy(allocator_busy),
-  .batch_begin(batch_begin),.publish_ok(publish_ok),.batch_abort(batch_abort),.batch_timestamp(batch_timestamp),
-  .fact_valid(fact_valid),.fact_item(fact_item),.fact_outcome(fact_outcome),.fact_slot(fact_slot),.fact_steal(fact_steal),
-  .fact_before(fact_before),.fact_after(fact_after),.fact_frame(fact_frame),.fact_subcycle(fact_subcycle),.reclaim_batch_busy(reclaim_batch_busy),
-  .slot_valid(slot_valid[47:0]),.slot_gate(slot_gate[47:0]),.allocated_persistent_id(allocated_persistent_id),
-  .snapshot_query_valid(snapshot_query_valid),.snapshot_query_ready(snapshot_query_ready),.snapshot_query_slot(snapshot_query_slot),
-  .snapshot_response_valid(snapshot_response_valid),.snapshot_response_slot(snapshot_response_slot),.snapshot_response_word(snapshot_response_word),
-  .active(exec_active),.arming(exec_arming),.incomplete(exec_incomplete),.error_code(exec_error),.first_missing_frame(exec_missing),
-  .tx_valid(exec_valid),.tx_count(exec_count),.tx_index(event_prefetch_index),.tx_cell(exec_tx_cell),
-  .tx_read_valid(exec_read_valid),.tx_read_epoch(request_epoch),.tx_response_valid(exec_response_valid),
-  .tx_response_index(exec_response_index),.tx_response_epoch(exec_response_epoch),.tx_ready(exec_ready),.tx_done(exec_done),
-  .published_batches(published_batches),.aborted_batches(aborted_batches),.applied_items(applied_items),.initial_instances(initial_instances),
-  .persistent_id_next(persistent_id_next),.observer_idle(observer_idle));
- end endgenerate
  s11_event_recorder #(.TRUSTED_ACK(1),.VARIABLE_RESPONSE(SERIAL_EVENTS)) u_events(.tx_response_valid(response_pulse),.clk(clk),.rst(rst),
   .start_valid(new_start && command_mask[1]),.stop_valid(new_stop),.clear_valid(1'b0),
   .start_record_id(command_record_id),.start_ready(event_start_ready),.active(event_active),

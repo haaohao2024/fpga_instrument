@@ -101,7 +101,7 @@ module pcm_stream_input #(parameter integer OUTPUT_RATE_HZ=48000) (
         .request(rate_request),.window_sum(window_sum),.buffered(buffered),
         .current_rate(rate_q32),.busy(rate_busy),
         .result_valid(rate_result_valid),.result(rate_result));
-    // The 30MHz/72kHz producer has >=416 cycles between sample ticks. This
+    // The 40MHz/128kHz producer has >=312 cycles between sample ticks. This
     // consumer requires nine: eight calculation edges, then the next tick.
     // Cancellation clears all in-flight ownership before a new stream.
     // synthesis translate_off

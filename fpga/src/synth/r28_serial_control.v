@@ -1,4 +1,4 @@
-// R28 prototype: transaction state and audio state are different owners.
+// Transaction state and audio state are different owners.
 // Full external identities are retained; only the control computation is shared.
 // VOICES slots in LANES=VOICES/8 Lanes. SIW indexes a slot; SW is the
 // external slot field, one bit wider when VOICES is a power of two so the

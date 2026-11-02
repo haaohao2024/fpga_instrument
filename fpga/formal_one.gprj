@@ -20,14 +20,12 @@
         <File path="src/top/instrument_core_stage9.v" type="file.verilog" enable="1" />
         <File path="src/top/instrument_io_stage11.v" type="file.verilog" enable="1" />
         <File path="src/event/local_performance_control.v" type="file.verilog" enable="1" />
-        <File path="src/event/local_performance_event_adapter.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/master_gain_config.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/master_pcm_stream.v" type="file.verilog" enable="1" />
         <File path="src/input/mcp3008_spi.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/pcm_pair_fifo.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/pcm_stream_input.v" type="file.verilog" enable="1" />
         <File path="src/event/performance_event_arbiter.v" type="file.verilog" enable="1" />
-        <File path="src/event/r26_event_pool.v" type="file.verilog" enable="1" />
         <File path="src/input/pressure_input_top.v" type="file.verilog" enable="1" />
         <File path="src/input/pressure_scanner.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/pt8211_audio_out.v" type="file.verilog" enable="1" />
@@ -48,7 +46,6 @@
         <File path="src/score/score_sequencer.v" type="file.verilog" enable="1" />
         <File path="src/score/score_spi_transport.v" type="file.verilog" enable="1" />
         <File path="src/score/score_subsystem.v" type="file.verilog" enable="1" />
-        <File path="src/record/r18_execution_observer.v" type="file.verilog" enable="1" />
         <File path="src/record/r18_config_observer.v" type="file.verilog" enable="1" />
         <File path="src/record/r18_recording_subsystem.v" type="file.verilog" enable="1" />
         <File path="src/record/r18_cell_prefetch_control.v" type="file.verilog" enable="1" />
@@ -95,9 +92,6 @@
         <File path="src/video/r30_cosine_init.vh" type="file.other" enable="1" />
         <File path="src/video/r30_text_init.vh" type="file.other" enable="1" />
         <File path="src/top/system_pll_30m.v" type="file.verilog" enable="1" />
-        <File path="src/effects/fx72_downsample.v" type="file.verilog" enable="1" />
-        <File path="src/effects/fx72_multirate.v" type="file.verilog" enable="1" />
-        <File path="src/effects/fx96_multirate.v" type="file.verilog" enable="1" />
         <File path="src/synth/osc_ii4_backend.v" type="file.verilog" enable="1" />
         <File path="src/effects/fx128_multirate.v" type="file.verilog" enable="1" />
     </FileList>

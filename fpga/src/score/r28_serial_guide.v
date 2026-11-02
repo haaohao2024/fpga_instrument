@@ -1,6 +1,6 @@
 
 // Scan one logical score key per cycle; retain each complete input version.
-// A result is available every 42 clocks (1.68us at 25MHz).
+// A result is available every 42 clocks (1.05us at 40MHz).
 module r28_serial_guide(
  input wire clk,rst,cfg_valid,cfg_prefix,input wire raw_mode,input wire[23:0] cfg_order,input wire[13:0] cfg_lead,
  input wire[55:0] local_notes,input wire[31:0] held,input wire[223:0] notes,

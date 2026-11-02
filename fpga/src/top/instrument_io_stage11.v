@@ -1,7 +1,7 @@
 // Stage9 board-independent I/O composition. No new physical pin bindings.
 // Existing ADC/EC11 and official video PLL logic are unchanged.
 module instrument_io_stage11 #(
-    parameter integer AUDIO_RATE_HZ=48000,
+    parameter integer AUDIO_RATE_HZ=128000,
  parameter integer COMM_SEPARATE=0,
  parameter integer CLK_FREQ_HZ=50_000_000, SPI_CLK_HZ=1_000_000,
  parameter integer EXTERNAL_VIDEO_REFERENCE=0,
