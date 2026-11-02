@@ -27,7 +27,7 @@ sdk_add_compile_definitions(S10_MEDIA_RUNTIME=1 S10_PROFILE_HOST_OBSERVER=1 SBC_
 # BT host/HCI RX threads above the 1 ms polling tasks (default configMAX_PRIORITIES-4 = 3);
 # they only run when packets arrive. HCI TX stays at 4 (< RX as the host requires).
 sdk_add_compile_definitions(CONFIG_BT_RX_PRIO=5)
-sdk_add_include_directories("C:/Users/Haobai/Documents/Codex/s7deps/sdk/components/wireless/bluetooth/blestack/src/include/bluetooth")
+sdk_add_include_directories("$ENV{BL_SDK_BASE}/components/wireless/bluetooth/blestack/src/include/bluetooth")
 target_sources(app PRIVATE
     ${FORMAL_SOURCE_DIR}/s10_codec.c
     ${FORMAL_SOURCE_DIR}/s10_fir.c

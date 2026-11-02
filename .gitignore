@@ -8,6 +8,7 @@ app/android/.gradle/
 app/android/build/
 app/android/app/build/
 app/android/local.properties
+app/android/.kotlin/
 # Xcode / SwiftPM build outputs
 app/ios/build/
 app/ios/build-simulator/

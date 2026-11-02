@@ -6,8 +6,11 @@ allprojects {
     dependencyLocking { lockAllConfigurations() }
 }
 
-// Keep generated artifacts outside the formal source tree.
-def stage9BuildRoot = file(findProperty('instrumentBuildRoot') ?: 'C:/Users/Haobai/Documents/Codex/2026-09-24/new-chat-3/outputs/stage9b_20261002/android_build')
-allprojects {
-    layout.buildDirectory.set(new File(stage9BuildRoot, project == rootProject ? '_root' : project.name))
+// Optional: -PinstrumentBuildRoot=<dir> keeps generated artifacts outside the source tree;
+// without it Gradle uses the usual build/ directories inside this project.
+def instrumentBuildRoot = findProperty('instrumentBuildRoot')
+if (instrumentBuildRoot) {
+    allprojects {
+        layout.buildDirectory.set(new File(file(instrumentBuildRoot), project == rootProject ? '_root' : project.name))
+    }
 }

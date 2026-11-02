@@ -25,7 +25,7 @@
 ## 当前版本
 
 - **FPGA**：64 路合成引擎，128 kHz 输出；比特流 `fpga/impl/pnr/formal_one.bin` SHA256 `94ce681a…`（2026-11-02 由本目录源码构建）。
-  板上 Flash 目前仍是 2026-11-01 写入的上一版（SHA256 `210f7d2c…`），两版只差已删除的备选分支，电路功能相同；本版尚未上板。
+  已写入板上 Flash，并完成上板录音延迟实测（发布到出声平均 0.687 ms）。
   资源：逻辑 41785/59904（70%）、寄存器 26393/60780（44%）、BSRAM 108/118（92%）、DSP 33.5/118（29%）。
   时序：system_clk 约束 40 MHz，Fmax 43.40 MHz；全部时钟 setup/hold 违例 0。
 - **BL616**：64 路赛题测试放行；镜像 SHA256 `c20add42…`，2026-10-31 写入 Flash 偏移 0x40000。
@@ -37,6 +37,41 @@
 用 Gowin IDE（V1.9.12.04）打开 `fpga/formal_one.gprj`，顶层模块 `instrument_board_stage11_rev7`，布局选项 3、布线选项 2，Verilog 标准 SystemVerilog-2017。
 RTL 中的 ROM 文件以 `src/<子目录>/xxx.mem` 相对 `fpga/` 引用，请保持 `fpga/` 内的相对位置不变。
 `.vh` 头文件与引用它的 `.v` 放在同一目录，综合器按引用文件所在目录查找，无需设置 Include Path；`.mem` 路径相对于 `fpga/` 工程目录。工程可整体复制到任意位置直接打开构建。
+
+### BL616
+环境（与当前镜像所用版本相同）：
+- Bouffalo SDK 2.3.35，环境变量 `BL_SDK_BASE` 指向 SDK 根目录；
+- 玄铁 Xuantie-900 RISC-V 工具链 V2.6.1（`riscv64-unknown-elf-gcc` 10.2.0）；
+- SDK 自带的 `tools/cmake`、`tools/make/mingw32-make.exe` 与 Kconfig 脚本，另需 Python 3。
+
+在 `firmware/bl616/project` 目录下执行（Windows；`%SDK%` 为 SDK 根目录，`%TC%` 为工具链的 `bin` 目录，`%P%` 为本目录的绝对路径）：
+
+1. 由 `defconfig` 生成配置（先建好输出目录 `mkdir build\generated`）：
+   ```
+   python %SDK%/tools/kconfig/config_seed.py --defconfig defconfig --kconfig %SDK%/Kconfig --def-out build/generated/autoconfig.def --cmake-out build/generated/autoconfig.cmake --header-out build/generated/autoconfig.h --make-out build/generated/autoconfig.mk
+   ```
+2. CMake 配置：
+   ```
+   %SDK%/tools/cmake/bin/cmake -S . -B build -G "MinGW Makefiles" -DBUILD_DIR=%P%/build -DSDK_DEMO_PATH=%P% -DCMAKE_MAKE_PROGRAM=%SDK%/tools/make/mingw32-make.exe -DCMAKE_C_COMPILER_FORCED=TRUE -DCMAKE_CXX_COMPILER_FORCED=TRUE -DCROSS_COMPILE=%TC%/riscv64-unknown-elf-
+   ```
+3. 编译并导出原始镜像：
+   ```
+   %SDK%/tools/cmake/bin/cmake --build build --target instrument_neo_r59_bl616.elf --parallel 8
+   %TC%/riscv64-unknown-elf-objcopy -O binary build/build_out/instrument_neo_r59_bl616.elf build/build_out/instrument_neo_r59_bl616.bin
+   ```
+4. 后处理生成可烧录镜像（工具会就地改写 `--imgfile` 指定的文件，原始 `.bin` 不能直接烧录）：
+   ```
+   %SDK%/tools/bflb_tools/bflb_fw_post_proc/bflb_fw_post_proc.exe --chipname=bl616 --imgfile=build/build_out/instrument_neo_r59_bl616.bin --dtsfile=%SDK%/bsp/board/bl616dk/config/bl_factory_params_IoTKitA_auto.dts
+   ```
+5. 烧录：板子进入下载模式（保持供电，SW6 拨到 OFF、SW5 拨到 ON；按住 UPDATE 再把 SW6 拨到 ON，1～2 秒后松开），用 Bouffalo 烧录工具（如 Flash Cube）把第 4 步得到的 `.bin` 写到 Flash 偏移 `0x40000`。只写应用区，不要改写 bootloader 与 eFuse。烧录后 SW6 拨到 OFF、SW5 拨到 OFF，再把 SW6 拨到 ON，正常启动。
+
+镜像中嵌入了编译时间，每次编译得到的文件 SHA256 都不同，属正常现象。
+
+### iOS / iPadOS
+推送 `app/ios/` 的改动后，GitHub Actions（`macos-26`，Xcode 26）自动编译未签名 IPA，并生成 iPhone 与 11 寸 iPad 截图；在 Actions 运行详情页底部的 Artifacts 下载，签名后安装。最低系统 iOS 15，iOS 26 上启用液态玻璃效果。
+
+### 安卓
+在 `app/android/` 下执行 `gradlew assembleDebug`（JDK 17、compileSdk 37；Android SDK 位置写在 `local.properties` 的 `sdk.dir`，或设置环境变量 `ANDROID_HOME`）。构建输出默认在工程内的 `build/` 目录，可用 `-PinstrumentBuildRoot=<目录>` 改到源码目录以外。最低系统 Android 8.0。
 
 ## FPGA 模块结构
 
@@ -141,16 +176,6 @@ instrument_board_stage11_rev7              板级顶层：引脚、复位、八�
 
 - `instrument_core_stage7`～`stage11`：开发时每个阶段在外面包一层新功能，层号即阶段号。第 7 层是完整音频通路，第 8 层加 HDMI，第 9 层加手机控制，第 10 层加手机音频与应答，第 11 层加录音。
 - `r18_`、`r22_`、`r28_` 等前缀是该模块定型时的开发轮次编号；`s9_`、`s10_`、`s11_` 是 BL616 通信协议的阶段号；`osc_ii4_` 表示每 4 个时钟发起一个声部的运算后端。前缀只是历史编号，不表示层次。
-
-### BL616
-需要 Bouffalo SDK（环境变量 `BL_SDK_BASE`）与 RISC-V 工具链。`firmware/bl616/project/CMakeLists.txt` 通过 `../src` 引用源码。
-应用镜像写入 Flash 偏移 `0x40000`；不要改写 bootloader 与 eFuse。
-
-### iOS / iPadOS
-推送 `app/ios/` 的改动后，GitHub Actions（`macos-26`，Xcode 26）自动编译未签名 IPA，并生成 iPhone 与 11 寸 iPad 截图；在 Actions 运行详情页底部的 Artifacts 下载，签名后安装。最低系统 iOS 15，iOS 26 上启用液态玻璃效果。
-
-### 安卓
-在 `app/android/` 下执行 `gradlew assembleDebug`（JDK 17、compileSdk 37）。最低系统 Android 8.0。
 
 ## 文档
 - `docs/app_reserved_notices.md`：App 已预留、等待板端实现的通知（教学提示、实体琴键状态、板上参数同步）。
