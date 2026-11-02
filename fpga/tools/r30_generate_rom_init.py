@@ -1,6 +1,6 @@
 from pathlib import Path
 import hashlib
-S=Path(__file__).resolve().parent
+S=Path(__file__).resolve().parent.parent/'src'/'video'
 def words(n):return [int(v,16) for v in (S/n).read_text().split()]
 def emit(name,values,width,per,sources):
  assert len(values)==64*per

@@ -36,7 +36,8 @@
     "INCREMENTAL_PLACE_AND_ROUTING": "0",
     "INCREMENTAL_PLACE_ONLY": "0",
     "IncludePath": [
-        "D:/FPGA/formal_project/formal_one/src/fpga/src"
+        "D:/FPGA/formal_project/formal_one/src/fpga/src/mcu_link",
+        "D:/FPGA/formal_project/formal_one/src/fpga/src/video"
     ],
     "Incremental_Compile": "",
     "Initialize_Primitives": false,
