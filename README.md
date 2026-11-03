@@ -70,10 +70,19 @@ RTL 中的 ROM 文件以 `src/<子目录>/xxx.mem` 相对 `fpga/` 引用，请�
 镜像中嵌入了编译时间，每次编译得到的文件 SHA256 都不同，属正常现象。
 
 ### iOS / iPadOS
-推送 `app/ios/` 的改动后，GitHub Actions（`macos-26`，Xcode 26）自动编译未签名 IPA，并生成 iPhone 与 11 寸 iPad 截图；在 Actions 运行详情页底部的 Artifacts 下载，签名后安装。最低系统 iOS 15，iOS 26 上启用液态玻璃效果。
+需要 macOS 与 Xcode 26（代码用到 iOS 26 SDK 的液态玻璃接口，旧版 Xcode 无法编译）。最低系统 iOS 15，iOS 26 上启用液态玻璃效果。
+
+本地编译：用 Xcode 打开 `app/ios/InstrumentIOS.xcodeproj`，选择 scheme `InstrumentIOS`，在 Signing & Capabilities 中选自己的开发团队后运行到真机或模拟器。也可在 `app/ios/` 下用命令行：
+```
+swift test --package-path InstrumentCore
+xcodebuild -project InstrumentIOS.xcodeproj -scheme InstrumentIOS -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+```
+第一条运行协议层测试；第二条生成未签名的 `build/Build/Products/Release-iphoneos/InstrumentIOS.app`，把它放进 `Payload/` 目录压缩为 `.ipa` 后，可用签名工具（如 Sideloadly）安装。
+
+云端编译：仓库推送到 GitHub 后，`app/ios/` 的改动会触发 `.github/workflows/ios.yml`（`macos-26` 运行器），执行上述测试与编译，输出未签名 IPA 与 iPhone、11 寸 iPad 截图，在 Actions 运行详情页底部的 Artifacts 下载。
 
 ### 安卓
-在 `app/android/` 下执行 `gradlew assembleDebug`（JDK 17、compileSdk 37；Android SDK 位置写在 `local.properties` 的 `sdk.dir`，或设置环境变量 `ANDROID_HOME`）。构建输出默认在工程内的 `build/` 目录，可用 `-PinstrumentBuildRoot=<目录>` 改到源码目录以外。最低系统 Android 8.0。
+在 `app/android/` 下执行 `gradlew assembleDebug`，单元测试为 `gradlew testDebugUnitTest`（JDK 17、compileSdk 37、Android SDK Build-Tools 36.0.0，首次编译需联网下载 Gradle 与依赖，下载的依赖按 `gradle/verification-metadata.xml` 校验；Android SDK 位置写在 `local.properties` 的 `sdk.dir`，或设置环境变量 `ANDROID_HOME`）。构建输出默认在工程内的 `build/` 目录，可用 `-PinstrumentBuildRoot=<目录>` 改到源码目录以外。最低系统 Android 8.0。
 
 ## FPGA 模块结构
 

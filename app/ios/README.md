@@ -1,49 +1,32 @@
-# iOS R88 · iOS 15及更新系统兼容
+# iOS / iPadOS App
 
-本次仅修改App系统兼容性。最低部署版本和Swift包平台均改为iOS15，导航改用单栏NavigationView，文本与文件分享改用UIActivityViewController。
-BLE协议、演奏/录音/测试控制、固件与RTL不在本次改动范围，不需要为这次系统兼容性修改重新烧录板卡。
-保留父版App功能；这里不重新认定你自行重构的固件与旧版测试接口兼容性。
-构建阶段同时检查IPA的MinimumOSVersion与Mach-O最小系统版本均为15.0。
-云端模拟器目前使用iOS18；构建可验证iOS15 API可用性，但iOS15真机安装、分享和BLE仍待队友手机验收。
-
-赛题依据：https://www.gowinsemi.com.cn/university/match2026 ，选题二“核心评分规则与现场验证标准”第3条要求测试多路不同频率及独立谱峰。
-本版仅提供执行和观察入口，不将App算出的频率表当作实测频谱，不将48kHz录音率当作128kHz输出率。
-
-适配当前128kHz／48振荡器固件的48kHz单声道SD录音，同时兼容已有双声道录音。
-保存通知按每帧2或4字节校验；下载保持原WAV文件字节和CRC，不补声道或改变采样率。
-修复单声道保存通知被拒、界面停留“正在采集”的问题。零帧文件仅凭长度无法识别声道，按WAV文件头解释。
-手机需要安装本版App，FPGA与BL616无需重新烧录。云端输出未签名IPA，仍需本机签名安装。
-
-原生 SwiftUI + CoreBluetooth，iOS 15 或更新版本。测试目标为 iPhone 11 Pro / iOS 18。所有音频由现有 FPGA 合成，App 只发送事件与控制命令。
+原生 SwiftUI + CoreBluetooth，版本 2.0（build 89），最低 iOS 15，iOS 26 上启用液态玻璃效果。所有音频由 FPGA 合成，App 只发送演奏事件与控制命令。
 
 ## 构建与安装
 
-推送 main 或手动运行 Actions 的 `iOS device IPA`。工作流先在 macOS 执行 Swift 协议测试，再构建 arm64 真机 App，输出未签名 IPA 和日志。它不需要 Apple ID、证书或仓库密钥。
+需要 macOS 与 Xcode 26（代码用到 iOS 26 SDK 的液态玻璃接口）。
 
-在 Actions 成功记录的 Artifacts 下载压缩包并解压，把 `FPGA-Instrument-R88-iOS15-unsigned.ipa` 交给 Windows 上的 Sideloadly 本地签名安装。Apple 账户仅在本机输入。此 IPA 不能直接点开安装，也不是 App Store 发布包。首次安装按签名工具提示信任开发者。iOS15没有“开发者模式”开关；iOS16及更新系统才按提示开启该模式。
+- **本地编译**：用 Xcode 打开 `InstrumentIOS.xcodeproj`，scheme 选 `InstrumentIOS`，在 Signing & Capabilities 中选自己的开发团队，运行到真机或模拟器。命令行方式见仓库根目录 README 的“iOS / iPadOS”一节。
+- **云端编译**：仓库推送到 GitHub 后，`app/ios/` 的改动会触发 `.github/workflows/ios.yml`：先执行 `swift test --package-path InstrumentCore`，再构建 arm64 真机 App，输出未签名的 `FPGA-Instrument-iOS-unsigned.ipa`、编译日志和 iPhone / 11 寸 iPad 模拟器截图（iOS 26），在 Actions 运行详情页底部的 Artifacts 下载。工作流不需要 Apple ID、证书或仓库密钥。
 
-免费账户签名需定期续签。请参考 [Sideloadly 官方说明](https://sideloadly.io/faq.html)。
+未签名 IPA 不能直接安装，可用 Windows 上的 Sideloadly 等工具在本机签名安装，Apple 账户只在本机输入。首次安装按提示信任开发者；iOS 16 及以上还需按提示开启“开发者模式”。免费账户签名需定期续签，参考 [Sideloadly 官方说明](https://sideloadly.io/faq.html)。
 
 ## 功能
 
 - 加密 BLE 扫描、连接、状态订阅、会话校验、自动保活与诊断导出。
 - 16 键多指和弦、八度与力度控制；全 64 位音符身份；离开演奏页松键。
-- 六种音色、松手衰减、颤音、合成/外部音量与效果预设。
-- 实体 8 键音高映射、SD 曲谱播放/暂停/继续/停止。
+- 六种音色、松手衰减、颤音、合成/外部伴奏音量与效果预设。
+- 实体 8 键音高映射；SD 曲谱播放/暂停/继续/停止，教学模式；上传 `SCORE.EVT` 曲谱到乐器。
 - Live Looping 四层叠录、撤销、停止、恢复、清空。
 - 规则智能合奏设置、启停及来自 FPGA 的实际声部计数。
-- SD 声音/事件录音、状态查询、逐块下载与整文件 CRC 校验后分享。
+- SD 声音/事件录音、状态查询、逐块下载与整文件 CRC 校验后分享；事件录音可转换为曲谱。
+- 赛题测试模式：多路不同频率的持续发声测试，48 / 64 路使用 FPGA 原生测试源，30 秒自动结束。
+- 手机音乐伴奏：手机经蓝牙音频（A2DP）连接 `BTBLE-DEV` 播放音乐，App 中调节外部伴奏音量。
 
-完整功能需要配套 R83 FPGA 与 BL616。旧 R82 可先测基本连接和演奏，新功能拒绝不是升级成功。设备固件不包含在本仓库。
-
-本版前台运行；进入后台主动断开，设备清理手机持音。实体琴键不依赖手机。循环/伴奏有固件规定的模式互斥，以设备执行反馈为准。
-
-当前不支持手机系统音频转发、曲谱上传、SD 历史目录浏览；录音管理针对本 App 发起或已知编号的记录。未宣称已通过真机蓝牙或音乐体验验收。
+需要配套本仓库的 FPGA 比特流与 BL616 固件。App 只在前台运行，进入后台会主动断开，设备会清理手机按住的音。实体琴键不依赖手机。循环、曲谱、合奏与录音之间有固件规定的互斥，以设备执行反馈为准。
 
 ## 协议与验证
 
-`InstrumentCore` 为可独立测试的 Swift 包。Fixtures 从既有 Android R83 测试拷贝，含 21 个字节黄金向量和 1062 个语义边界向量。额外测试覆盖 CRC、分包、重复/缺包/超时、Loop/合奏通知、旧会话隔离、配置屏障、执行反馈与持音身份。
+`InstrumentCore` 为可独立测试的 Swift 包（协议层）。`Tests/InstrumentCoreTests/Fixtures` 与安卓工程 `app/src/test/resources` 中的文件相同，含 21 个字节黄金向量和 1062 个语义边界向量。其他测试覆盖 CRC、分包、重复/缺包/超时、Loop/合奏通知、旧会话隔离、配置屏障、执行反馈、持音身份与录音下载。`StageLogic` 是演奏台界面用到的采样率测量逻辑，App 直接编译同一源文件，可用 `swift test --package-path StageLogic` 单独测试。
 
-GATT 写入确认仅代表传输完成；UI 成功反馈来自设备 STATUS 执行阶段。消息按实际 `maximumWriteValueLength` 分包，最多一个 ATT 操作在途。没有把 Android MTU 设置搬到 iOS。
-
-本仓库只含 iOS 源代码、测试和工作流，与 FPGA 正式工程及其 Git 仓库独立。
+GATT 写入确认只代表传输完成；界面的成功反馈来自设备 STATUS 执行阶段。消息按实际 `maximumWriteValueLength`（不超过 244 字节）分包，同时最多一个 ATT 操作在途。
