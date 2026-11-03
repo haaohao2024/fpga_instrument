@@ -40,9 +40,11 @@ RTL 中的 ROM 文件以 `src/<子目录>/xxx.mem` 相对 `fpga/` 引用，请�
 
 ### BL616
 环境（与当前镜像所用版本相同）：
-- Bouffalo SDK 2.3.35，环境变量 `BL_SDK_BASE` 指向 SDK 根目录；
+- Bouffalo SDK 2.3.35（官方原版，对应 GitHub 提交 `63784aa0`，无需任何修改），环境变量 `BL_SDK_BASE` 指向 SDK 根目录；
 - 玄铁 Xuantie-900 RISC-V 工具链 V2.6.1（`riscv64-unknown-elf-gcc` 10.2.0）；
 - SDK 自带的 `tools/cmake`、`tools/make/mingw32-make.exe` 与 Kconfig 脚本，另需 Python 3。
+
+固件需要的 4 处 SDK 修改（蓝牙伴奏的 L2CAP 观察回调、SBC 解码修正）已放在 `firmware/bl616/sdk_patch/`，编译时由 `CMakeLists.txt` 自动替换 SDK 中的同名文件，说明见该目录下的 README。
 
 在 `firmware/bl616/project` 目录下执行（Windows；`%SDK%` 为 SDK 根目录，`%TC%` 为工具链的 `bin` 目录，`%P%` 为本目录的绝对路径）：
 
@@ -52,7 +54,7 @@ RTL 中的 ROM 文件以 `src/<子目录>/xxx.mem` 相对 `fpga/` 引用，请�
    ```
 2. CMake 配置：
    ```
-   %SDK%/tools/cmake/bin/cmake -S . -B build -G "MinGW Makefiles" -DBUILD_DIR=%P%/build -DSDK_DEMO_PATH=%P% -DCMAKE_MAKE_PROGRAM=%SDK%/tools/make/mingw32-make.exe -DCMAKE_C_COMPILER_FORCED=TRUE -DCMAKE_CXX_COMPILER_FORCED=TRUE -DCROSS_COMPILE=%TC%/riscv64-unknown-elf-
+   %SDK%/tools/cmake/bin/cmake -S . -B build -G "MinGW Makefiles" -DBUILD_DIR=build -DSDK_DEMO_PATH=%P% -DCMAKE_MAKE_PROGRAM=%SDK%/tools/make/mingw32-make.exe -DCMAKE_C_COMPILER_FORCED=TRUE -DCMAKE_CXX_COMPILER_FORCED=TRUE -DCROSS_COMPILE=%TC%/riscv64-unknown-elf-
    ```
 3. 编译并导出原始镜像：
    ```

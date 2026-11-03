@@ -1,0 +1,63 @@
+--- a/components/wireless/bluetooth/blestack/src/host/l2cap_br.c
++++ b/components/wireless/bluetooth/blestack/src/host/l2cap_br.c
+@@ -1,3 +1,4 @@
++#include "s10_host_observer.h"
+ /* l2cap_br.c - L2CAP BREDR oriented handling */
+ 
+ /*
+@@ -302,7 +303,10 @@
+ 	}
+ 
+ 	if (chan->chan.ops && chan->chan.ops->connected) {
+-		chan->chan.ops->connected(&chan->chan);
++		#if defined(S10_PROFILE_HOST_OBSERVER)
++        if (s10_profile_host_connected) s10_profile_host_connected(&chan->chan);
++#endif
++        chan->chan.ops->connected(&chan->chan);
+ 	}
+ }
+ 
+@@ -852,7 +856,10 @@
+ 
+ 			bt_l2cap_chan_set_state(chan, BT_L2CAP_CONNECTED);
+ 			if (chan->ops && chan->ops->connected) {
+-				chan->ops->connected(chan);
++				#if defined(S10_PROFILE_HOST_OBSERVER)
++                if (s10_profile_host_connected) s10_profile_host_connected(chan);
++#endif
++                chan->ops->connected(chan);
+ 			}
+ 		}
+ 		break;
+@@ -1074,7 +1081,10 @@
+ 
+ 		bt_l2cap_chan_set_state(chan, BT_L2CAP_CONNECTED);
+ 		if (chan->ops && chan->ops->connected) {
+-			chan->ops->connected(chan);
++			#if defined(S10_PROFILE_HOST_OBSERVER)
++                if (s10_profile_host_connected) s10_profile_host_connected(chan);
++#endif
++                chan->ops->connected(chan);
+ 		}
+ 	}
+ }
+@@ -1586,8 +1596,17 @@
+ 	 */
+ 	check_fixed_channel(chan);
+ 
+-	chan->ops->recv(chan, buf);
+-	net_buf_unref(buf);
++#if defined(S10_PROFILE_HOST_OBSERVER)
++    uint32_t s10_rx_token=0;
++    if (s10_profile_host_rx_before)
++        s10_rx_token=s10_profile_host_rx_before(conn,chan,cid,buf);
++#endif
++    chan->ops->recv(chan, buf);
++#if defined(S10_PROFILE_HOST_OBSERVER)
++    /* Neither original chan nor borrowed buf is dereferenced after dispatch. */
++    if (s10_profile_host_rx_after) s10_profile_host_rx_after(s10_rx_token);
++#endif
++    net_buf_unref(buf);
+ }
+ 
+ static int l2cap_br_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan)

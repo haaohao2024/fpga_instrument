@@ -27,7 +27,9 @@ sdk_add_compile_definitions(S10_MEDIA_RUNTIME=1 S10_PROFILE_HOST_OBSERVER=1 SBC_
 # BT host/HCI RX threads above the 1 ms polling tasks (default configMAX_PRIORITIES-4 = 3);
 # they only run when packets arrive. HCI TX stays at 4 (< RX as the host requires).
 sdk_add_compile_definitions(CONFIG_BT_RX_PRIO=5)
-sdk_add_include_directories("$ENV{BL_SDK_BASE}/components/wireless/bluetooth/blestack/src/include/bluetooth")
+# Patched SDK files live in ../sdk_patch (see its README); s10_host_observer.h is new.
+set(SDK_PATCH_DIR "${CMAKE_CURRENT_LIST_DIR}/../sdk_patch")
+sdk_add_include_directories(${SDK_PATCH_DIR}/blestack/src/include/bluetooth)
 target_sources(app PRIVATE
     ${FORMAL_SOURCE_DIR}/s10_codec.c
     ${FORMAL_SOURCE_DIR}/s10_fir.c
@@ -94,6 +96,25 @@ target_sources(app PRIVATE ${FORMAL_SOURCE_DIR}/crc32_shared.c)
 get_target_property(crc_sources libutils SOURCES)
 list(FILTER crc_sources EXCLUDE REGEX "utils_crc[.]c$")
 set_property(TARGET libutils PROPERTY SOURCES ${crc_sources})
+
+# Same for the Bluetooth stack: compile the three patched files from ../sdk_patch
+# instead of the installed ones, so an unmodified SDK 2.3.35 builds this image.
+get_target_property(blestack_sources libblestack SOURCES)
+list(LENGTH blestack_sources blestack_count)
+list(FILTER blestack_sources EXCLUDE REGEX "/src/host/l2cap[.]c$|/src/host/l2cap_br[.]c$|/src/sbc/dec/decoder-private[.]c$")
+list(LENGTH blestack_sources blestack_kept)
+math(EXPR blestack_replaced "${blestack_count} - ${blestack_kept}")
+if(NOT blestack_replaced EQUAL 3)
+    message(FATAL_ERROR "expected to replace 3 blestack sources, replaced ${blestack_replaced}")
+endif()
+set_property(TARGET libblestack PROPERTY SOURCES ${blestack_sources})
+target_sources(libblestack PRIVATE
+    ${SDK_PATCH_DIR}/blestack/src/host/l2cap.c
+    ${SDK_PATCH_DIR}/blestack/src/host/l2cap_br.c
+    ${SDK_PATCH_DIR}/blestack/src/sbc/dec/decoder-private.c)
+# decoder-private.c includes its private headers from its own SDK directory.
+target_include_directories(libblestack PRIVATE
+    $ENV{BL_SDK_BASE}/components/wireless/bluetooth/blestack/src/sbc/dec)
 
 
 # Share ABI-preserving RISC-V prologue/epilogue helpers only in file/control

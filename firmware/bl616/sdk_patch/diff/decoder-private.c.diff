@@ -1,0 +1,11 @@
+--- a/components/wireless/bluetooth/blestack/src/sbc/dec/decoder-private.c
++++ b/components/wireless/bluetooth/blestack/src/sbc/dec/decoder-private.c
+@@ -202,7 +202,7 @@
+          * OI_SBC_ReadSamples will need to pick up in mid-byte.
+          */
+         OI_BITSTREAM_ReadInit(bs, b);
+-        *scale_factor++ = OI_BITSTREAM_ReadUINT4Aligned(bs);
++        *scale_factor++ = (OI_INT8)OI_BITSTREAM_ReadUINT(bs, 4);
+     }
+ }
+ 

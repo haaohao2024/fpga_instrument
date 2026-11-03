@@ -1,0 +1,39 @@
+--- a/components/wireless/bluetooth/blestack/src/host/l2cap.c
++++ b/components/wireless/bluetooth/blestack/src/host/l2cap.c
+@@ -1,3 +1,4 @@
++#include "s10_host_observer.h"
+ /* l2cap.c - L2CAP handling */
+ 
+ /*
+@@ -249,7 +250,11 @@
+ 		goto destroy;
+ 	}
+ 
+-	if (chan->ops->disconnected) {
++#if defined(S10_PROFILE_HOST_OBSERVER)
++    /* Retire project metadata before the original callback can invalidate it. */
++    if (s10_profile_host_disconnected) s10_profile_host_disconnected(chan);
++#endif
++    if (chan->ops->disconnected) {
+ 		chan->ops->disconnected(chan);
+ 	}
+ 
+@@ -1984,7 +1989,17 @@
+ 
+ 	if (IS_ENABLED(CONFIG_BT_BREDR) &&
+ 	    chan->conn->type == BT_CONN_TYPE_BR) {
+-		return bt_l2cap_br_chan_send(chan, buf);
++#if defined(S10_PROFILE_HOST_OBSERVER)
++        /* Snapshot while the original buffer/connection are still borrowed. */
++        struct s10_host_send_snapshot s10_send={0};
++        if (s10_profile_host_send_before)
++            s10_send=s10_profile_host_send_before(chan,buf->data,buf->len);
++        err=bt_l2cap_br_chan_send(chan,buf);
++        if (s10_profile_host_send_after) s10_profile_host_send_after(&s10_send,err);
++        return err;
++#else
++        return bt_l2cap_br_chan_send(chan, buf);
++#endif
+ 	}
+ 
+ 	err = l2cap_chan_le_send_sdu(BT_L2CAP_LE_CHAN(chan), &buf, 0);
