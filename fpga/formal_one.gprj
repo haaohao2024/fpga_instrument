@@ -4,7 +4,7 @@
     <Version>5</Version>
     <Device name="GW5AT-60B" pn="GW5AT-LV60PG484AC1/I0">gw5at60b-002</Device>
     <FileList>
-        <File path="src/record/rec48_downsample.v" type="file.verilog" enable="1" />
+        <File path="src/record/rec_downsample.v" type="file.verilog" enable="1" />
         <File path="src/input/button_debounce_onepulse.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/digital_audio_output_master.v" type="file.verilog" enable="1" />
         <File path="src/input/ec11_encoder.v" type="file.verilog" enable="1" />
@@ -13,12 +13,12 @@
         <File path="src/effects/fx_history18.v" type="file.verilog" enable="1" />
         <File path="src/input/release_parameter_control.v" type="file.verilog" enable="1" />
         <File path="src/synth/glide_pitch_prepare.v" type="file.verilog" enable="1" />
-        <File path="src/top/instrument_core_stage10.v" type="file.verilog" enable="1" />
-        <File path="src/top/instrument_core_stage11.v" type="file.verilog" enable="1" />
-        <File path="src/top/instrument_core_stage7.v" type="file.verilog" enable="1" />
-        <File path="src/top/instrument_core_stage8.v" type="file.verilog" enable="1" />
-        <File path="src/top/instrument_core_stage9.v" type="file.verilog" enable="1" />
-        <File path="src/top/instrument_io_stage11.v" type="file.verilog" enable="1" />
+        <File path="src/top/core_mcu_media.v" type="file.verilog" enable="1" />
+        <File path="src/top/instrument_core.v" type="file.verilog" enable="1" />
+        <File path="src/top/core_audio.v" type="file.verilog" enable="1" />
+        <File path="src/top/core_audio_video.v" type="file.verilog" enable="1" />
+        <File path="src/top/core_mcu_control.v" type="file.verilog" enable="1" />
+        <File path="src/top/instrument_io.v" type="file.verilog" enable="1" />
         <File path="src/event/local_performance_control.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/master_gain_config.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/master_pcm_stream.v" type="file.verilog" enable="1" />
@@ -26,46 +26,49 @@
         <File path="src/audio_out/pcm_pair_fifo.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/pcm_stream_input.v" type="file.verilog" enable="1" />
         <File path="src/event/performance_event_arbiter.v" type="file.verilog" enable="1" />
-        <File path="src/input/pressure_input_top.v" type="file.verilog" enable="1" />
+        <File path="src/input/pressure_input.v" type="file.verilog" enable="1" />
         <File path="src/input/pressure_scanner.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/pt8211_audio_out.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/pt8211_serializer.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/s10_pcm_transport.v" type="file.verilog" enable="1" />
-        <File path="src/record/s11_event_recorder.v" type="file.verilog" enable="1" />
-        <File path="src/score/s11_field_test_source.v" type="file.verilog" enable="1" />
-        <File path="src/record/s11_pcm_recorder.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/s11_spi_response.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/s9_constants.vh" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/r22_control_link.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/r22_event_endpoint.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/s9_keymap_config.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/s9_session_control.v" type="file.verilog" enable="1" />
-        <File path="src/score/r28_borrowed_score_parser.v" type="file.verilog" enable="1" />
-        <File path="src/score/r28_serial_guide.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_pcm_transport.v" type="file.verilog" enable="1" />
+        <File path="src/record/rec_event_recorder.v" type="file.verilog" enable="1" />
+        <File path="src/score/field_test_source.v" type="file.verilog" enable="1" />
+        <File path="src/record/rec_pcm_recorder.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_spi_response.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_protocol_constants.vh" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_control_link.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_event_endpoint.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/keymap_config.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_session_control.v" type="file.verilog" enable="1" />
+        <File path="src/score/score_page_parser.v" type="file.verilog" enable="1" />
+        <File path="src/score/score_led_guide.v" type="file.verilog" enable="1" />
         <File path="src/score/score_record_fifo.v" type="file.verilog" enable="1" />
         <File path="src/score/score_sequencer.v" type="file.verilog" enable="1" />
         <File path="src/score/score_spi_transport.v" type="file.verilog" enable="1" />
         <File path="src/score/score_subsystem.v" type="file.verilog" enable="1" />
-        <File path="src/record/r18_config_observer.v" type="file.verilog" enable="1" />
-        <File path="src/record/r18_recording_subsystem.v" type="file.verilog" enable="1" />
-        <File path="src/record/r18_cell_prefetch_control.v" type="file.verilog" enable="1" />
-        <File path="src/mcu_link/r22_config_bridge.v" type="file.verilog" enable="1" />
-        <File path="src/event/r28_event_pool.v" type="file.verilog" enable="1" />
-        <File path="src/event/r28_local_adapter.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_serial_control.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_frame_audio.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_control_audio_probe.v" type="file.verilog" enable="1" />
-        <File path="src/record/r28_execution_observer.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_instrument_engine.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_shared_envelope_glide.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_glide_pipeline.v" type="file.verilog" enable="1" />
-        <File path="src/synth/r28_shared_timbre_lfo.v" type="file.verilog" enable="1" />
-        <File path="src/common/r54_full_equal.v" type="file.verilog" enable="1" />
-        <File path="src/synth/osc_ii4_pitch_prepare.v" type="file.verilog" enable="1" />
+        <File path="src/record/rec_config_observer.v" type="file.verilog" enable="1" />
+        <File path="src/record/recording_subsystem.v" type="file.verilog" enable="1" />
+        <File path="src/record/rec_prefetch_control.v" type="file.verilog" enable="1" />
+        <File path="src/mcu_link/mcu_config_bridge.v" type="file.verilog" enable="1" />
+        <File path="src/event/event_pool.v" type="file.verilog" enable="1" />
+        <File path="src/event/local_event_adapter.v" type="file.verilog" enable="1" />
+        <File path="src/synth/voice_allocator.v" type="file.verilog" enable="1" />
+        <File path="src/synth/voice_frame_audio.v" type="file.verilog" enable="1" />
+        <File path="src/synth/synth_engine_core.v" type="file.verilog" enable="1" />
+        <File path="src/record/rec_execution_observer.v" type="file.verilog" enable="1" />
+        <File path="src/synth/synth_engine.v" type="file.verilog" enable="1" />
+        <File path="src/synth/envelope_glide_frontend.v" type="file.verilog" enable="1" />
+        <File path="src/synth/glide_pipeline.v" type="file.verilog" enable="1" />
+        <File path="src/synth/timbre_lfo.v" type="file.verilog" enable="1" />
+        <File path="src/common/wide_equal.v" type="file.verilog" enable="1" />
+        <File path="src/common/ram18_sdp.v" type="file.verilog" enable="1" />
+        <File path="src/common/ram18_dp.v" type="file.verilog" enable="1" />
+        <File path="src/common/spi_edge_sampler.v" type="file.verilog" enable="1" />
+        <File path="src/synth/osc_pitch_prepare.v" type="file.verilog" enable="1" />
         <File path="src/synth/osc_stereo_sum.v" type="file.verilog" enable="1" />
-        <File path="src/synth/osc48_voice_metrics.v" type="file.verilog" enable="1" />
+        <File path="src/synth/voice_metrics.v" type="file.verilog" enable="1" />
         <File path="src/synth/sine_rom.v" type="file.verilog" enable="1" />
-        <File path="src/effects/r46_serial_effects.v" type="file.verilog" enable="1" />
+        <File path="src/effects/fx_engine.v" type="file.verilog" enable="1" />
         <File path="src/audio_out/stereo_master_mixer.v" type="file.verilog" enable="1" />
         <File path="src/video/video_dvi_tx.v" type="file.verilog" enable="1" />
         <File path="src/video/video_pll_800x600.v" type="file.verilog" enable="1" />
@@ -86,13 +89,13 @@
         <File path="src/video/visual_cos_q16.mem" type="file.other" enable="1" />
         <File path="src/video/visual_font.mem" type="file.other" enable="1" />
         <File path="src/video/visual_labels.mem" type="file.other" enable="1" />
-        <File path="src/top/instrument_board_stage11_rev7.v" type="file.verilog" enable="1" />
-        <File path="constraints/instrument_board_stage11_rev7.cst" type="file.cst" enable="1" />
-        <File path="constraints/instrument_board_stage11_rev7.sdc" type="file.sdc" enable="1" />
-        <File path="src/video/r30_cosine_init.vh" type="file.other" enable="1" />
-        <File path="src/video/r30_text_init.vh" type="file.other" enable="1" />
-        <File path="src/top/system_pll_30m.v" type="file.verilog" enable="1" />
-        <File path="src/synth/osc_ii4_backend.v" type="file.verilog" enable="1" />
-        <File path="src/effects/fx128_multirate.v" type="file.verilog" enable="1" />
+        <File path="src/top/instrument_top.v" type="file.verilog" enable="1" />
+        <File path="constraints/instrument_top.cst" type="file.cst" enable="1" />
+        <File path="constraints/instrument_top.sdc" type="file.sdc" enable="1" />
+        <File path="src/video/visual_cosine_init.vh" type="file.other" enable="1" />
+        <File path="src/video/visual_text_init.vh" type="file.other" enable="1" />
+        <File path="src/top/system_pll.v" type="file.verilog" enable="1" />
+        <File path="src/synth/osc_backend.v" type="file.verilog" enable="1" />
+        <File path="src/effects/fx_multirate.v" type="file.verilog" enable="1" />
     </FileList>
 </Project>

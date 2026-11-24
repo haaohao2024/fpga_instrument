@@ -121,6 +121,6 @@ module digital_audio_output_master #(
             if(frame_active && age==999 && !have_pcm)deadline_error<=1;
         end
     end
- r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(external_frame),.b(active_frame),.equal(r54_equal_0));
- r54_full_equal #(.WIDTH(32)) r54_equal_1_tree(.a(pcm_frame),.b(active_frame),.equal(r54_equal_1));
+ wide_equal #(.WIDTH(32)) r54_equal_0_tree(.a(external_frame),.b(active_frame),.equal(r54_equal_0));
+ wide_equal #(.WIDTH(32)) r54_equal_1_tree(.a(pcm_frame),.b(active_frame),.equal(r54_equal_1));
 endmodule

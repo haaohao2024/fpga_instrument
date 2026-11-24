@@ -34,7 +34,7 @@
 ## 构建
 
 ### FPGA
-用 Gowin IDE（V1.9.12.04）打开 `fpga/formal_one.gprj`，顶层模块 `instrument_board_stage11_rev7`，布局选项 3、布线选项 2，Verilog 标准 SystemVerilog-2017。
+用 Gowin IDE（V1.9.12.04）打开 `fpga/formal_one.gprj`，顶层模块 `instrument_top`，布局选项 3、布线选项 2，Verilog 标准 SystemVerilog-2017。
 RTL 中的 ROM 文件以 `src/<子目录>/xxx.mem` 相对 `fpga/` 引用，请保持 `fpga/` 内的相对位置不变。
 `.vh` 头文件与引用它的 `.v` 放在同一目录，综合器按引用文件所在目录查找，无需设置 Include Path；`.mem` 路径相对于 `fpga/` 工程目录。工程可整体复制到任意位置直接打开构建。
 
@@ -86,107 +86,110 @@ xcodebuild -project InstrumentIOS.xcodeproj -scheme InstrumentIOS -configuration
 
 ## FPGA 模块结构
 
-顶层模块：`instrument_board_stage11_rev7`（`fpga/src/top/instrument_board_stage11_rev7.v`）。
-一个文件放一个主模块，文件名与模块名相同；少数文件附带只供本文件使用的小模块（如 `fx_history18.v` 中的 RAM 封装）。
+顶层模块：`instrument_top`（`fpga/src/top/instrument_top.v`）。
+一个文件放一个主模块，文件名与模块名相同；少数文件附带只供本文件使用的小模块（如 `voice_adsr_step.v` 中的两种包络步进、`visual_spectrum_bars.v` 中的电平编码/解码）。
 
 ### 实例层次（实例名: 模块名）
 
 ```
-instrument_board_stage11_rev7              板级顶层：引脚、复位、八度按键
-├── system_pll: system_pll_30m             系统 PLL：40 MHz 系统时钟、80 MHz 通信时钟
+instrument_top                                              板级顶层：引脚、复位、八度按键
+├── system_pll: system_pll                                  系统 PLL：40 MHz 系统时钟、80 MHz 通信时钟
 ├── u_octave_up / u_octave_down: button_debounce_onepulse   E1/E2 按压去抖
-└── u_instrument: instrument_io_stage11    板级输入与核心的连接
-    ├── u_adc: pressure_input_top          8 路压力采集
-    │   ├── u_spi: mcp3008_spi             MCP3008 SPI 读数
-    │   └── u_scanner: pressure_scanner    CH0~CH7 轮询，整帧发布
-    ├── u_ec11 / u_glide_ec11: ec11_encoder        E1 颤音深度、E2 释音时长
-    ├── u_release_parameter: release_parameter_control   释音档位 0~7
-    ├── video_pll: video_pll_800x600       视频 PLL：40 MHz 像素、200 MHz 串行
-    └── u_core: instrument_core_stage11    核心第 11 层：加入录音与配置日志
-        ├── base: instrument_core_stage10  第 10 层：加入 BL616 PCM/应答 SPI
-        │   ├── transport: s10_pcm_transport       手机音频（伴奏）SPI 接收
-        │   │   └── response_encoder: s11_spi_response   录音数据应答编码
-        │   └── base: instrument_core_stage9       第 9 层：加入手机控制链路
-        │       ├── control: r22_control_link      BL616 控制命令 SPI 链路
-        │       │   └── session: s9_session_control    手机会话与租约
-        │       ├── events: r22_event_endpoint     手机演奏事件入口
-        │       ├── parameters: r22_config_bridge  手机参数（音色/效果/音量/键位）下发
-        │       │   └── u_map: s9_keymap_config    键位映射
-        │       └── core: instrument_core_stage8   第 8 层：加入 HDMI 可视化
-        │           ├── u_audio: instrument_core_stage7   第 7 层：完整音频通路
-        │           │   ├── u_control: local_performance_control   压力/旋钮 → 演奏控制
-        │           │   ├── u_event_adapter: r28_local_adapter     本地按键 → 演奏事件
-        │           │   ├── u_score: score_subsystem               乐谱与教学
-        │           │   │   ├── field: s11_field_test_source       赛题测试源（1~64 路）
-        │           │   │   ├── transport: score_spi_transport     曲谱页 SPI 接收
-        │           │   │   ├── parser: r28_borrowed_score_parser  曲谱页校验与解析
-        │           │   │   ├── records: score_record_fifo         曲谱记录缓冲
-        │           │   │   ├── player: score_sequencer            按音乐时间发出事件
-        │           │   │   ├── guide: r28_serial_guide            教学模式：音 → 灯珠颜色
-        │           │   │   └── leds: r28_palette_serializer       WS2812 时序输出
-        │           │   ├── event_pool: r28_event_pool             多来源事件仲裁与排队
+└── u_instrument: instrument_io                             板级输入与核心的连接
+    ├── u_adc: pressure_input                               8 路压力采集
+    │   ├── u_spi: mcp3008_spi                              MCP3008 SPI 读数
+    │   └── u_scanner: pressure_scanner                     CH0~CH7 轮询，整帧发布
+    ├── u_ec11 / u_glide_ec11: ec11_encoder                 E1 颤音深度、E2 释音时长
+    ├── u_release_parameter: release_parameter_control      释音档位 0~7
+    ├── video_pll: video_pll_800x600                        视频 PLL：40 MHz 像素、200 MHz 串行
+    └── u_core: instrument_core                             核心最外层：在下层基础上加入录音
+        ├── base: core_mcu_media                            加入 BL616 手机音频（伴奏 PCM）与录音应答 SPI
+        │   ├── transport: mcu_pcm_transport                手机音频（伴奏）SPI 接收
+        │   │   └── response_encoder: mcu_spi_response      录音数据应答编码
+        │   └── base: core_mcu_control                      加入 BL616 控制链路：手机演奏事件与参数
+        │       ├── control: mcu_control_link               BL616 控制命令 SPI 链路
+        │       │   └── session: mcu_session_control        手机会话与租约
+        │       ├── events: mcu_event_endpoint              手机演奏事件入口
+        │       ├── parameters: mcu_config_bridge           手机参数（音色/效果/音量/键位）下发
+        │       │   └── u_map: keymap_config                键位映射
+        │       └── core: core_audio_video                  音频通路 + HDMI 可视化
+        │           ├── u_audio: core_audio                 完整音频通路：输入 → 事件 → 合成 → 效果 → DAC
+        │           │   ├── u_control: local_performance_control  压力/旋钮 → 演奏控制
+        │           │   ├── u_event_adapter: local_event_adapter  本地按键 → 演奏事件
+        │           │   ├── u_score: score_subsystem        乐谱与教学
+        │           │   │   ├── field: field_test_source    赛题测试源（1~64 路）
+        │           │   │   ├── transport: score_spi_transport  曲谱页 SPI 接收
+        │           │   │   ├── parser: score_page_parser   曲谱页校验与解析
+        │           │   │   ├── records: score_record_fifo  曲谱记录缓冲
+        │           │   │   ├── player: score_sequencer     按音乐时间发出事件
+        │           │   │   ├── guide: score_led_guide      教学模式：音 → 灯珠颜色
+        │           │   │   └── leds: ws2812_serializer     WS2812 时序输出
+        │           │   ├── event_pool: event_pool          多来源事件仲裁与排队
         │           │   │   └── choice: performance_event_arbiter
-        │           │   ├── engine: r28_instrument_engine          64 路合成引擎
-        │           │   │   └── core: r28_control_audio_probe
-        │           │   │       ├── controller: r28_serial_control     声部分配与抢占
-        │           │   │       └── audio: r28_frame_audio             每帧逐声部计算
-        │           │   │           ├── frontend: r28_shared_envelope_glide   包络、滑音
-        │           │   │           │   ├── adsr: voice_release_adsr_step     ADSR（可调释音）
-        │           │   │           │   ├── drum_envelope: voice_drum_envelope_step   鼓组包络
+        │           │   ├── engine: synth_engine            64 路合成引擎
+        │           │   │   └── core: synth_engine_core     声部控制器与逐声部运算的组合
+        │           │   │       ├── controller: voice_allocator  声部分配与抢占
+        │           │   │       └── audio: voice_frame_audio  每帧逐声部计算
+        │           │   │           ├── frontend: envelope_glide_frontend  包络、滑音
+        │           │   │           │   ├── adsr: voice_release_adsr_step  ADSR（可调释音）
+        │           │   │           │   ├── drum_envelope: voice_drum_envelope_step  鼓组包络
         │           │   │           │   ├── glide: glide_pitch_prepare
-        │           │   │           │   └── advance: r28_glide_pipeline
-        │           │   │           ├── timbre_prepare: r28_shared_timbre_lfo     5 Hz 颤音 LFO
-        │           │   │           ├── pitch_prepare: osc_ii4_pitch_prepare      相位步进、高音 FM 递减
-        │           │   │           ├── backend: osc_ii4_backend                  6 种音色波形运算
-        │           │   │           ├── stereo: osc_stereo_sum                    声像与立体声累加
-        │           │   │           └── monitor: osc48_voice_metrics              发声路数统计
-        │           │   ├── u_effects: fx128_multirate             效果器：干声 128k，湿声 48k
-        │           │   │   ├── converter: fx128_downsample
-        │           │   │   └── engine: r46_serial_effects         回声、合唱、混响
+        │           │   │           │   └── advance: glide_pipeline
+        │           │   │           ├── timbre_prepare: timbre_lfo  5 Hz 颤音 LFO
+        │           │   │           ├── pitch_prepare: osc_pitch_prepare  相位步进、高音 FM 递减
+        │           │   │           ├── backend: osc_backend  6 种音色波形运算
+        │           │   │           ├── stereo: osc_stereo_sum  声像与立体声累加
+        │           │   │           └── monitor: voice_metrics  发声路数统计
+        │           │   ├── u_effects: fx_multirate         效果器：干声 128k，湿声 48k
+        │           │   │   ├── converter: fx_downsample
+        │           │   │   └── engine: fx_engine           回声、合唱、混响
         │           │   └── u_output: digital_audio_output_master  主混音与 DAC 输出
-        │           │       ├── u_input: pcm_stream_input          手机伴奏 PCM 缓冲
-        │           │       ├── u_gain: master_gain_config         主音量
-        │           │       ├── u_master: stereo_master_mixer      本地 + 伴奏混音
-        │           │       ├── u_pcm: master_pcm_stream           最终 16 位 PCM 转换
+        │           │       ├── u_input: pcm_stream_input   手机伴奏 PCM 缓冲
+        │           │       ├── u_gain: master_gain_config  主音量
+        │           │       ├── u_master: stereo_master_mixer  本地 + 伴奏混音
+        │           │       ├── u_pcm: master_pcm_stream    最终 16 位 PCM 转换
         │           │       └── u_pt8211: pt8211_audio_out
-        │           │           └── u_serializer: pt8211_serializer   PT8211 日本格式（LSBJ）串行输出
-        │           └── display: visual_display    HDMI 800×600 可视化（只读 DAC 样本）
+        │           │           └── u_serializer: pt8211_serializer  PT8211 日本格式（LSBJ）串行输出
+        │           └── display: visual_display             HDMI 800×600 可视化（只读 DAC 样本）
         │               ├── observer: visual_dac_observer
         │               ├── timing: video_timing_800x600
         │               ├── snapshots: visual_snapshot_engine
-        │               │   ├── fft: visual_fft4096             4096 点 FFT
-        │               │   ├── bars: visual_spectrum_bars      频谱柱
+        │               │   ├── fft: visual_fft4096         4096 点 FFT
+        │               │   ├── bars: visual_spectrum_bars  频谱柱
         │               │   └── wave_ram / xy_ram / spectrum_ram: visual_plot_memory
-        │               ├── renderer: visual_pixel_renderer     波形、李萨如、频谱、文字
-        │               └── tx: video_dvi_tx                    TMDS 编码 + OSER10 串化
-        ├── recorder: r18_recording_subsystem      录音（只读 DAC 样本与演奏事件）
-        │   ├── downsample: rec48_downsample       128k → 48k FIR
-        │   ├── u_pcm: s11_pcm_recorder            3072 对样本环形缓冲
-        │   ├── u_exec: r28_execution_observer     演奏事件 → EVR 单元
-        │   └── u_events: s11_event_recorder       EVR 事件缓冲
-        └── configs: r18_config_observer           录音期间的参数变化日志
+        │               ├── renderer: visual_pixel_renderer  波形、李萨如、频谱、文字
+        │               └── tx: video_dvi_tx                TMDS 编码 + OSER10 串化
+        ├── recorder: recording_subsystem                   录音（只读 DAC 样本与演奏事件）
+        │   ├── downsample: rec_downsample                  128k → 48k FIR
+        │   ├── u_pcm: rec_pcm_recorder                     3072 对样本环形缓冲
+        │   ├── u_exec: rec_execution_observer              演奏事件 → EVR 单元
+        │   └── u_events: rec_event_recorder                EVR 事件缓冲
+        └── configs: rec_config_observer                    录音期间的参数变化日志
 ```
 
-`r54_full_equal`（`common/`）是多处复用的宽位比较器，未在树中逐一列出。
+`common/` 下是多处复用的小模块，未在树中逐一列出：宽位比较器 `wide_equal`；18 位块 RAM 封装 `ram18_sdp` / `ram18_dp`（效果器延迟线与 FFT 使用）；SPI 时钟沿采样 `spi_edge_sampler`（曲谱与 BL616 的三条 SPI 链路共用）。
 
 ### 目录与文件
 
-- `top/`：顶层与逐层包装。`instrument_board_stage11_rev7.v`、`instrument_io_stage11.v`、`instrument_core_stage7.v`～`instrument_core_stage11.v`、`system_pll_30m.v`
-- `input/`：压力采集与旋钮按键。`pressure_input_top.v`、`mcp3008_spi.v`、`pressure_scanner.v`、`ec11_encoder.v`、`button_debounce_onepulse.v`、`release_parameter_control.v`
-- `event/`：演奏事件的产生与仲裁。`local_performance_control.v`、`r28_local_adapter.v`、`r28_event_pool.v`、`performance_event_arbiter.v`
-- `synth/`：64 路合成引擎。`r28_instrument_engine.v`、`r28_control_audio_probe.v`、`r28_serial_control.v`、`r28_frame_audio.v`、`r28_shared_envelope_glide.v`、`r28_glide_pipeline.v`、`r28_shared_timbre_lfo.v`、`osc_ii4_pitch_prepare.v`、`osc_ii4_backend.v`、`osc_stereo_sum.v`、`osc48_voice_metrics.v`、`voice_adsr_step.v`、`glide_pitch_prepare.v`、`sine_rom.v`
-- `effects/`：效果器。`fx128_multirate.v`、`r46_serial_effects.v`、`fx_history18.v`、`fx_config_frame.v`、`fx_frame_control.v`
+- `top/`：顶层与核心各层包装。`instrument_top.v`、`instrument_io.v`、`instrument_core.v`、`core_mcu_media.v`、`core_mcu_control.v`、`core_audio_video.v`、`core_audio.v`、`system_pll.v`
+- `input/`：压力采集与旋钮按键。`pressure_input.v`、`mcp3008_spi.v`、`pressure_scanner.v`、`ec11_encoder.v`、`button_debounce_onepulse.v`、`release_parameter_control.v`
+- `event/`：演奏事件的产生与仲裁。`local_performance_control.v`、`local_event_adapter.v`、`event_pool.v`、`performance_event_arbiter.v`
+- `synth/`：64 路合成引擎。`synth_engine.v`、`synth_engine_core.v`、`voice_allocator.v`、`voice_frame_audio.v`、`envelope_glide_frontend.v`、`glide_pipeline.v`、`glide_pitch_prepare.v`、`voice_adsr_step.v`、`timbre_lfo.v`、`osc_pitch_prepare.v`、`osc_backend.v`、`osc_stereo_sum.v`、`voice_metrics.v`、`sine_rom.v`
+- `effects/`：效果器。`fx_multirate.v`、`fx_engine.v`、`fx_history18.v`、`fx_config_frame.v`、`fx_frame_control.v`
 - `audio_out/`：主混音与 PT8211 输出。`digital_audio_output_master.v`、`pcm_stream_input.v`、`pcm_pair_fifo.v`、`master_gain_config.v`、`stereo_master_mixer.v`、`master_pcm_stream.v`、`pt8211_audio_out.v`、`pt8211_serializer.v`
-- `video/`：HDMI 可视化。`visual_*.v`、`video_*.v`、ROM 初始化 `r30_cosine_init.vh`、`r30_text_init.vh` 与 `visual_*.mem`
-- `score/`：乐谱、教学灯珠、赛题测试源。`score_subsystem.v`、`score_spi_transport.v`、`r28_borrowed_score_parser.v`、`score_record_fifo.v`、`score_sequencer.v`、`r28_serial_guide.v`、`s11_field_test_source.v`
-- `record/`：录音。`r18_recording_subsystem.v`、`r18_cell_prefetch_control.v`、`rec48_downsample.v`（系数 `rec48_ram.mem`）、`s11_pcm_recorder.v`、`s11_event_recorder.v`、`r28_execution_observer.v`、`r18_config_observer.v`
-- `mcu_link/`：与 BL616 的 SPI 通信。`s10_pcm_transport.v`、`s11_spi_response.v`、`r22_control_link.v`、`s9_session_control.v`、`r22_event_endpoint.v`、`r22_config_bridge.v`、`s9_keymap_config.v`、`s9_constants.vh`
-- `common/`：通用小模块。`r54_full_equal.v`
+- `video/`：HDMI 可视化。`visual_*.v`、`video_*.v`、ROM 初始化 `visual_cosine_init.vh`、`visual_text_init.vh`（由 `fpga/tools/generate_rom_init.py` 生成）与 `visual_*.mem`
+- `score/`：乐谱、教学灯珠、赛题测试源。`score_subsystem.v`、`score_spi_transport.v`、`score_page_parser.v`、`score_record_fifo.v`、`score_sequencer.v`、`score_led_guide.v`（含 `ws2812_serializer`）、`field_test_source.v`
+- `record/`：录音。`recording_subsystem.v`、`rec_prefetch_control.v`、`rec_downsample.v`（系数 `rec_downsample_coeff.mem`）、`rec_pcm_recorder.v`、`rec_event_recorder.v`、`rec_execution_observer.v`、`rec_config_observer.v`
+- `mcu_link/`：与 BL616 的 SPI 通信。`mcu_pcm_transport.v`、`mcu_spi_response.v`、`mcu_control_link.v`、`mcu_session_control.v`、`mcu_event_endpoint.v`、`mcu_config_bridge.v`、`keymap_config.v`、`mcu_protocol_constants.vh`
+- `common/`：多处复用的小模块。`wide_equal.v`、`ram18_sdp.v`、`ram18_dp.v`、`spi_edge_sampler.v`
 
 ### 名称说明
 
-- `instrument_core_stage7`～`stage11`：开发时每个阶段在外面包一层新功能，层号即阶段号。第 7 层是完整音频通路，第 8 层加 HDMI，第 9 层加手机控制，第 10 层加手机音频与应答，第 11 层加录音。
-- `r18_`、`r22_`、`r28_` 等前缀是该模块定型时的开发轮次编号；`s9_`、`s10_`、`s11_` 是 BL616 通信协议的阶段号；`osc_ii4_` 表示每 4 个时钟发起一个声部的运算后端。前缀只是历史编号，不表示层次。
+- 核心分层：`core_audio` 是完整音频通路，外面依次包上 `core_audio_video`（HDMI）、`core_mcu_control`（手机控制）、`core_mcu_media`（手机音频与录音应答）、`instrument_core`（录音），每层只加一类功能。实例名（`u_core`、`base`、`core` 等）沿用原名，时序约束中的层次路径不变。
+- 前缀：`mcu_` 为与 BL616 的通信，`rec_` 为录音，`fx_` 为效果器，`osc_` 为振荡器后端，`visual_` / `video_` 为 HDMI 可视化。
+- `mcu_protocol_constants.vh` 中的宏仍以 `S9_` 开头，与固件 `firmware/bl616/src/s9_constants.h` 的命名保持一致。
+- 2026-11 统一改过一次名。报告或旧文档中出现的旧模块名（如 `r28_serial_control`、`instrument_core_stage7`）与新名的对照见 `docs/rtl_rename_map.md`。
 
 ## 文档
+- `docs/rtl_rename_map.md`：FPGA 模块与文件的新旧名称对照。
 - `docs/app_reserved_notices.md`：App 已预留、等待板端实现的通知（教学提示、实体琴键状态、板上参数同步）。

@@ -233,9 +233,9 @@ module pcm_stream_input #(parameter integer OUTPUT_RATE_HZ=48000) (
             end
         end
     end
- r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(ctrl_epoch),.b(epoch),.equal(r54_equal_0));
- r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(pcm_epoch),.b(epoch),.equal(r54_equal_1));
- r54_full_equal #(.WIDTH(64)) r54_equal_2_tree(.a(pcm_epoch),.b(held_epoch),.equal(r54_equal_2));
+ wide_equal #(.WIDTH(64)) r54_equal_0_tree(.a(ctrl_epoch),.b(epoch),.equal(r54_equal_0));
+ wide_equal #(.WIDTH(64)) r54_equal_1_tree(.a(pcm_epoch),.b(epoch),.equal(r54_equal_1));
+ wide_equal #(.WIDTH(64)) r54_equal_2_tree(.a(pcm_epoch),.b(held_epoch),.equal(r54_equal_2));
 endmodule
 
 // One outstanding window, bounded eight-cycle computation. Independent

@@ -45,7 +45,7 @@ module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,FIELD_
  assign field_rr=mready&&field_active;
  wire fifo_ready=mready&&!field_active;
  generate if(ENABLE_S11)begin: field_enabled
-  s11_field_test_source #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.ROW_FRAMES(FIELD_ROW_FRAMES)) field(.raw_frame(raw_frame),.clk(clk),.rst(rst),.request_valid(field_valid&&!cv),
+  field_test_source #(.AUDIO_RATE_HZ(AUDIO_RATE_HZ),.ROW_FRAMES(FIELD_ROW_FRAMES)) field(.raw_frame(raw_frame),.clk(clk),.rst(rst),.request_valid(field_valid&&!cv),
    .request_start(field_start),.request_size(field_size),.request_ready(field_internal_ready),
    .player_state(score_state),.player_epoch(player_epoch),.player_ctrl_ready(field_cr),.parser_clear(pc),
    .active(field_active),.rejected(field_rejected),.committed(field_committed),.running(field_running),.ctrl_valid(field_cv),.ctrl_cmd(field_cmd),
@@ -68,7 +68,7 @@ module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,FIELD_
   .page_valid(pv),.page_ready(pr),.page_sequence(seq),.page_done(pdone),.page_ok(pok),.page_addr(addr),.page_data(data),
   .player_state(score_state),.player_error(score_error),.reload_request(reload_request),.active_epoch(active_epoch),
   .accepted_pages(accepted_pages),.rejected_transactions(rejected_transactions),.cs_conflicts(cs_conflicts),.link_timeout(link_timeout),.field_busy(field_active));
- r28_borrowed_score_parser parser(
+ score_page_parser parser(
   .clk(clk),.rst(rst),.clear(clear),.enable(pe),.raw_mode(raw_mode),.page_valid(pv),.page_ready(pr),.page_sequence(seq),
   .page_done(pdone),.page_ok(pok),.page_addr(addr),.page_data(data),
   .record_valid(rv),.record_ready(rr),.record_data(record_in),.header_valid(hv),.eof_seen(eof),
@@ -91,10 +91,10 @@ module score_subsystem #(parameter integer RAW_ONLY=1,AUDIO_RATE_HZ=48000,FIELD_
   .records_consumed(records_consumed),.events_offered(events_offered),.events_accepted(events_accepted),.events_completed(events_completed),
   .deadline_count(deadline_count),.token_exhaustions(token_exhaustions),.stops(stops),.last_group_cycles(last_group_cycles),.observe_dispatch_active(observe_dispatch_active),.observe_teach(observe_teach),.observe_loop(observe_loop));
  wire[26:0] palette;wire prefix,led_busy;wire [215:0] colors;wire [5:0] unmapped;wire [31:0] invalid_guide,led_frames;
- r28_serial_guide guide(.raw_mode(raw_mode),.palette(palette),.palette_valid(),
+ score_led_guide guide(.raw_mode(raw_mode),.palette(palette),.palette_valid(),
   .clk(clk),.rst(rst),.cfg_valid(guide_cfg_valid),.cfg_prefix(guide_cfg_prefix),.cfg_order(guide_cfg_order),.cfg_lead(guide_cfg_lead),
   .local_notes(local_notes),.held(guide_held),.notes(guide_notes),.preview_valid(preview_valid),.preview_time(preview_time),.music_time(score_time),
   .preview_notes(preview_notes),.player_state(score_state),.error_code(score_error),.prefix(prefix),.colors(colors),.unmapped_count(unmapped),.invalid_config_count(invalid_guide));
- r28_palette_serializer #(.T0H(16*(CLK_FREQ_HZ/1_000_000)/50),.T0L(48*(CLK_FREQ_HZ/1_000_000)/50),.T1H(34*(CLK_FREQ_HZ/1_000_000)/50),.T1L(30*(CLK_FREQ_HZ/1_000_000)/50),.RESET_CLOCKS(CLK_FREQ_HZ/3125),.REFRESH_CLOCKS(CLK_FREQ_HZ/200)) leds(.clk(clk),.rst(rst),.prefix(prefix),.palette(palette),.led_dout(led_dout),.busy(led_busy),.completed_frames(led_frames));
+ ws2812_serializer #(.T0H(16*(CLK_FREQ_HZ/1_000_000)/50),.T0L(48*(CLK_FREQ_HZ/1_000_000)/50),.T1H(34*(CLK_FREQ_HZ/1_000_000)/50),.T1L(30*(CLK_FREQ_HZ/1_000_000)/50),.RESET_CLOCKS(CLK_FREQ_HZ/3125),.REFRESH_CLOCKS(CLK_FREQ_HZ/200)) leds(.clk(clk),.rst(rst),.prefix(prefix),.palette(palette),.led_dout(led_dout),.busy(led_busy),.completed_frames(led_frames));
 endmodule
 

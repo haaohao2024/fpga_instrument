@@ -101,5 +101,5 @@ module score_record_fifo(
    endcase
   end
  end
- r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(committed),.b(consumed),.equal(r54_equal_0));
+ wide_equal #(.WIDTH(32)) r54_equal_0_tree(.a(committed),.b(consumed),.equal(r54_equal_0));
 endmodule

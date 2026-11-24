@@ -80,7 +80,7 @@ module score_sequencer # (parameter integer RAW_ONLY=0,PARALLEL_PRESSURE_VIEW=1,
  end
  // synthesis translate_off
  // Production raw_frame has one producer: the DAC-load counter/mux in
- // instrument_core_stage11. It holds or advances by one modulo2^32.
+ // instrument_core. It holds or advances by one modulo2^32.
  // raw_due_frame is refreshed on every edge in both consuming states;
  // therefore its age at any valid response is at most one frame transition.
  reg frame_seen;reg[31:0] previous_raw_frame;
@@ -429,6 +429,6 @@ module score_sequencer # (parameter integer RAW_ONLY=0,PARALLEL_PRESSURE_VIEW=1,
  // synthesis translate_off
  initial if(TOKEN_WIDTH<2||TOKEN_WIDTH>64)$fatal(1,"SCORE_TOKEN_WIDTH");
  // synthesis translate_on
- r54_full_equal #(.WIDTH(64)) r54_equal_0_tree(.a(rec_time),.b(music_time),.equal(r54_equal_0));
- r54_full_equal #(.WIDTH(64)) r54_equal_1_tree(.a(ctrl_epoch),.b(epoch),.equal(r54_equal_1));
+ wide_equal #(.WIDTH(64)) r54_equal_0_tree(.a(rec_time),.b(music_time),.equal(r54_equal_0));
+ wide_equal #(.WIDTH(64)) r54_equal_1_tree(.a(ctrl_epoch),.b(epoch),.equal(r54_equal_1));
 endmodule

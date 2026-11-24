@@ -14,10 +14,10 @@ module visual_spectrum_bars #(parameter BOUNDS_FILE="src/video/visual_band_bound
  wire [7:0] decoded_l,decoded_r;
  reg [7:0] height_l,height_r;
  wire core_ready;
- margin_spectrum_code nl(.power(left_power),.endpoint(bin==0||bin==2048),.code(code_l));
- margin_spectrum_code nr(.power(right_power),.endpoint(bin==0||bin==2048),.code(code_r));
- margin_spectrum_decode dl(.code(held_l),.value(decoded_l));
- margin_spectrum_decode dr(.code(held_r),.value(decoded_r));
+ spectrum_level_code nl(.power(left_power),.endpoint(bin==0||bin==2048),.code(code_l));
+ spectrum_level_code nr(.power(right_power),.endpoint(bin==0||bin==2048),.code(code_r));
+ spectrum_level_decode dl(.code(held_l),.value(decoded_l));
+ spectrum_level_decode dr(.code(held_r),.value(decoded_r));
  assign spectrum_ready=!rst&&!start&&token_stage==0;
  always @(posedge clk)begin
   if(rst||start)begin token_stage<=0;held_bin<=0;held_l<=0;held_r<=0;height_l<=0;height_r<=0;end
@@ -28,12 +28,12 @@ module visual_spectrum_bars #(parameter BOUNDS_FILE="src/video/visual_band_bound
    default:token_stage<=0;
   endcase
  end
- margin_spectrum_bars_core #(.BOUNDS_FILE(BOUNDS_FILE)) bars(
+ spectrum_bars_core #(.BOUNDS_FILE(BOUNDS_FILE)) bars(
   .clk(clk),.rst(rst),.start(start),.linear(linear),.spectrum_valid(token_stage==2),.spectrum_ready(core_ready),
   .bin(held_bin),.hl(height_l),.hr(height_r),.write_enable(write_enable),.write_column(write_column),
   .write_data(write_data),.done(done),.dc_left(dc_left),.dc_right(dc_right));
 endmodule
-module margin_spectrum_code(input wire [36:0] power,input wire endpoint,output wire [10:0] code);
+module spectrum_level_code(input wire [36:0] power,input wire endpoint,output wire [10:0] code);
  wire [63:0] s0={power,27'd0};
  wire z32=!(|s0[63:32]);wire [63:0] s1=z32?s0<<32:s0;
  wire z16=!(|s1[63:48]);wire [63:0] s2=z16?s1<<16:s1;
@@ -45,7 +45,7 @@ module margin_spectrum_code(input wire [36:0] power,input wire endpoint,output w
  wire [5:0] corrected_exponent=(endpoint?6'd38:6'd40)-{z32,z16,z8,z4,z2,z1};
  assign code={|power,corrected_exponent,fraction};
 endmodule
-module margin_spectrum_decode(input wire [10:0] code,output wire [7:0] value);
+module spectrum_level_decode(input wire [10:0] code,output wire [7:0] value);
  wire nonzero=code[10];wire [5:0] corrected_exponent=code[9:4];wire [3:0] fraction=code[3:0];
  reg [7:0] base;reg [63:0] increments;
  always @*begin
@@ -86,7 +86,7 @@ module margin_spectrum_decode(input wire [10:0] code,output wire [7:0] value);
  assign value=nonzero?base+{4'd0,increments[fraction*4+:4]}:8'd0;
 endmodule
 // linear: column c shows bin 64+c alone (2.0-10.0 kHz at 31.25 Hz/bin).
-module margin_spectrum_bars_core #(parameter BOUNDS_FILE="src/video/visual_band_bounds.mem")(
+module spectrum_bars_core #(parameter BOUNDS_FILE="src/video/visual_band_bounds.mem")(
  input wire clk,rst,start,linear,
  input wire spectrum_valid,output wire spectrum_ready,input wire [11:0] bin,
  input wire [7:0] hl,hr,

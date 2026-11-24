@@ -45,7 +45,7 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/video/visual_font.mem", 
   DPB #(.READ_MODE0(1'b0),.READ_MODE1(1'b0),
    .WRITE_MODE0(2'b00),.WRITE_MODE1(2'b00),.BIT_WIDTH_0(8),.BIT_WIDTH_1(8),
    .BLK_SEL_0(3'b000),.BLK_SEL_1(3'b000),.RESET_MODE("SYNC"),
-`include "r30_text_init.vh"
+`include "visual_text_init.vh"
   ) rom(.CLKA(pixel_clk),.CLKB(pixel_clk),.CEA(1'b1),.CEB(1'b1),.OCEA(1'b1),.OCEB(1'b1),
    .RESETA(1'b0),.RESETB(1'b0),.WREA(1'b0),.WREB(1'b0),
    .BLKSELA(3'b000),.BLKSELB(3'b000),.ADA({1'b0,label_address,3'b000}),
@@ -341,5 +341,5 @@ module visual_pixel_renderer #(parameter FONT_FILE="src/video/visual_font.mem", 
    rgb<=de_pipe[3]?color:24'd0;out_de<=de_pipe[3];out_hs<=hs_pipe[3];out_vs<=vs_pipe[3];
   end
  end
- r54_full_equal #(.WIDTH(32)) r54_equal_0_tree(.a(metadata[159:128]),.b(statistics_sequence),.equal(r54_equal_0));
+ wide_equal #(.WIDTH(32)) r54_equal_0_tree(.a(metadata[159:128]),.b(statistics_sequence),.equal(r54_equal_0));
 endmodule
