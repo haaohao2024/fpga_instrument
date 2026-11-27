@@ -27,6 +27,6 @@
 
 ## 协议与验证
 
-`InstrumentCore` 为可独立测试的 Swift 包（协议层）。`Tests/InstrumentCoreTests/Fixtures` 与安卓工程 `app/src/test/resources` 中的文件相同，含 21 个字节黄金向量和 1062 个语义边界向量。其他测试覆盖 CRC、分包、重复/缺包/超时、Loop/合奏通知、旧会话隔离、配置屏障、执行反馈、持音身份与录音下载。`StageLogic` 是演奏台界面用到的采样率测量逻辑，App 直接编译同一源文件，可用 `swift test --package-path StageLogic` 单独测试。
+`InstrumentCore` 为可独立测试的 Swift 包（协议层）。`Tests/InstrumentCoreTests/Fixtures` 与安卓工程 `app/android/app/src/test/resources` 中的文件相同，含 21 个字节黄金向量和 1062 个语义边界向量。其他测试覆盖 CRC、分包、重复/缺包/超时、Loop/合奏通知、旧会话隔离、配置屏障、执行反馈、持音身份与录音下载。`StageLogic` 是演奏台界面用到的采样率测量逻辑，App 直接编译同一源文件，可用 `swift test --package-path StageLogic` 单独测试。
 
 GATT 写入确认只代表传输完成；界面的成功反馈来自设备 STATUS 执行阶段。消息按实际 `maximumWriteValueLength`（不超过 244 字节）分包，同时最多一个 ATT 操作在途。
